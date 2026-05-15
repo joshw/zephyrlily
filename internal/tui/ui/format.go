@@ -8,6 +8,79 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// wrapText wraps text onto lines of at most maxWidth chars.
+// Word boundaries are preferred; long tokens (e.g. URLs) are hard-broken as a
+// last resort.
+//
+// curLine is the line currently being built (may already contain a prefix).
+// wordPrefix is the prefix prepended on word-boundary continuation lines.
+// initialSep is the separator placed before the very first word (typically ""
+// when the prefix already ends at a word boundary, or " " when the caller
+// wants a space between an existing header and the message body).
+//
+// Hard-break continuation lines intentionally carry NO prefix so that a split
+// URL is not visually interrupted by a repeated prefix marker.
+func wrapText(curLine, wordPrefix, text string, maxWidth int, initialSep string) []string {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{curLine}
+	}
+
+	var lines []string
+	sep := initialSep
+	lineHasContent := false
+	continuingWord := false
+
+	for _, word := range words {
+		for len(word) > 0 {
+			avail := maxWidth - len(curLine) - len(sep)
+
+			if avail <= 0 {
+				// Current line is full — emit it and start a new one.
+				lines = append(lines, curLine)
+				if continuingWord {
+					curLine = "" // hard-break continuation: no prefix
+				} else {
+					curLine = wordPrefix
+				}
+				lineHasContent = false
+				sep = ""
+				avail = maxWidth - len(curLine)
+				continue
+			}
+
+			if len(word) <= avail {
+				// Word fits on the current line.
+				curLine += sep + word
+				sep = " "
+				word = ""
+				lineHasContent = true
+				continuingWord = false
+			} else if !lineHasContent {
+				// Nothing else on this line yet — hard-break the token.
+				curLine += sep + word[:avail]
+				word = word[avail:]
+				lines = append(lines, curLine)
+				curLine = ""
+				lineHasContent = false
+				sep = ""
+				continuingWord = true
+			} else {
+				// Word doesn't fit and there's other content — word-boundary wrap.
+				lines = append(lines, curLine)
+				curLine = wordPrefix
+				lineHasContent = false
+				sep = ""
+				continuingWord = false
+			}
+		}
+		continuingWord = false // completed this word
+	}
+
+	lines = append(lines, curLine)
+	return lines
+}
+
 // formatEvent produces a human-readable line for a notify event.
 // Formatting is based on tigerlily's slcp_output.pl message templates.
 // width is the maximum line width for wrapping messages.
@@ -91,29 +164,13 @@ func formatEvent(d map[string]interface{}, width int) string {
 		return strings.Join(names, ", ")
 	}
 
-	// Helper to wrap message text with prefix on each line
+	// Helper to wrap message text with prefix on each line.
+	// Hard-break continuation lines (e.g. split URLs) carry no prefix.
 	wrapMessage := func(prefix, msg string, width int) string {
 		if msg == "" {
 			return ""
 		}
-
-		var lines []string
-		words := strings.Fields(msg)
-		if len(words) == 0 {
-			return prefix
-		}
-
-		currentLine := prefix + words[0]
-		for _, word := range words[1:] {
-			if len(currentLine)+1+len(word) <= width {
-				currentLine += " " + word
-			} else {
-				lines = append(lines, currentLine)
-				currentLine = prefix + word
-			}
-		}
-		lines = append(lines, currentLine)
-		return strings.Join(lines, "\n")
+		return strings.Join(wrapText(prefix, prefix, strings.TrimSpace(msg), width, ""), "\n")
 	}
 
 	switch event {
@@ -168,22 +225,13 @@ func formatEvent(d map[string]interface{}, width int) string {
 		header.WriteString(") ")
 		header.WriteString(lookupName(source))
 
-		words := strings.Fields(value)
-		var lines []string
-		if len(words) == 0 {
-			lines = append(lines, header.String())
-		} else {
-			current := header.String() + " " + words[0]
-			for _, word := range words[1:] {
-				if len(current)+1+len(word) <= width {
-					current += " " + word
-				} else {
-					lines = append(lines, current)
-					current = "> " + word
-				}
-			}
-			lines = append(lines, current)
+		headerStr := header.String()
+		if value == "" {
+			return emoteBodyStyle.Render(headerStr)
 		}
+		// " " separator between header and first word; "> " on word-boundary wraps;
+		// hard-break continuations (e.g. split URLs) carry no prefix.
+		lines := wrapText(headerStr, "> ", strings.TrimSpace(value), width, " ")
 		return emoteBodyStyle.Render(strings.Join(lines, "\n"))
 
 	case "connect":

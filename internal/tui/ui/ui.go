@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 // OutputItem represents a single item in the output buffer.
@@ -33,6 +34,34 @@ type Model struct {
 	height    int
 	connected bool
 
+	// Input cursor and edit state
+	cursor   int    // byte cursor position in m.input
+	killRing string // last killed text for C-y yank
+	lastKill bool   // whether prev action was a kill (for kill-append)
+
+	// Command history
+	history     []string // sent commands, oldest first
+	historyPos  int      // -1=live, ≥0=browsing (0=oldest)
+	historySave string   // live input saved when entering history browse
+
+	// Incremental search
+	searchMode bool
+	searchBack bool   // true=reverse (C-r), false=forward (C-s)
+	searchBuf  string // pattern typed so far
+	searchSave string // input saved on entering search
+	searchIdx  int    // index of current match in history (-1=none)
+
+	// Meta prefix: Esc followed by a key is treated as M-<key>
+	metaPrefix bool
+
+	// Input area scroll: first visible wrapped line of the input area
+	inputScroll int
+
+	// Paste mode: newlines become spaces, leading spaces after newlines are eaten
+	pasteMode    bool
+	pasteEatFlag bool // eating whitespace after a newline
+	pasteEatBuf  bool // have seen one non-post-newline space (next space triggers eating)
+
 	// Spell checking
 	spellChecker *SpellChecker
 
@@ -46,7 +75,7 @@ type Model struct {
 	lastSeenID        int64 // highest WSServerMsg.ID whose output has been visible; never decreases
 
 	// Position restore
-	storedLastSeenID    int64 // lastSeenID from proxy at startup, used to restore pagerTop
+	storedLastSeenID     int64 // lastSeenID from proxy at startup, used to restore pagerTop
 	needsPositionRestore bool  // true until we have window size to set pagerTop
 
 	// Logging
@@ -117,6 +146,8 @@ func New(c *client.Client, state *api.StateResponse, logChan <-chan logMsg, init
 		spellChecker:     NewSpellChecker(),
 		logChan:          logChan,
 		storedLastSeenID: storedLastSeenID,
+		historyPos:       -1,
+		searchIdx:        -1,
 	}
 
 	for i := range initialEvents {
@@ -184,46 +215,87 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, reportSeenNow(m.client, m.lastSeenID)
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "ctrl+d":
-			return m, tea.Quit
+		if m.searchMode {
+			m.metaPrefix = false
+			m = m.handleSearchKey(msg)
+			m = m.adjustInputScroll()
+			return m, nil
+		}
 
-		case "ctrl+t":
-			// Toggle debug mode
-			m.debugMode = !m.debugMode
-
-		case "pgup":
-			if m.debugMode {
-				m.debugScrollOffset += m.height - 3
-			} else {
-				m.pagerTop -= m.height - 3
-				if m.pagerTop < 0 {
-					m.pagerTop = 0
-				}
+		// ESC as meta prefix: ESC <key> is equivalent to M-<key>
+		key := msg.String()
+		if m.metaPrefix {
+			m.metaPrefix = false
+			if key != "esc" { // ESC ESC cancels without action
+				key = "alt+" + key
 			}
+		} else if key == "esc" {
+			m.metaPrefix = true
+			return m, nil
+		}
 
-		case "pgdn":
-			if m.debugMode {
-				m.debugScrollOffset -= m.height - 3
-				if m.debugScrollOffset < 0 {
-					m.debugScrollOffset = 0
+		// Paste mode intercepts Enter and Space before normal processing.
+		if m.pasteMode {
+			switch key {
+			case "enter", "ctrl+m", "ctrl+j":
+				if m.pasteEatFlag {
+					// Consecutive newline while eating → swallow it entirely
+					return m, nil
 				}
-			} else {
-				m.pagerTop += m.height - 3
-				m.advanceLastSeenID()
+				// First newline → insert a space and start eating whitespace
+				m.pasteEatFlag = true
+				m.pasteEatBuf = false
+				m = m.insertString(" ")
+				m = m.adjustInputScroll()
+				return m, nil
+			case " ":
+				if m.pasteEatFlag {
+					// Eating post-newline whitespace → swallow
+					return m, nil
+				}
+				if m.pasteEatBuf {
+					// Second consecutive space → switch to eating mode and swallow
+					m.pasteEatFlag = true
+					return m, nil
+				}
+				// First space in a run: buffer it and insert normally
+				m.pasteEatBuf = true
+				m = m.insertString(" ")
+				m = m.adjustInputScroll()
+				return m, nil
+			default:
+				// Any other key resets eat state and falls through to normal handling
+				m.pasteEatFlag = false
+				m.pasteEatBuf = false
 			}
 		}
 
-		switch msg.Type {
-		case tea.KeyEnter:
+		wasKill := m.lastKill
+		m.lastKill = false
+
+		switch key {
+		case "ctrl+c":
+			return m, tea.Quit
+
+		case "ctrl+d":
 			if m.input == "" {
-				// Advance pager page when there is more content below
+				return m, tea.Quit
+			}
+			m = m.deleteForward()
+
+		case "enter", "ctrl+m", "ctrl+j":
+			if m.input == "" {
 				m.pagerTop += m.height - 3
 				m.advanceLastSeenID()
 				break
 			}
 			line := m.input
+			m = m.addHistoryEntry(line)
+			m.historyPos = -1
+			m.historySave = ""
 			m.input = ""
+			m.cursor = 0
+			m.inputScroll = 0
 			m.output = append(m.output, OutputItem{Type: "input", Data: line})
 
 			// Log outgoing command to debug (formatted)
@@ -233,25 +305,159 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.debugMsgs = append(m.debugMsgs, "SEND:")
 				m.debugMsgs = append(m.debugMsgs, lines...)
 			}
-			m.debugScrollOffset = 0 // also scroll debug to bottom
+			m.debugScrollOffset = 0
 
 			if err := m.client.Send(line); err != nil {
 				m.output = append(m.output, OutputItem{Type: "error", Data: err.Error()})
 			}
 
-		case tea.KeyBackspace:
-			if len(m.input) > 0 {
-				m.input = m.input[:len(m.input)-1]
+		case "ctrl+a":
+			m.cursor = 0
+		case "ctrl+e":
+			m.cursor = len(m.input)
+		case "ctrl+b", "left":
+			m = m.moveCursorBack()
+		case "ctrl+f", "right":
+			m = m.moveCursorForward()
+		case "alt+b":
+			m.cursor = wordStartBefore(m.input, m.cursor)
+		case "alt+f":
+			m.cursor = wordEndAfter(m.input, m.cursor)
+
+		case "backspace", "ctrl+h":
+			m = m.deleteBack()
+		case "delete":
+			// delete key = backward-delete per tigerlily bindings
+			m = m.deleteBack()
+
+		case "ctrl+k":
+			killed := m.input[m.cursor:]
+			if wasKill {
+				m.killRing += killed
+			} else {
+				m.killRing = killed
+			}
+			m.input = m.input[:m.cursor]
+			m.lastKill = true
+
+		case "ctrl+u":
+			killed := m.input[:m.cursor]
+			if wasKill {
+				m.killRing = killed + m.killRing
+			} else {
+				m.killRing = killed
+			}
+			m.input = m.input[m.cursor:]
+			m.cursor = 0
+			m.lastKill = true
+
+		case "ctrl+w", "alt+backspace":
+			newPos := wordStartBefore(m.input, m.cursor)
+			killed := m.input[newPos:m.cursor]
+			if wasKill {
+				m.killRing = killed + m.killRing
+			} else {
+				m.killRing = killed
+			}
+			m.input = m.input[:newPos] + m.input[m.cursor:]
+			m.cursor = newPos
+			m.lastKill = true
+
+		case "alt+d":
+			newPos := wordEndAfter(m.input, m.cursor)
+			killed := m.input[m.cursor:newPos]
+			if wasKill {
+				m.killRing += killed
+			} else {
+				m.killRing = killed
+			}
+			m.input = m.input[:m.cursor] + m.input[newPos:]
+			m.lastKill = true
+
+		case "ctrl+y":
+			m = m.insertString(m.killRing)
+
+		case "ctrl+t":
+			m = m.transposeChars()
+		case "alt+t":
+			m = m.transposeWords()
+		case "alt+c":
+			m = m.capitalizeWord()
+		case "alt+u":
+			m = m.upcaseWord()
+		case "alt+l":
+			m = m.downcaseWord()
+
+		case "ctrl+p", "up":
+			m = m.historyPrev()
+		case "ctrl+n", "down":
+			m = m.historyNext()
+
+		case "alt+p":
+			m.pasteMode = !m.pasteMode
+			m.pasteEatFlag = false
+			m.pasteEatBuf = false
+
+		case "ctrl+r":
+			m = m.enterSearch(true)
+		case "ctrl+s":
+			m = m.enterSearch(false)
+
+		case "ctrl+l":
+			// redraw — Bubble Tea redraws automatically
+
+		case "pgup", "alt+v":
+			if m.debugMode {
+				m.debugScrollOffset += m.height - 3
+			} else {
+				m.pagerTop -= m.height - 3
+				if m.pagerTop < 0 {
+					m.pagerTop = 0
+				}
 			}
 
-		case tea.KeySpace:
-			m.input += " "
+		case "pgdn", "ctrl+v":
+			if m.debugMode {
+				m.debugScrollOffset -= m.height - 3
+				if m.debugScrollOffset < 0 {
+					m.debugScrollOffset = 0
+				}
+			} else {
+				m.pagerTop += m.height - 3
+				m.advanceLastSeenID()
+			}
+
+		case "alt+,":
+			if !m.debugMode {
+				m.pagerTop--
+				if m.pagerTop < 0 {
+					m.pagerTop = 0
+				}
+			}
+		case "alt+.":
+			if !m.debugMode {
+				m.pagerTop++
+				m.advanceLastSeenID()
+			}
+		case "alt+<":
+			if !m.debugMode {
+				m.pagerTop = 0
+			}
+		case "alt+>":
+			if !m.debugMode {
+				m.pagerTop = 1 << 30 // clamped to maxTop in view
+				m.advanceLastSeenID()
+			}
 
 		default:
 			if msg.Type == tea.KeyRunes {
-				m.input += string(msg.Runes)
+				m = m.insertString(string(msg.Runes))
+			} else if msg.String() == " " {
+				m = m.insertString(" ")
 			}
 		}
+
+		m = m.adjustInputScroll()
 
 	case serverEventMsg:
 		if msg.msg == nil {
@@ -478,7 +684,16 @@ func (m Model) renderOutputItem(item OutputItem) []string {
 
 	case "input":
 		if line, ok := item.Data.(string); ok {
-			return []string{inputPrefixStyle.Render("> ") + line}
+			w := width
+			if w < 1 {
+				w = 1
+			}
+			wrapped := wordwrap.String(line, w)
+			lines := strings.Split(wrapped, "\n")
+			for i := range lines {
+				lines[i] = inputStyle.Render(lines[i])
+			}
+			return lines
 		}
 
 	case "commandresult":
@@ -609,14 +824,31 @@ func (m Model) formatMoreBar(moreCount int) string {
 
 // viewNormal renders the standard UI (output + status + input).
 func (m Model) viewNormal() string {
+	// Dynamic input area: grows up to half the window height.
+	totalInputLines := m.inputTotalLines()
+	maxInputLines := m.height / 2
+	if maxInputLines < 1 {
+		maxInputLines = 1
+	}
+	visibleInputLines := totalInputLines
+	if visibleInputLines > maxInputLines {
+		visibleInputLines = maxInputLines
+	}
+	if visibleInputLines < 1 {
+		visibleInputLines = 1
+	}
+
 	// Render all output items into lines
 	var allLines []string
 	for _, item := range m.output {
 		allLines = append(allLines, m.renderOutputItem(item)...)
 	}
 
-	// Output area height: leave room for status and input bars.
-	outputLines := m.height - 2
+	// Output area height: status bar (1) + dynamic input area
+	outputLines := m.height - 1 - visibleInputLines
+	if outputLines < 0 {
+		outputLines = 0
+	}
 
 	// Clamp pagerTop to valid range
 	maxTop := len(allLines) - outputLines
@@ -654,8 +886,8 @@ func (m Model) viewNormal() string {
 	}
 	sb.WriteByte('\n')
 
-	// Input line
-	sb.WriteString(m.renderInputLine())
+	// Multi-line input area
+	sb.WriteString(strings.Join(m.renderInputArea(visibleInputLines), "\n"))
 
 	return sb.String()
 }
@@ -665,7 +897,24 @@ func (m Model) viewWithDebug() string {
 	leftWidth := m.width / 2
 	rightWidth := m.width - leftWidth - 1 // -1 for separator
 
-	outputLines := m.height - 2
+	// Dynamic input area height (same logic as viewNormal)
+	totalInputLines := m.inputTotalLines()
+	maxInputLines := m.height / 2
+	if maxInputLines < 1 {
+		maxInputLines = 1
+	}
+	visibleInputLines := totalInputLines
+	if visibleInputLines > maxInputLines {
+		visibleInputLines = maxInputLines
+	}
+	if visibleInputLines < 1 {
+		visibleInputLines = 1
+	}
+
+	outputLines := m.height - 1 - visibleInputLines
+	if outputLines < 0 {
+		outputLines = 0
+	}
 
 	// Render all output items into lines
 	var allOutputLines []string
@@ -752,8 +1001,8 @@ func (m Model) viewWithDebug() string {
 	sb.WriteString(status)
 	sb.WriteByte('\n')
 
-	// Input line
-	sb.WriteString(m.renderInputLine())
+	// Multi-line input area (full width, below both panels)
+	sb.WriteString(strings.Join(m.renderInputArea(visibleInputLines), "\n"))
 
 	return sb.String()
 }

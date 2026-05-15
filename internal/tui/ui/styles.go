@@ -69,10 +69,9 @@ var (
 			Foreground(lipgloss.Color("11")). // bright yellow
 			Bold(true)
 
-	// Input styling
-	inputPrefixStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("2")). // green
-				Bold(true)
+	// Input styling in text window
+	inputStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("7")) // white, normal
 
 	// Status bar styling (tigerlily: yellow on blue, bold)
 	statusBarStyle = lipgloss.NewStyle().
