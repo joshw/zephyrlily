@@ -186,6 +186,18 @@ func ParseNotify(m *Message) (*NotifyEvent, error) {
 	if _, ok := p["EMPTY"]; ok {
 		ev.Empty = true
 	}
+	if p["NOTIFY"] == "1" {
+		ev.Notify = true
+	}
+	// The server doesn't reliably set NOTIFY for message events; force it on.
+	// Mirrors the "SLCP bug?!" workaround in tigerlily's slcp_parse.pl.
+	switch ev.Event {
+	case "emote", "public", "private":
+		ev.Notify = true
+	}
+	if p["STAMP"] == "1" {
+		ev.Stamp = true
+	}
 	if ts, ok := p["TIME"]; ok {
 		ev.Time, _ = strconv.ParseInt(ts, 10, 64)
 	}

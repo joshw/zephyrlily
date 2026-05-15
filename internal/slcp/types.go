@@ -69,4 +69,6 @@ type NotifyEvent struct {
 	Targets []string // target handles (for permission ops)
 	SubEvt  string
 	Empty   bool // VALUE field was explicitly empty
+	Notify  bool // NOTIFY=1 was present — event should be displayed to the user
+	Stamp   bool // STAMP=1 was present — event timestamp should be displayed
 }

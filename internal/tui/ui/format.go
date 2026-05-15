@@ -16,11 +16,14 @@ func formatEvent(d map[string]interface{}, width int) string {
 	source, _ := d["source"].(string)
 	value, _ := d["value"].(string)
 
-	// Extract timestamp
+	// Extract timestamp — only shown when STAMP=1 was present in the %NOTIFY message
 	var timestamp string
-	if timeVal, ok := d["time"].(float64); ok && timeVal > 0 {
-		t := time.Unix(int64(timeVal), 0)
-		timestamp = fmt.Sprintf("(%02d:%02d) ", t.Hour(), t.Minute())
+	stamp, _ := d["stamp"].(bool)
+	if stamp {
+		if timeVal, ok := d["time"].(float64); ok && timeVal > 0 {
+			t := time.Unix(int64(timeVal), 0)
+			timestamp = fmt.Sprintf("(%02d:%02d) ", t.Hour(), t.Minute())
+		}
 	}
 
 	// Extract entity data
@@ -34,13 +37,13 @@ func formatEvent(d map[string]interface{}, width int) string {
 	}
 
 	// Helper to format a user/entity reference with name and optional blurb
-	formatUser := func(handle string, senderStyle lipgloss.Style) string {
+	formatUser := func(handle string, senderStyle, blurbSty lipgloss.Style) string {
 		if entity, ok := entities[handle]; ok {
 			name, _ := entity["name"].(string)
 			blurb, _ := entity["blurb"].(string)
 			if name != "" {
 				if blurb != "" {
-					return senderStyle.Render(name) + " " + blurbStyle.Render(fmt.Sprintf("[%s]", blurb))
+					return senderStyle.Render(name) + " " + blurbSty.Render(fmt.Sprintf("[%s]", blurb))
 				}
 				return senderStyle.Render(name)
 			}
@@ -48,14 +51,44 @@ func formatEvent(d map[string]interface{}, width int) string {
 		return senderStyle.Render(handle)
 	}
 
-	// Helper to format just the user name (without blurb)
-	formatUserName := func(handle string, senderStyle lipgloss.Style) string {
+	// Plain name lookup with no styling — use inside an outer Render() call
+	// to avoid inner resets breaking a uniform color across the whole line.
+	lookupName := func(handle string) string {
 		if entity, ok := entities[handle]; ok {
 			if name, ok := entity["name"].(string); ok && name != "" {
-				return senderStyle.Render(name)
+				return name
 			}
 		}
-		return senderStyle.Render(handle)
+		return handle
+	}
+
+	lookupRecips := func(recips []interface{}) string {
+		names := make([]string, 0, len(recips))
+		for _, r := range recips {
+			if h, ok := r.(string); ok {
+				names = append(names, lookupName(h))
+			}
+		}
+		return strings.Join(names, ", ")
+	}
+
+	// Helper to format a list of recipient handles as a comma-separated string of names
+	formatRecips := func(recips []interface{}, sty lipgloss.Style) string {
+		names := make([]string, 0, len(recips))
+		for _, r := range recips {
+			handle, ok := r.(string)
+			if !ok {
+				continue
+			}
+			if entity, ok := entities[handle]; ok {
+				if name, ok := entity["name"].(string); ok && name != "" {
+					names = append(names, sty.Render(name))
+					continue
+				}
+			}
+			names = append(names, sty.Render(handle))
+		}
+		return strings.Join(names, ", ")
 	}
 
 	// Helper to wrap message text with prefix on each line
@@ -88,133 +121,149 @@ func formatEvent(d map[string]interface{}, width int) string {
 		// Format: " -> (timestamp) From user [blurb], to target1, target2:\n - message"
 		var header strings.Builder
 		header.WriteString(publicHeaderStyle.Render(" -> "))
-		header.WriteString(timestampStyle.Render(timestamp))
-		header.WriteString("From ")
-		header.WriteString(formatUser(source, publicSenderStyle))
+		header.WriteString(publicTimestampStyle.Render(timestamp))
+		header.WriteString(publicHeaderStyle.Render("From "))
+		header.WriteString(formatUser(source, publicSenderStyle, publicBlurbStyle))
 
 		// Add recipients
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			header.WriteString(", to ")
-			recipNames := make([]string, 0, len(recips))
-			for _, r := range recips {
-				if recipStr, ok := r.(string); ok {
-					recipNames = append(recipNames, recipStr)
-				}
-			}
-			header.WriteString(strings.Join(recipNames, ", "))
+			header.WriteString(publicHeaderStyle.Render(", to "))
+			header.WriteString(formatRecips(recips, publicSenderStyle))
 		}
-		header.WriteString(":")
+		header.WriteString(publicHeaderStyle.Render(":"))
 
 		// Wrap message body with " - " prefix
 		body := wrapMessage(" - ", value, width)
-		return header.String() + "\n" + publicBodyStyle.Render(body)
+		return "\n" + header.String() + "\n" + publicBodyStyle.Render(body)
 
 	case "private":
 		// Format: " >> (timestamp) Private message from user [blurb]:\n - message"
 		var header strings.Builder
 		header.WriteString(privateHeaderStyle.Render(" >> "))
-		header.WriteString(timestampStyle.Render(timestamp))
-		header.WriteString("Private message from ")
-		header.WriteString(formatUser(source, privateSenderStyle))
-		header.WriteString(":")
+		header.WriteString(privateTimestampStyle.Render(timestamp))
+		header.WriteString(privateHeaderStyle.Render("Private message from "))
+		header.WriteString(formatUser(source, privateSenderStyle, privateBlurbStyle))
+		header.WriteString(privateHeaderStyle.Render(":"))
 
 		// Wrap message body with " - " prefix
 		body := wrapMessage(" - ", value, width)
-		return header.String() + "\n" + privateBodyStyle.Render(body)
+		return "\n" + header.String() + "\n" + privateBodyStyle.Render(body)
 
 	case "emote":
-		return emoteBodyStyle.Render(fmt.Sprintf("* %s %s", formatUserName(source, emoteSenderStyle), value))
+		// Format: "> (HH:MM, to dest) Source message"  (timestamp only if STAMP)
+		// Long messages wrap; continuation lines keep the "> " prefix.
+		// Entire output is uniform emoteBodyStyle; no blurb shown.
+		var header strings.Builder
+		header.WriteString("> (")
+		if stamp {
+			if timeVal, ok := d["time"].(float64); ok && timeVal > 0 {
+				t := time.Unix(int64(timeVal), 0)
+				fmt.Fprintf(&header, "%02d:%02d, ", t.Hour(), t.Minute())
+			}
+		}
+		header.WriteString("to ")
+		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
+			header.WriteString(lookupRecips(recips))
+		}
+		header.WriteString(") ")
+		header.WriteString(lookupName(source))
+
+		words := strings.Fields(value)
+		var lines []string
+		if len(words) == 0 {
+			lines = append(lines, header.String())
+		} else {
+			current := header.String() + " " + words[0]
+			for _, word := range words[1:] {
+				if len(current)+1+len(word) <= width {
+					current += " " + word
+				} else {
+					lines = append(lines, current)
+					current = "> " + word
+				}
+			}
+			lines = append(lines, current)
+		}
+		return emoteBodyStyle.Render(strings.Join(lines, "\n"))
 
 	case "connect":
-		return fmt.Sprintf("*** %s has entered lily ***", formatUser(source, publicSenderStyle))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has entered lily ***", lookupName(source)))
 
 	case "disconnect":
 		if value != "" {
-			return fmt.Sprintf("*** %s has left lily (%s) ***", formatUser(source, publicSenderStyle), value)
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s has left lily (%s) ***", lookupName(source), value))
 		}
-		return fmt.Sprintf("*** %s has left lily ***", formatUser(source, publicSenderStyle))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has left lily ***", lookupName(source)))
 
 	case "attach":
-		return fmt.Sprintf("*** %s has reattached ***", formatUser(source, publicSenderStyle))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has reattached ***", lookupName(source)))
 
 	case "detach":
 		if value != "" {
-			return fmt.Sprintf("*** %s has been detached %s ***", formatUser(source, publicSenderStyle), value)
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s has been detached %s ***", lookupName(source), value))
 		}
-		return fmt.Sprintf("*** %s has detached ***", formatUser(source, publicSenderStyle))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has detached ***", lookupName(source)))
 
 	case "here":
-		return fmt.Sprintf("*** %s is now \"here\" ***", formatUser(source, publicSenderStyle))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s is now \"here\" ***", lookupName(source)))
 
 	case "away":
-		return fmt.Sprintf("*** %s is now \"away\" ***", formatUser(source, publicSenderStyle))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s is now \"away\" ***", lookupName(source)))
 
 	case "rename":
-		return fmt.Sprintf("*** %s is now named %s ***", formatUserName(source, publicSenderStyle), value)
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s is now named %s ***", lookupName(source), value))
 
 	case "blurb":
 		if value != "" {
-			return fmt.Sprintf("*** %s has changed their blurb to [%s] ***", formatUserName(source, publicSenderStyle), value)
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s has changed their blurb to [%s] ***", lookupName(source), value))
 		}
-		return fmt.Sprintf("*** %s has turned their blurb off ***", formatUserName(source, publicSenderStyle))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has turned their blurb off ***", lookupName(source)))
 
 	case "unidle":
-		return fmt.Sprintf("*** %s is now unidle ***", formatUser(source, publicSenderStyle))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s is now unidle ***", lookupName(source)))
 
 	case "create":
 		// For discussion creation, RECIPS holds the discussion handle
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			if disc, ok := recips[0].(string); ok {
-				return fmt.Sprintf("*** %s has created discussion %s ***", formatUserName(source, publicSenderStyle), disc)
-			}
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s has created discussion %s ***", lookupName(source), lookupRecips(recips)))
 		}
-		return fmt.Sprintf("*** %s has created a discussion ***", formatUserName(source, publicSenderStyle))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has created a discussion ***", lookupName(source)))
 
 	case "destroy":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			if disc, ok := recips[0].(string); ok {
-				return fmt.Sprintf("*** %s has destroyed discussion %s ***", formatUserName(source, publicSenderStyle), disc)
-			}
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s has destroyed discussion %s ***", lookupName(source), lookupRecips(recips)))
 		}
-		return fmt.Sprintf("*** %s has destroyed a discussion ***", formatUserName(source, publicSenderStyle))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has destroyed a discussion ***", lookupName(source)))
 
 	case "join":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			if disc, ok := recips[0].(string); ok {
-				return fmt.Sprintf("*** %s is now a member of %s ***", formatUserName(source, publicSenderStyle), disc)
-			}
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s is now a member of %s ***", lookupName(source), lookupRecips(recips)))
 		}
-		return fmt.Sprintf("*** %s has joined a discussion ***", formatUserName(source, publicSenderStyle))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has joined a discussion ***", lookupName(source)))
 
 	case "quit":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			if disc, ok := recips[0].(string); ok {
-				return fmt.Sprintf("*** %s is no longer a member of %s ***", formatUserName(source, publicSenderStyle), disc)
-			}
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s is no longer a member of %s ***", lookupName(source), lookupRecips(recips)))
 		}
-		return fmt.Sprintf("*** %s has quit a discussion ***", formatUserName(source, publicSenderStyle))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has quit a discussion ***", lookupName(source)))
 
 	case "retitle":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			if disc, ok := recips[0].(string); ok {
-				return fmt.Sprintf("*** %s has changed the title of %s to \"%s\" ***", formatUserName(source, publicSenderStyle), disc, value)
-			}
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s has changed the title of %s to \"%s\" ***", lookupName(source), lookupRecips(recips), value))
 		}
-		return fmt.Sprintf("*** %s has changed a discussion title to \"%s\" ***", formatUserName(source, publicSenderStyle), value)
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has changed a discussion title to \"%s\" ***", lookupName(source), value))
 
 	case "drename":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			if disc, ok := recips[0].(string); ok {
-				return fmt.Sprintf("*** Discussion %s is now named %s ***", disc, value)
-			}
+			return slcpBodyStyle.Render(fmt.Sprintf("*** Discussion %s is now named %s ***", lookupRecips(recips), value))
 		}
-		return fmt.Sprintf("*** A discussion is now named %s ***", value)
+		return slcpBodyStyle.Render(fmt.Sprintf("*** A discussion is now named %s ***", value))
 
 	case "sysmsg":
-		return fmt.Sprintf("*** %s ***", value)
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s ***", value))
 
 	case "pa":
-		return fmt.Sprintf("** Public address message from %s: %s **", formatUser(source, publicSenderStyle), value)
+		return slcpBodyStyle.Render(fmt.Sprintf("** Public address message from %s: %s **", formatUser(source, publicSenderStyle, publicBlurbStyle), value))
 
 	default:
 		// Unknown event type - show all available data

@@ -14,10 +14,23 @@ type AuthResponse struct {
 
 // StateResponse is returned by GET /state.
 type StateResponse struct {
-	Whoami   string       `json:"whoami"`
-	Version  string       `json:"version"`
-	Server   string       `json:"server"`
-	Entities []EntityJSON `json:"entities"`
+	Whoami      string       `json:"whoami"`
+	Version     string       `json:"version"`
+	Server      string       `json:"server"`
+	Entities    []EntityJSON `json:"entities"`
+	LastSeenID  int64        `json:"last_seen_id"`
+	EventBufSize int         `json:"event_buf_size"`
+}
+
+// EventsResponse is returned by GET /events.
+type EventsResponse struct {
+	Events []WSServerMsg `json:"events"`
+	More   bool          `json:"more"`
+}
+
+// SeenRequest is the body for POST /seen.
+type SeenRequest struct {
+	LastSeenID int64 `json:"last_seen_id"`
 }
 
 // EntityJSON is the wire representation of a user, discussion, or group.
@@ -49,14 +62,16 @@ type WSServerMsg struct {
 
 // EventData carries a structured event notification.
 type EventData struct {
-	Event    string                  `json:"event"`
-	Source   string                  `json:"source"`
-	Time     int64                   `json:"time"`
-	Value    string                  `json:"value,omitempty"`
-	Recips   []string                `json:"recips,omitempty"`
-	Targets  []string                `json:"targets,omitempty"`
-	SubEvt   string                  `json:"sub_evt,omitempty"`
-	Entities map[string]EntityJSON   `json:"entities,omitempty"` // entity state by handle
+	Event    string                `json:"event"`
+	Source   string                `json:"source"`
+	Time     int64                 `json:"time"`
+	Value    string                `json:"value,omitempty"`
+	Recips   []string              `json:"recips,omitempty"`
+	Targets  []string              `json:"targets,omitempty"`
+	SubEvt   string                `json:"sub_evt,omitempty"`
+	Notify   bool                  `json:"notify"`
+	Stamp    bool                  `json:"stamp,omitempty"`
+	Entities map[string]EntityJSON `json:"entities,omitempty"`
 }
 
 // TextData carries a single line of unformatted text from the server.

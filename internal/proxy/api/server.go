@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,10 +24,20 @@ type Config struct {
 	LilyAddr   string // e.g. "rpi.lily.org:7777"
 }
 
+const maxEventBuf = 5000
+
+// savedState holds the event buffer and last-seen ID across session lifecycle events
+// (e.g. Lily TCP disconnect followed by TUI reconnect).
+type savedState struct {
+	eventBuf   []*WSServerMsg
+	lastSeenID int64
+}
+
 // Server is the proxy HTTP/WebSocket server.
 type Server struct {
-	cfg      Config
-	sessions sync.Map // token -> *Session
+	cfg         Config
+	sessions    sync.Map // token -> *Session
+	savedStates sync.Map // token -> savedState (persists across session deletions)
 }
 
 // Session represents an authenticated proxy session for one Lily user.
@@ -43,6 +54,11 @@ type Session struct {
 
 	// Message ID counter
 	nextMsgID atomic.Int64
+
+	// Event history buffer
+	eventBufMu sync.RWMutex
+	eventBuf   []*WSServerMsg // capped circular buffer of recent events
+	lastSeenID atomic.Int64   // last seen ID reported by a TUI client
 }
 
 // wsClient is a single WebSocket connection to the proxy.
@@ -68,6 +84,8 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/auth", s.handleAuth)
 	mux.HandleFunc("/state", s.handleState)
 	mux.HandleFunc("/ws", s.handleWS)
+	mux.HandleFunc("/events", s.handleEvents)
+	mux.HandleFunc("/seen", s.handleSeen)
 
 	// Wrap with logging middleware
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +144,14 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		subscribers: make(map[*wsClient]struct{}),
 		cmdBuffer:   make(map[int][]string),
 	}
+
+	// Restore event buffer and last-seen position from the previous session if present.
+	if v, ok := s.savedStates.LoadAndDelete(token); ok {
+		saved := v.(savedState)
+		sess.eventBuf = saved.eventBuf
+		sess.lastSeenID.Store(saved.lastSeenID)
+	}
+
 	s.sessions.Store(token, sess)
 
 	go s.fanOut(sess)
@@ -143,11 +169,17 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 
 	st := sess.conn.State()
 	entities := st.AllEntities()
+	sess.eventBufMu.RLock()
+	eventBufSize := len(sess.eventBuf)
+	sess.eventBufMu.RUnlock()
+
 	resp := StateResponse{
-		Whoami:   st.Whoami,
-		Version:  st.Version,
-		Server:   st.Name,
-		Entities: make([]EntityJSON, 0, len(entities)),
+		Whoami:       st.Whoami,
+		Version:      st.Version,
+		Server:       st.Name,
+		Entities:     make([]EntityJSON, 0, len(entities)),
+		LastSeenID:   sess.lastSeenID.Load(),
+		EventBufSize: eventBufSize,
 	}
 	for _, e := range entities {
 		resp.Entities = append(resp.Entities, entityToJSON(e))
@@ -223,6 +255,15 @@ func (s *Server) fanOut(sess *Session) {
 				delete(sess.cmdBuffer, id)
 				sess.cmdMu.Unlock()
 
+				if wsMsg.Type == "event" || wsMsg.Type == "text" || wsMsg.Type == "commandresult" {
+					sess.eventBufMu.Lock()
+					sess.eventBuf = append(sess.eventBuf, wsMsg)
+					if len(sess.eventBuf) > maxEventBuf {
+						sess.eventBuf = sess.eventBuf[len(sess.eventBuf)-maxEventBuf:]
+					}
+					sess.eventBufMu.Unlock()
+				}
+
 				// Broadcast to subscribers
 				sess.subsMu.Lock()
 				for client := range sess.subscribers {
@@ -266,6 +307,16 @@ func (s *Server) fanOut(sess *Session) {
 			continue
 		}
 		sess.assignID(wsMsg)
+
+		if wsMsg.Type == "event" || wsMsg.Type == "text" || wsMsg.Type == "commandresult" {
+			sess.eventBufMu.Lock()
+			sess.eventBuf = append(sess.eventBuf, wsMsg)
+			if len(sess.eventBuf) > maxEventBuf {
+				sess.eventBuf = sess.eventBuf[len(sess.eventBuf)-maxEventBuf:]
+			}
+			sess.eventBufMu.Unlock()
+		}
+
 		sess.subsMu.Lock()
 		for client := range sess.subscribers {
 			select {
@@ -288,7 +339,103 @@ func (s *Server) fanOut(sess *Session) {
 		}
 	}
 	sess.subsMu.Unlock()
+	// Persist event buffer and last-seen ID so the next session for this user
+	// can restore history even after a Lily TCP disconnect.
+	sess.eventBufMu.RLock()
+	bufCopy := make([]*WSServerMsg, len(sess.eventBuf))
+	copy(bufCopy, sess.eventBuf)
+	sess.eventBufMu.RUnlock()
+	s.savedStates.Store(sess.token, savedState{
+		eventBuf:   bufCopy,
+		lastSeenID: sess.lastSeenID.Load(),
+	})
 	s.sessions.Delete(sess.token)
+}
+
+// handleEvents returns buffered event and text messages after a given ID.
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.sessionFromRequest(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	afterID := int64(0)
+	if v := r.URL.Query().Get("after"); v != "" {
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+			afterID = parsed
+		}
+	}
+
+	limit := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			limit = parsed
+		}
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	sess.eventBufMu.RLock()
+	var collected []WSServerMsg
+	for _, msg := range sess.eventBuf {
+		if msg.ID > afterID {
+			collected = append(collected, *msg)
+		}
+	}
+	sess.eventBufMu.RUnlock()
+
+	more := false
+	if len(collected) > limit {
+		more = true
+		collected = collected[:limit]
+	}
+
+	writeJSON(w, EventsResponse{Events: collected, More: more})
+}
+
+// handleSeen records the last seen message ID for the session.
+func (s *Server) handleSeen(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sess, ok := s.sessionFromRequest(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req SeenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// CAS loop: only update if new value is higher
+	for {
+		old := sess.lastSeenID.Load()
+		if req.LastSeenID <= old {
+			break
+		}
+		if sess.lastSeenID.CompareAndSwap(old, req.LastSeenID) {
+			// Mirror into savedStates so the position survives a session deletion.
+			sess.eventBufMu.RLock()
+			bufCopy := make([]*WSServerMsg, len(sess.eventBuf))
+			copy(bufCopy, sess.eventBuf)
+			sess.eventBufMu.RUnlock()
+			s.savedStates.Store(sess.token, savedState{
+				eventBuf:   bufCopy,
+				lastSeenID: req.LastSeenID,
+			})
+			break
+		}
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // readLoop receives commands from the WebSocket client and forwards them to Lily.
@@ -403,6 +550,8 @@ func msgToWS(msg *slcp.Message, sess *Session) *WSServerMsg {
 				Recips:   ev.Recips,
 				Targets:  ev.Targets,
 				SubEvt:   ev.SubEvt,
+				Notify:   ev.Notify,
+				Stamp:    ev.Stamp,
 				Entities: entities,
 			},
 		}

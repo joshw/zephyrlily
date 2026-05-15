@@ -7,32 +7,12 @@ import "github.com/charmbracelet/lipgloss"
 // Using ANSI color codes 0-15 for maximum compatibility.
 //
 // ANSI colors: 0=black, 1=red, 2=green, 3=yellow, 4=blue, 5=magenta, 6=cyan, 7=white
-//              8-15 are bright versions
+//
+//	8-15 are bright versions
 var (
-	// 	  'status_window'   => [qw(yellow  blue    bold  )],
-	//    'input_window'    => [qw(white   black   normal)],
-	//    'input_error'     => [qw(red     black   normal)],
-	//    'text_window'     => [qw(white   black   normal)],
-	//    'public_header'   => [qw(cyan    black   normal)],
-	//    'public_sender'   => [qw(cyan    black   bold  )],
-	//    'public_dest'     => [qw(cyan    black   bold  )],
-	//    'public_body'     => [qw(white   black   normal)],
-	//    'public_server'   => [qw(cyan    black   normal)],
-	//    'private_header'  => [qw(green   black   normal)],
-	//    'private_sender'  => [qw(green   black   bold  )],
-	//    'private_dest'    => [qw(green   black   bold  )],
-	//    'private_body'    => [qw(white   black   normal)],
-	//    'private_server'  => [qw(green   black   normal)],
-	//    'emote_body'      => [qw(cyan    black   normal)],
-	//    'emote_dest'      => [qw(cyan    black   normal)],
-	//    'emote_sender'    => [qw(cyan    black   bold  )],
-	//    'emote_server'    => [qw(cyan    black   normal)],
-	//    'review'          => [qw(magenta black   normal)],
-	//    'user_input'      => [qw(white   black   normal)],
-
-	// Timestamp styles
-	timestampStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("8")) // bright black (gray)
+	// Generic color for slcp-derived messages
+	slcpBodyStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("3")) // yellow, normal
 
 	// Public message styles
 	publicSenderStyle = lipgloss.NewStyle().
@@ -41,6 +21,8 @@ var (
 
 	publicHeaderStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("6")) // cyan, normal
+
+	publicTimestampStyle = publicHeaderStyle
 
 	publicBodyStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("7")) // white, normal
@@ -53,8 +35,10 @@ var (
 	privateHeaderStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("2")) // green, normal
 
+	privateTimestampStyle = privateHeaderStyle
+
 	privateBodyStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("7")) // white, normal
+				Foreground(lipgloss.Color("7")) // white, normal
 
 	// Emote styles
 	emoteSenderStyle = lipgloss.NewStyle().
@@ -64,9 +48,15 @@ var (
 	emoteBodyStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("6")) // cyan, normal
 
-	// Blurb style
+	// Blurb styles — context-matched to their message type
 	blurbStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("8")) // bright black (gray)
+			Foreground(lipgloss.Color("8")) // gray (default / system events)
+
+	publicBlurbStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("6")) // cyan, matching public color
+
+	privateBlurbStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("2")) // green, matching private color
 
 	// Command and system messages
 	commandResultStyle = lipgloss.NewStyle().
@@ -86,7 +76,17 @@ var (
 
 	// Status bar styling (tigerlily: yellow on blue, bold)
 	statusBarStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("4")). // blue background
+			Background(lipgloss.Color("4")).  // blue background
 			Foreground(lipgloss.Color("11")). // bright yellow text
 			Bold(true)
+
+	// Log message severity styles
+	logInfoSeverityStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("3")) // yellow
+
+	logErrorSeverityStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("1")) // red
+
+	logPrefixStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("8")) // gray
 )

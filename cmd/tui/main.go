@@ -4,9 +4,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 	"github.com/joshw/zephyrlily/internal/tui/ui"
 )
@@ -33,12 +35,31 @@ func main() {
 		log.Fatalf("state: %v", err)
 	}
 
+	// Set up TUI logger now so history fetch errors appear in the output window.
+	logChan, logger := ui.NewLogger()
+	slog.SetDefault(logger)
+
+	var initialEvents []api.WSServerMsg
+	afterID := int64(0)
+	for {
+		events, more, err := c.FetchEvents(afterID, 200)
+		if err != nil {
+			slog.Error(fmt.Sprintf("history fetch: %v", err))
+			break
+		}
+		initialEvents = append(initialEvents, events...)
+		if !more || len(events) == 0 {
+			break
+		}
+		afterID = events[len(events)-1].ID
+	}
+
 	if err := c.Connect(); err != nil {
 		log.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
 
-	m := ui.New(c, state)
+	m := ui.New(c, state, logChan, initialEvents, state.LastSeenID)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("tui: %v", err)

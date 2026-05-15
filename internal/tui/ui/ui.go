@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -15,8 +17,9 @@ import (
 // OutputItem represents a single item in the output buffer.
 // It stores raw data so it can be reformatted when the window size changes.
 type OutputItem struct {
-	Type string      // "text", "event", "command", "error", "input"
-	Data interface{} // raw data (string, map[string]interface{}, []string)
+	Type string      // "text", "event", "command", "error", "input", "log"
+	Data interface{} // raw data (string, map[string]interface{}, []string, logMsg)
+	ID   int64       // WSServerMsg.ID of the message that produced this item (0 for local items)
 }
 
 // Model is the root Bubble Tea model for the TUI.
@@ -30,31 +33,111 @@ type Model struct {
 	height    int
 	connected bool
 
+	// Spell checking
+	spellChecker *SpellChecker
+
 	// Debug view
 	debugMode bool
 	debugMsgs []string // raw JSON messages
 
 	// Scroll state
-	scrollOffset      int // lines scrolled back in output
-	debugScrollOffset int // lines scrolled back in debug
+	pagerTop          int   // index of first visible output line (pager model)
+	debugScrollOffset int   // lines scrolled back in debug (from bottom)
+	lastSeenID        int64 // highest WSServerMsg.ID whose output has been visible; never decreases
+
+	// Position restore
+	storedLastSeenID    int64 // lastSeenID from proxy at startup, used to restore pagerTop
+	needsPositionRestore bool  // true until we have window size to set pagerTop
+
+	// Logging
+	logChan <-chan logMsg // receives log messages to display
+}
+
+// logMsg carries a severity level and text for display in the TUI output window.
+// It is used both as a channel entry type and as a Bubble Tea message.
+type logMsg struct {
+	level string // "DEBUG", "INFO", "WARN", "ERROR"
+	text  string
+}
+
+// slogHandler implements slog.Handler and forwards records to the TUI log channel.
+type slogHandler struct {
+	ch chan<- logMsg
+}
+
+func (h *slogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+
+func (h *slogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.ch <- logMsg{level: r.Level.String(), text: r.Message}
+	return nil
+}
+
+func (h *slogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *slogHandler) WithGroup(_ string) slog.Handler      { return h }
+
+// NewLogger creates a log channel and returns a slog.Logger that writes to the TUI.
+func NewLogger() (chan logMsg, *slog.Logger) {
+	ch := make(chan logMsg, 100)
+	return ch, slog.New(&slogHandler{ch: ch})
 }
 
 // New creates a Model wired to the given proxy client.
 // state is the initial state snapshot fetched at startup.
-func New(c *client.Client, state *api.StateResponse) Model {
+// logChan should be created with NewLogger().
+// initialEvents is the historical event buffer fetched from the proxy.
+// storedLastSeenID is the last seen ID from the proxy (used to restore scroll position).
+func New(c *client.Client, state *api.StateResponse, logChan <-chan logMsg, initialEvents []api.WSServerMsg, storedLastSeenID int64) Model {
 	// Create initial output with logo
 	logoLines := formatLogo()
-	output := make([]OutputItem, 0, len(logoLines))
+	output := make([]OutputItem, 0, len(logoLines)+1)
 	for _, line := range logoLines {
 		output = append(output, OutputItem{Type: "text", Data: line})
 	}
+	output = append(output, OutputItem{Type: "text", Data: ""}) // blank line
 
-	return Model{
-		client: c,
-		state:  state,
-		output: output,
-		prompt: "",
+	if state != nil {
+		displayName := state.Whoami
+		for _, e := range state.Entities {
+			if e.Handle == state.Whoami && e.Kind == "user" {
+				displayName = e.Name
+				break
+			}
+		}
+		connLine := "Connected to " + state.Server + " as " +
+			privateSenderStyle.Render(displayName) + " (" + state.Whoami + ")"
+		output = append(output, OutputItem{Type: "text", Data: connLine})
+		output = append(output, OutputItem{Type: "text", Data: ""})
 	}
+
+	m := Model{
+		client:           c,
+		state:            state,
+		output:           output,
+		prompt:           "",
+		spellChecker:     NewSpellChecker(),
+		logChan:          logChan,
+		storedLastSeenID: storedLastSeenID,
+	}
+
+	for i := range initialEvents {
+		m = m.handleProxy(&initialEvents[i])
+	}
+
+	bufSize := 0
+	if state != nil {
+		bufSize = state.EventBufSize
+	}
+	if len(initialEvents) > 0 {
+		slog.Info(fmt.Sprintf("loaded %d events from history (proxy buffer: %d)", len(initialEvents), bufSize))
+	} else {
+		slog.Info(fmt.Sprintf("no history events loaded (proxy buffer: %d, stored lastSeenID: %d)", bufSize, storedLastSeenID))
+	}
+
+	if storedLastSeenID > 0 {
+		m.needsPositionRestore = true
+	}
+
+	return m
 }
 
 // serverEventMsg wraps a message arriving from the proxy.
@@ -71,9 +154,20 @@ func listenCmd(c *client.Client) tea.Cmd {
 	}
 }
 
+// listenLogCmd returns a Bubble Tea command that blocks on the next log message.
+func listenLogCmd(logChan <-chan logMsg) tea.Cmd {
+	return func() tea.Msg {
+		return <-logChan
+	}
+}
+
 // Init starts the event listener.
 func (m Model) Init() tea.Cmd {
-	return listenCmd(m.client)
+	return tea.Batch(
+		listenCmd(m.client),
+		listenLogCmd(m.logChan),
+		// seen reporting starts from WindowSizeMsg once we know the real lastSeenID
+	)
 }
 
 // Update handles messages and user input.
@@ -83,6 +177,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		if m.needsPositionRestore {
+			m.restorePosition()
+		}
+		m.advanceLastSeenID()
+		return m, reportSeenNow(m.client, m.lastSeenID)
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -94,39 +193,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.debugMode = !m.debugMode
 
 		case "pgup":
-			// Scroll up
 			if m.debugMode {
 				m.debugScrollOffset += m.height - 3
 			} else {
-				m.scrollOffset += m.height - 3
+				m.pagerTop -= m.height - 3
+				if m.pagerTop < 0 {
+					m.pagerTop = 0
+				}
 			}
 
 		case "pgdn":
-			// Scroll down
 			if m.debugMode {
 				m.debugScrollOffset -= m.height - 3
 				if m.debugScrollOffset < 0 {
 					m.debugScrollOffset = 0
 				}
 			} else {
-				m.scrollOffset -= m.height - 3
-				if m.scrollOffset < 0 {
-					m.scrollOffset = 0
-				}
+				m.pagerTop += m.height - 3
+				m.advanceLastSeenID()
 			}
 		}
 
 		switch msg.Type {
 		case tea.KeyEnter:
 			if m.input == "" {
+				// Advance pager page when there is more content below
+				m.pagerTop += m.height - 3
+				m.advanceLastSeenID()
 				break
 			}
 			line := m.input
 			m.input = ""
 			m.output = append(m.output, OutputItem{Type: "input", Data: line})
-
-			// Auto-scroll to bottom when sending a command
-			m.scrollOffset = 0
 
 			// Log outgoing command to debug (formatted)
 			cmdMsg := api.WSClientMsg{Type: "command", Text: line}
@@ -161,10 +259,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Auto-scroll to bottom if we were already there
-		wasAtBottom := m.scrollOffset == 0
-		wasDebugAtBottom := m.debugScrollOffset == 0
-
 		// Log incoming message to debug (pretty-printed and wrapped)
 		if jsonBytes, err := json.MarshalIndent(msg.msg, "", "  "); err == nil {
 			lines := strings.Split(string(jsonBytes), "\n")
@@ -173,16 +267,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m = m.handleProxy(msg.msg)
-
-		// Keep scrolled to bottom if we were there before new messages
-		if wasAtBottom {
-			m.scrollOffset = 0
-		}
-		if wasDebugAtBottom {
-			m.debugScrollOffset = 0
-		}
+		m.advanceLastSeenID()
 
 		return m, listenCmd(m.client)
+
+	case logMsg:
+		m.output = append(m.output, OutputItem{Type: "log", Data: msg})
+		return m, listenLogCmd(m.logChan)
+
+	case seenTickMsg:
+		return m, reportSeenCmd(m.client, m.lastSeenID)
 	}
 
 	return m, nil
@@ -194,7 +288,7 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 	case "text":
 		if d, ok := msg.Data.(map[string]interface{}); ok {
 			if text, ok := d["text"].(string); ok && text != "" {
-				m.output = append(m.output, OutputItem{Type: "text", Data: text})
+				m.output = append(m.output, OutputItem{Type: "text", Data: text, ID: msg.ID})
 			}
 		}
 
@@ -208,20 +302,25 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 					}
 				}
 				if len(lines) > 0 {
-					m.output = append(m.output, OutputItem{Type: "command", Data: lines})
+					m.output = append(m.output, OutputItem{Type: "command", Data: lines, ID: msg.ID})
 				}
 			}
 		}
 
 	case "event":
 		if d, ok := msg.Data.(map[string]interface{}); ok {
-			m.output = append(m.output, OutputItem{Type: "event", Data: d})
+			event, _ := d["event"].(string)
+			source, _ := d["source"].(string)
+			notify, _ := d["notify"].(bool)
+
+			// Only display events the server flagged with NOTIFY=1,
+			// and suppress unidle for the current user regardless.
+			if notify && !(event == "unidle" && m.state != nil && source == m.state.Whoami) {
+				m.output = append(m.output, OutputItem{Type: "event", Data: d, ID: msg.ID})
+			}
 
 			// Update local state for events that affect the current user
 			if m.state != nil {
-				event, _ := d["event"].(string)
-				source, _ := d["source"].(string)
-
 				// Only update if this event is about the current user
 				if source == m.state.Whoami {
 					// Find and update the user's entity in state
@@ -255,10 +354,84 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 
 	case "error":
 		if e, ok := msg.Data.(string); ok {
-			m.output = append(m.output, OutputItem{Type: "error", Data: e})
+			m.output = append(m.output, OutputItem{Type: "error", Data: e, ID: msg.ID})
 		}
 	}
 	return m
+}
+
+// computeLastSeenID returns the highest ID among OutputItems whose rendered lines
+// fall entirely within [0, pagerTop+outputLines). This is the event stream position
+// of the last item the user has actually seen on screen.
+func (m Model) computeLastSeenID() int64 {
+	if m.height == 0 {
+		return m.lastSeenID
+	}
+	visibleEnd := m.pagerTop + (m.height - 2)
+	lineCount := 0
+	var maxID int64
+	for _, item := range m.output {
+		lineCount += len(m.renderOutputItem(item))
+		if lineCount > visibleEnd {
+			break
+		}
+		if item.ID > maxID {
+			maxID = item.ID
+		}
+	}
+	return maxID
+}
+
+// advanceLastSeenID updates lastSeenID from the current pager position,
+// enforcing the invariant that it never decreases.
+func (m *Model) advanceLastSeenID() {
+	if id := m.computeLastSeenID(); id > m.lastSeenID {
+		m.lastSeenID = id
+	}
+}
+
+// restorePosition sets pagerTop so that the storedLastSeenID item is at the
+// bottom of the visible area, replicating the scroll position from the last session.
+func (m *Model) restorePosition() {
+	outputLines := m.height - 2
+	if outputLines <= 0 {
+		return
+	}
+	lineCount := 0
+	for _, item := range m.output {
+		lineCount += len(m.renderOutputItem(item))
+		if item.ID >= m.storedLastSeenID {
+			break
+		}
+	}
+	pagerTop := lineCount - outputLines
+	if pagerTop < 0 {
+		pagerTop = 0
+	}
+	m.pagerTop = pagerTop
+	m.lastSeenID = m.storedLastSeenID
+	m.needsPositionRestore = false
+}
+
+// seenTickMsg is sent after a periodic ReportSeen call completes.
+type seenTickMsg struct{}
+
+// reportSeenNow reports lastSeenID to the proxy immediately (no sleep),
+// then returns seenTickMsg to kick off the 30-second periodic cycle.
+func reportSeenNow(c *client.Client, lastSeenID int64) tea.Cmd {
+	return func() tea.Msg {
+		_ = c.ReportSeen(lastSeenID)
+		return seenTickMsg{}
+	}
+}
+
+// reportSeenCmd waits 30 seconds, reports lastSeenID, then re-schedules itself.
+func reportSeenCmd(c *client.Client, lastSeenID int64) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(30 * time.Second)
+		_ = c.ReportSeen(lastSeenID)
+		return seenTickMsg{}
+	}
 }
 
 // View renders the full TUI.
@@ -316,6 +489,21 @@ func (m Model) renderOutputItem(item OutputItem) []string {
 				styled[i] = commandResultStyle.Render(line)
 			}
 			return styled
+		}
+
+	case "log":
+		if entry, ok := item.Data.(logMsg); ok {
+			var labelStyle lipgloss.Style
+			switch entry.level {
+			case "ERROR":
+				labelStyle = logErrorSeverityStyle
+			case "WARN":
+				labelStyle = logInfoSeverityStyle
+			default:
+				labelStyle = logPrefixStyle
+			}
+			label := labelStyle.Render("[" + entry.level + "]")
+			return []string{label + " " + entry.text}
 		}
 	}
 
@@ -375,6 +563,14 @@ func (m Model) formatStatusBar(extraInfo string) string {
 		right += " " + extraInfo
 	}
 
+	// Last-seen event ID always on the far right
+	idStr := fmt.Sprintf("#%d", m.lastSeenID)
+	if right == "" {
+		right = idStr
+	} else {
+		right += " | " + idStr
+	}
+
 	// Calculate padding
 	totalLen := len(left) + len(right)
 	padding := ""
@@ -386,6 +582,31 @@ func (m Model) formatStatusBar(extraInfo string) string {
 	return statusBarStyle.Width(m.width).Render(content)
 }
 
+// formatMoreBar renders the pager "-- MORE (N) --" status bar with the last-seen
+// event ID on the far right and the MORE text centered in the remaining space.
+func (m Model) formatMoreBar(moreCount int) string {
+	idStr := fmt.Sprintf("#%d", m.lastSeenID)
+	moreText := fmt.Sprintf("-- MORE (%d) --", moreCount)
+
+	// Center moreText in the space to the left of idStr
+	innerWidth := m.width - len(idStr)
+	if innerWidth < 0 {
+		innerWidth = 0
+	}
+	padding := (innerWidth - len(moreText)) / 2
+	if padding < 0 {
+		padding = 0
+	}
+	content := strings.Repeat(" ", padding) + moreText
+	// Pad to fill up to where idStr starts, then append idStr
+	gap := innerWidth - len(content)
+	if gap > 0 {
+		content += strings.Repeat(" ", gap)
+	}
+	content += idStr
+	return statusBarStyle.Width(m.width).Render(content)
+}
+
 // viewNormal renders the standard UI (output + status + input).
 func (m Model) viewNormal() string {
 	// Render all output items into lines
@@ -394,24 +615,21 @@ func (m Model) viewNormal() string {
 		allLines = append(allLines, m.renderOutputItem(item)...)
 	}
 
-	// Output area: last N lines that fit above the input bar.
-	outputLines := m.height - 2 // leave room for status and input
+	// Output area height: leave room for status and input bars.
+	outputLines := m.height - 2
 
-	// Clamp scroll offset to valid range
-	maxScroll := len(allLines) - outputLines
-	if maxScroll < 0 {
-		maxScroll = 0
+	// Clamp pagerTop to valid range
+	maxTop := len(allLines) - outputLines
+	if maxTop < 0 {
+		maxTop = 0
 	}
-	if m.scrollOffset > maxScroll {
-		m.scrollOffset = maxScroll
+	if m.pagerTop > maxTop {
+		m.pagerTop = maxTop
 	}
 
-	// Apply scroll offset
-	end := len(allLines) - m.scrollOffset
-	start := end - outputLines
-	if start < 0 {
-		start = 0
-	}
+	// Visible slice
+	start := m.pagerTop
+	end := start + outputLines
 	if end > len(allLines) {
 		end = len(allLines)
 	}
@@ -422,22 +640,22 @@ func (m Model) viewNormal() string {
 		sb.WriteString(line)
 		sb.WriteByte('\n')
 	}
-	// pad to fill the output area
+	// Pad to fill the output area
 	for i := len(visible); i < outputLines; i++ {
 		sb.WriteByte('\n')
 	}
 
-	// Status line
-	extraInfo := ""
-	if m.scrollOffset > 0 {
-		extraInfo = fmt.Sprintf("[-%d]", m.scrollOffset)
+	// Status line: show MORE bar when content is waiting below, otherwise normal
+	moreCount := len(allLines) - (m.pagerTop + outputLines)
+	if moreCount > 0 {
+		sb.WriteString(m.formatMoreBar(moreCount))
+	} else {
+		sb.WriteString(m.formatStatusBar(""))
 	}
-	status := m.formatStatusBar(extraInfo)
-	sb.WriteString(status)
 	sb.WriteByte('\n')
 
 	// Input line
-	sb.WriteString(promptStyle.Render(m.prompt) + " " + m.input + "_")
+	sb.WriteString(m.renderInputLine())
 
 	return sb.String()
 }
@@ -455,21 +673,18 @@ func (m Model) viewWithDebug() string {
 		allOutputLines = append(allOutputLines, m.renderOutputItem(item)...)
 	}
 
-	// Clamp output scroll offset
-	maxScrollOutput := len(allOutputLines) - outputLines
-	if maxScrollOutput < 0 {
-		maxScrollOutput = 0
+	// Clamp pagerTop for output panel
+	maxTop := len(allOutputLines) - outputLines
+	if maxTop < 0 {
+		maxTop = 0
 	}
-	if m.scrollOffset > maxScrollOutput {
-		m.scrollOffset = maxScrollOutput
+	if m.pagerTop > maxTop {
+		m.pagerTop = maxTop
 	}
 
-	// Apply scroll offset to output
-	endOutput := len(allOutputLines) - m.scrollOffset
-	startOutput := endOutput - outputLines
-	if startOutput < 0 {
-		startOutput = 0
-	}
+	// Apply pagerTop to output
+	startOutput := m.pagerTop
+	endOutput := startOutput + outputLines
 	if endOutput > len(allOutputLines) {
 		endOutput = len(allOutputLines)
 	}
@@ -523,16 +738,22 @@ func (m Model) viewWithDebug() string {
 	}
 
 	// Status line
-	extraInfo := ""
-	if m.scrollOffset > 0 || m.debugScrollOffset > 0 {
-		extraInfo = fmt.Sprintf("[out:-%d dbg:-%d]", m.scrollOffset, m.debugScrollOffset)
+	moreCount := len(allOutputLines) - (m.pagerTop + outputLines)
+	var status string
+	if moreCount > 0 {
+		status = m.formatMoreBar(moreCount)
+	} else {
+		extraInfo := ""
+		if m.debugScrollOffset > 0 {
+			extraInfo = fmt.Sprintf("[dbg:-%d]", m.debugScrollOffset)
+		}
+		status = m.formatStatusBar(extraInfo)
 	}
-	status := m.formatStatusBar(extraInfo)
 	sb.WriteString(status)
 	sb.WriteByte('\n')
 
 	// Input line
-	sb.WriteString(promptStyle.Render(m.prompt) + " " + m.input + "_")
+	sb.WriteString(m.renderInputLine())
 
 	return sb.String()
 }

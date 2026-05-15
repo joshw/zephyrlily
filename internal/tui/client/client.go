@@ -78,12 +78,47 @@ func (c *Client) FetchState() (*api.StateResponse, error) {
 	return &sr, nil
 }
 
+// FetchEvents retrieves buffered events from the proxy after the given ID.
+func (c *Client) FetchEvents(afterID int64, limit int) ([]api.WSServerMsg, bool, error) {
+	url := fmt.Sprintf("http://%s/events?after=%d&limit=%d", c.proxyAddr, afterID, limit)
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("events request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false, fmt.Errorf("events: HTTP %s", resp.Status)
+	}
+	var er api.EventsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
+		return nil, false, fmt.Errorf("events decode: %w", err)
+	}
+	return er.Events, er.More, nil
+}
+
+// ReportSeen tells the proxy the last message ID the user has seen.
+func (c *Client) ReportSeen(lastSeenID int64) error {
+	body, _ := json.Marshal(api.SeenRequest{LastSeenID: lastSeenID})
+	req, _ := http.NewRequest(http.MethodPost, "http://"+c.proxyAddr+"/seen", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("seen request: %w", err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // Connect upgrades to a WebSocket and starts delivering events on c.Events.
 func (c *Client) Connect() error {
 	ws, _, err := websocket.Dial(c.ctx, "ws://"+c.proxyAddr+"/ws?token="+c.token, nil)
 	if err != nil {
 		return fmt.Errorf("ws connect: %w", err)
 	}
+	ws.SetReadLimit(-1) // no limit — command results can be arbitrarily large
 	c.ws = ws
 	go c.readLoop()
 	return nil
