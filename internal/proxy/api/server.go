@@ -10,12 +10,18 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/joshw/zephyrlily/internal/lily"
 	"github.com/joshw/zephyrlily/internal/proxy/commands"
 	"github.com/joshw/zephyrlily/internal/slcp"
+)
+
+const (
+	keepalivePingInterval = 150 * time.Second
+	keepalivePongTimeout  = 5 * time.Second
 )
 
 // Config holds proxy server configuration.
@@ -59,6 +65,10 @@ type Session struct {
 	eventBufMu sync.RWMutex
 	eventBuf   []*WSServerMsg // capped circular buffer of recent events
 	lastSeenID atomic.Int64   // last seen ID reported by a TUI client
+
+	// Keepalive: unix nanoseconds of the most recent %pong received from Lily.
+	// Written by fanOut, read by runKeepalive. Zero until the first pong arrives.
+	lastPongReceivedAt atomic.Int64
 }
 
 // wsClient is a single WebSocket connection to the proxy.
@@ -229,7 +239,18 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 // It also handles command output buffering, collecting all output between
 // %begin and %end into a single message.
 func (s *Server) fanOut(sess *Session) {
+	doneCh := make(chan struct{})
+	defer close(doneCh)
+
+	go s.runKeepalive(sess, doneCh)
+
 	for msg := range sess.conn.Events {
+		// Pong responses update keepalive state and are not forwarded to clients.
+		if msg.Type == slcp.MsgPong {
+			sess.lastPongReceivedAt.Store(time.Now().UnixNano())
+			continue
+		}
+
 		// Handle command leafing: buffer output between %begin and %end
 		sess.cmdMu.Lock()
 		switch msg.Type {
@@ -591,4 +612,62 @@ func entityToJSON(e *lily.Entity) EntityJSON {
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+// runKeepalive sends periodic pings to the Lily server and notifies subscribers
+// if a pong response is not received within keepalivePongTimeout.
+// Pong arrivals are recorded independently by fanOut via sess.lastPongReceivedAt;
+// this goroutine simply checks that field after the timeout elapses.
+// It exits when doneCh is closed (i.e. when fanOut returns).
+func (s *Server) runKeepalive(sess *Session, done <-chan struct{}) {
+	ticker := time.NewTicker(keepalivePingInterval)
+	defer ticker.Stop()
+
+	notResponding := false
+
+	broadcast := func(text string) {
+		msg := &WSServerMsg{Type: "error", Data: text}
+		sess.assignID(msg)
+		sess.subsMu.Lock()
+		for c := range sess.subscribers {
+			select {
+			case c.send <- msg:
+			default:
+			}
+		}
+		sess.subsMu.Unlock()
+	}
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+		}
+
+		sentAt := time.Now()
+		if err := sess.conn.Send("#$# ping"); err != nil {
+			return
+		}
+
+		// Wait the pong timeout, then check whether a pong arrived since the ping.
+		select {
+		case <-done:
+			return
+		case <-time.After(keepalivePongTimeout):
+		}
+
+		pongAt := time.Unix(0, sess.lastPongReceivedAt.Load())
+		if pongAt.After(sentAt) {
+			if notResponding {
+				notResponding = false
+				broadcast("keepalive: server is responding again")
+			}
+		} else {
+			if !notResponding {
+				notResponding = true
+				broadcast("keepalive: server not responding")
+			}
+		}
+	}
 }
