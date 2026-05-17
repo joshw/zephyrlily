@@ -91,6 +91,17 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 	source, _ := d["source"].(string)
 	value, _ := d["value"].(string)
 
+	// Use the proxy's pre-formatted text for all events except the ones we
+	// render with rich TUI styling (public, private, emote, pa).
+	if text, ok := d["text"].(string); ok && text != "" {
+		switch event {
+		case "public", "private", "emote", "pa":
+			// fall through to rich formatting below
+		default:
+			return slcpBodyStyle.Render(text)
+		}
+	}
+
 	// Extract timestamp — only shown when STAMP=1 was present in the %NOTIFY message
 	var timestamp string
 	stamp, _ := d["stamp"].(bool)
@@ -175,71 +186,99 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		return strings.Join(wrapText(prefix, prefix, strings.TrimSpace(msg), width, ""), "\n")
 	}
 
-	// Second-person helpers: when the event source is the current user,
-	// produce "you"/"have"/"are"/"your" instead of name/"has"/"is"/"their".
+	// Extract targets and sub-event fields used by permission events.
+	var targetsRaw []interface{}
+	if t, ok := d["targets"].([]interface{}); ok {
+		targetsRaw = t
+	}
+	subEvt, _ := d["sub_evt"].(string)
+
+	lookupTargets := func(handles []interface{}) string {
+		names := make([]string, 0, len(handles))
+		for _, h := range handles {
+			if handle, ok := h.(string); ok {
+				names = append(names, lookupName(handle))
+			}
+		}
+		return strings.Join(names, ", ")
+	}
+
+	// lookupDiscTitle returns the title of a discussion entity by handle.
+	lookupDiscTitle := func(handle string) string {
+		if entity, ok := entities[handle]; ok {
+			if title, ok := entity["title"].(string); ok {
+				return title
+			}
+		}
+		return ""
+	}
+
+	// sourceWithBlurb returns "Name [blurb]" or just "Name" — matches %U in the reference.
+	sourceWithBlurb := func() string {
+		name := lookupName(source)
+		if entity, ok := entities[source]; ok {
+			if blurb, ok := entity["blurb"].(string); ok && blurb != "" {
+				return name + " [" + blurb + "]"
+			}
+		}
+		return name
+	}
+
+	// blurbSuffix returns " with the blurb [x]" when the source has a blurb, else "".
+	// Used in self here/away confirmations (%B in the reference).
+	blurbSuffix := func() string {
+		if entity, ok := entities[source]; ok {
+			if blurb, ok := entity["blurb"].(string); ok && blurb != "" {
+				return " with the blurb [" + blurb + "]"
+			}
+		}
+		return ""
+	}
+
+	// meInTargets is true when the current user appears in the targets list (M flag).
+	meInTargets := false
+	if whoami != "" {
+		for _, t := range targetsRaw {
+			if h, ok := t.(string); ok && h == whoami {
+				meInTargets = true
+				break
+			}
+		}
+	}
+
 	isSelf := whoami != "" && source == whoami
-	subj := func() string {
-		if isSelf {
-			return "you"
-		}
-		return lookupName(source)
-	}
-	have := func() string {
-		if isSelf {
-			return "have"
-		}
-		return "has"
-	}
-	are := func() string {
-		if isSelf {
-			return "are"
-		}
-		return "is"
-	}
-	your := func() string {
-		if isSelf {
-			return "your"
-		}
-		return "their"
-	}
+
+	// quiet wraps a message in parentheses — used for self-originated confirmations.
+	// banner wraps a message in *** *** — used for third-party observations.
+	quiet := func(msg string) string { return slcpBodyStyle.Render("(" + msg + ")") }
+	banner := func(msg string) string { return slcpBodyStyle.Render("*** " + msg + " ***") }
 
 	switch event {
 	case "public":
-		// Format: " -> (timestamp) From user [blurb], to target1, target2:\n - message"
 		var header strings.Builder
 		header.WriteString(publicHeaderStyle.Render(" -> "))
 		header.WriteString(publicTimestampStyle.Render(timestamp))
 		header.WriteString(publicHeaderStyle.Render("From "))
 		header.WriteString(formatUser(source, publicSenderStyle, publicBlurbStyle))
-
-		// Add recipients
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
 			header.WriteString(publicHeaderStyle.Render(", to "))
 			header.WriteString(formatRecips(recips, publicSenderStyle))
 		}
 		header.WriteString(publicHeaderStyle.Render(":"))
-
-		// Wrap message body with " - " prefix
 		body := wrapMessage(" - ", value, width)
 		return "\n" + header.String() + "\n" + publicBodyStyle.Render(body)
 
 	case "private":
-		// Format: " >> (timestamp) Private message from user [blurb]:\n - message"
 		var header strings.Builder
 		header.WriteString(privateHeaderStyle.Render(" >> "))
 		header.WriteString(privateTimestampStyle.Render(timestamp))
 		header.WriteString(privateHeaderStyle.Render("Private message from "))
 		header.WriteString(formatUser(source, privateSenderStyle, privateBlurbStyle))
 		header.WriteString(privateHeaderStyle.Render(":"))
-
-		// Wrap message body with " - " prefix
 		body := wrapMessage(" - ", value, width)
 		return "\n" + header.String() + "\n" + privateBodyStyle.Render(body)
 
 	case "emote":
-		// Format: "> (HH:MM, to dest) Source message"  (timestamp only if STAMP)
-		// Long messages wrap; continuation lines keep the "> " prefix.
-		// Entire output is uniform emoteBodyStyle; no blurb shown.
 		var header strings.Builder
 		header.WriteString("> (")
 		if stamp {
@@ -254,97 +293,343 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		}
 		header.WriteString(") ")
 		header.WriteString(lookupName(source))
-
 		headerStr := header.String()
 		if value == "" {
 			return emoteBodyStyle.Render(headerStr)
 		}
-		// " " separator between header and first word; "> " on word-boundary wraps;
-		// hard-break continuations (e.g. split URLs) carry no prefix.
 		lines := wrapText(headerStr, "> ", strings.TrimSpace(value), width, " ")
 		return emoteBodyStyle.Render(strings.Join(lines, "\n"))
 
+	// ── Presence events ──────────────────────────────────────────────────────
+
 	case "connect":
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s entered lily ***", subj(), have()))
+		// Third-person always: "%U has entered lily"
+		return banner(sourceWithBlurb() + " has entered lily")
 
 	case "disconnect":
 		if value != "" {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s left lily (%s) ***", subj(), have(), value))
+			return banner(sourceWithBlurb() + " has left lily (" + value + ")")
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s left lily ***", subj(), have()))
+		return banner(sourceWithBlurb() + " has left lily")
 
 	case "attach":
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s reattached ***", subj(), have()))
+		return banner(sourceWithBlurb() + " has reattached")
 
 	case "detach":
 		if value != "" {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s been detached %s ***", subj(), have(), value))
+			return banner(sourceWithBlurb() + " has been detached " + value)
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s detached ***", subj(), have()))
+		return banner(sourceWithBlurb() + " has detached")
 
 	case "here":
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s now \"here\" ***", subj(), are()))
+		if isSelf {
+			return quiet("you are now here" + blurbSuffix())
+		}
+		return banner(lookupName(source) + " is now \"here\"")
 
 	case "away":
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s now \"away\" ***", subj(), are()))
-
-	case "rename":
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s now named %s ***", subj(), are(), value))
-
-	case "blurb":
 		if value != "" {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s changed %s blurb to [%s] ***", subj(), have(), your(), value))
+			// value defined = idled away automatically, not an explicit /away
+			return banner(lookupName(source) + " has idled \"away\"")
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s turned %s blurb off ***", subj(), have(), your()))
+		if isSelf {
+			return quiet("you are now away" + blurbSuffix())
+		}
+		return banner(lookupName(source) + " is now \"away\"")
 
 	case "unidle":
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s now unidle ***", subj(), are()))
+		return banner(lookupName(source) + " is now unidle")
+
+	// ── Identity events ───────────────────────────────────────────────────────
+
+	case "rename":
+		if isSelf {
+			return quiet("you are now named " + value)
+		}
+		return banner(lookupName(source) + " is now named " + value)
+
+	case "blurb":
+		if isSelf {
+			if value != "" {
+				return quiet("your blurb has been set to [" + value + "]")
+			}
+			return quiet("your blurb has been turned off")
+		}
+		if value != "" {
+			return banner(lookupName(source) + " has changed their blurb to [" + value + "]")
+		}
+		return banner(lookupName(source) + " has turned their blurb off")
+
+	case "info":
+		recips, hasRecips := d["recips"].([]interface{})
+		discName := ""
+		if hasRecips && len(recips) > 0 {
+			discName = lookupRecips(recips)
+		} else {
+			hasRecips = false
+		}
+		if isSelf {
+			if hasRecips {
+				if value == "" {
+					return quiet("you have cleared the info for " + discName)
+				}
+				return quiet("you have changed the info for " + discName)
+			}
+			if value == "" {
+				return quiet("your info has been cleared")
+			}
+			return quiet("your info has been changed")
+		}
+		if hasRecips {
+			if value == "" {
+				return banner(lookupName(source) + " has cleared the info for discussion " + discName)
+			}
+			return banner(lookupName(source) + " has changed the info for discussion " + discName)
+		}
+		if value == "" {
+			return banner(lookupName(source) + " has cleared their info")
+		}
+		return banner(lookupName(source) + " has changed their info")
+
+	// ── Discussion membership ─────────────────────────────────────────────────
 
 	case "create":
-		// For discussion creation, RECIPS holds the discussion handle
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s created discussion %s ***", subj(), have(), lookupRecips(recips)))
+			discName := lookupRecips(recips)
+			titlePart := ""
+			if h, ok := recips[0].(string); ok {
+				if t := lookupDiscTitle(h); t != "" {
+					titlePart = " \"" + t + "\""
+				}
+			}
+			if isSelf {
+				return quiet("you have created discussion " + discName + titlePart)
+			}
+			return banner(lookupName(source) + " has created discussion " + discName + titlePart)
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s created a discussion ***", subj(), have()))
+		if isSelf {
+			return quiet("you have created a discussion")
+		}
+		return banner(lookupName(source) + " has created a discussion")
 
 	case "destroy":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s destroyed discussion %s ***", subj(), have(), lookupRecips(recips)))
+			discName := lookupRecips(recips)
+			if isSelf {
+				return quiet("you have destroyed discussion " + discName)
+			}
+			return banner(lookupName(source) + " has destroyed discussion " + discName)
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s destroyed a discussion ***", subj(), have()))
+		if isSelf {
+			return quiet("you have destroyed a discussion")
+		}
+		return banner(lookupName(source) + " has destroyed a discussion (server didn't say which)")
 
 	case "join":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s now a member of %s ***", subj(), are(), lookupRecips(recips)))
+			discName := lookupRecips(recips)
+			if isSelf {
+				return quiet("you have joined " + discName)
+			}
+			return banner(lookupName(source) + " is now a member of " + discName)
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s joined a discussion ***", subj(), have()))
+		if isSelf {
+			return quiet("you have joined a discussion")
+		}
+		return banner(lookupName(source) + " has joined a discussion")
 
 	case "quit":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s no longer a member of %s ***", subj(), are(), lookupRecips(recips)))
+			discName := lookupRecips(recips)
+			if isSelf {
+				return quiet("you have quit " + discName)
+			}
+			return banner(lookupName(source) + " is no longer a member of " + discName)
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s quit a discussion ***", subj(), have()))
+		if isSelf {
+			return quiet("you have quit a discussion")
+		}
+		return banner(lookupName(source) + " has quit a discussion")
 
 	case "retitle":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s changed the title of %s to \"%s\" ***", subj(), have(), lookupRecips(recips), value))
+			discName := lookupRecips(recips)
+			if isSelf {
+				return quiet("you have changed the title of " + discName + " to \"" + value + "\"")
+			}
+			return banner(lookupName(source) + " has changed the title of " + discName + " to \"" + value + "\"")
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s changed a discussion title to \"%s\" ***", subj(), have(), value))
+		if isSelf {
+			return quiet("you have changed a discussion title to \"" + value + "\"")
+		}
+		return banner(lookupName(source) + " has changed a discussion title to \"" + value + "\"")
 
 	case "drename":
+		// Disc names are prefixed with '-' per Lily convention.
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** Discussion %s is now named %s ***", lookupRecips(recips), value))
+			return banner("Discussion -" + lookupRecips(recips) + " is now named -" + value)
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** A discussion is now named %s ***", value))
+		return banner("A discussion is now named -" + value)
+
+	// ── Permission events (permit / depermit) ─────────────────────────────────
+
+	case "permit":
+		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
+			disc := lookupRecips(recips)
+			tgt := lookupTargets(targetsRaw)
+			hasT := len(targetsRaw) > 0
+			switch {
+			case isSelf && meInTargets && subEvt == "owner":
+				return quiet("you have accepted ownership of discussion " + disc)
+			case isSelf && hasT && subEvt == "owner":
+				return quiet("you have offered " + tgt + " ownership of discussion " + disc)
+			case isSelf && hasT && subEvt != "":
+				return quiet("you have given " + tgt + " " + subEvt + " privileges to discussion " + disc)
+			case isSelf && !hasT && subEvt != "":
+				return quiet(disc + " is no longer moderated")
+			case meInTargets && subEvt == "owner":
+				return banner(lookupName(source) + " has offered you ownership of discussion " + disc)
+			case meInTargets && subEvt != "":
+				return banner(lookupName(source) + " has given you " + subEvt + " privileges to discussion " + disc)
+			case meInTargets:
+				return banner(lookupName(source) + " has permitted you to discussion " + disc)
+			case hasT && subEvt == "owner":
+				return banner(lookupName(source) + " has taken ownership of discussion " + disc)
+			case hasT && subEvt != "":
+				return banner(lookupName(source) + " has given " + tgt + " " + subEvt + " privileges to discussion " + disc)
+			case hasT:
+				return banner(lookupName(source) + " has permitted " + tgt + " to discussion " + disc)
+			case subEvt != "":
+				return banner(lookupName(source) + " has unmoderated discussion " + disc)
+			}
+		}
+		return banner(lookupName(source) + " has changed permissions")
+
+	case "depermit":
+		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
+			disc := lookupRecips(recips)
+			tgt := lookupTargets(targetsRaw)
+			hasT := len(targetsRaw) > 0
+			switch {
+			case isSelf && hasT && subEvt == "owner":
+				return quiet("you have rescinded your offer to " + tgt + " for ownership of discussion " + disc)
+			case isSelf && hasT && subEvt != "":
+				return quiet("you have removed " + tgt + "'s " + subEvt + " privileges on discussion " + disc)
+			case isSelf && !hasT && subEvt != "":
+				return quiet(disc + " is now moderated")
+			case meInTargets && subEvt == "owner":
+				return banner(lookupName(source) + " has rescinded their ownership offer of discussion " + disc)
+			case meInTargets && subEvt != "":
+				return banner(lookupName(source) + " has removed your " + subEvt + " privileges on discussion " + disc)
+			case meInTargets:
+				return banner(lookupName(source) + " has depermitted you from discussion " + disc)
+			case hasT && subEvt != "":
+				return banner(lookupName(source) + " has removed " + tgt + "'s " + subEvt + " privileges on discussion " + disc)
+			case hasT:
+				return banner(lookupName(source) + " has depermitted " + tgt + " from discussion " + disc)
+			case subEvt != "":
+				return banner(lookupName(source) + " has moderated discussion " + disc)
+			}
+		}
+		return banner(lookupName(source) + " has changed permissions")
+
+	// ── Role appointment events (appoint / unappoint) ─────────────────────────
+
+	case "appoint":
+		disc := ""
+		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
+			disc = lookupRecips(recips)
+		}
+		tgt := lookupTargets(targetsRaw)
+		hasT := len(targetsRaw) > 0
+		switch {
+		case isSelf && meInTargets && subEvt == "owner":
+			return quiet("you have accepted ownership of discussion " + disc)
+		case isSelf && subEvt == "owner":
+			return quiet("you have offered " + tgt + " ownership of discussion " + disc)
+		case meInTargets && subEvt == "owner":
+			return banner(lookupName(source) + " has offered you ownership of discussion " + disc)
+		case subEvt == "owner":
+			return banner(lookupName(source) + " is now the owner of discussion " + disc)
+		case !hasT && subEvt == "speaker":
+			return banner("discussion " + disc + " is now moderated")
+		case meInTargets && subEvt == "speaker":
+			return banner("you have been made a speaker for discussion " + disc)
+		case subEvt == "speaker":
+			return banner(tgt + " is now a speaker for discussion " + disc)
+		case meInTargets && subEvt == "author":
+			return banner("you have been made an author for discussion " + disc)
+		case subEvt == "author":
+			return banner(tgt + " is now an author for discussion " + disc)
+		case meInTargets && subEvt != "":
+			return banner("you are now a " + subEvt + " for " + disc)
+		case subEvt != "":
+			return banner(tgt + " is now a " + subEvt + " for " + disc)
+		}
+		return banner(lookupName(source) + " made an appointment for discussion " + disc)
+
+	case "unappoint":
+		disc := ""
+		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
+			disc = lookupRecips(recips)
+		}
+		tgt := lookupTargets(targetsRaw)
+		hasT := len(targetsRaw) > 0
+		switch {
+		case isSelf && subEvt == "owner":
+			return quiet("you have rescinded your ownership offer to " + tgt + " of discussion " + disc)
+		case meInTargets && subEvt == "owner":
+			return banner(lookupName(source) + " has rescinded their offer of ownership of discussion " + disc)
+		case !hasT && subEvt == "speaker":
+			return banner("discussion " + disc + " is no longer moderated")
+		case meInTargets && subEvt == "speaker":
+			return banner("you are no longer a speaker for discussion " + disc)
+		case subEvt == "speaker":
+			return banner(tgt + " is no longer a speaker for discussion " + disc)
+		case meInTargets && subEvt == "author":
+			return banner("you are no longer an author for discussion " + disc)
+		case subEvt == "author":
+			return banner(tgt + " is no longer an author for discussion " + disc)
+		case meInTargets && subEvt != "":
+			return banner("you are no longer a " + subEvt + " for " + disc)
+		case subEvt != "":
+			return banner(tgt + " is no longer a " + subEvt + " for " + disc)
+		}
+		return banner(lookupName(source) + " changed an appointment for discussion " + disc)
+
+	// ── Ignore events ─────────────────────────────────────────────────────────
+
+	case "ignore":
+		// 'tcE' = no targets, no subevt, value empty → no longer ignoring
+		if value == "" && len(targetsRaw) == 0 && subEvt == "" {
+			return banner(lookupName(source) + " is no longer ignoring you")
+		}
+		if value != "" {
+			return banner(lookupName(source) + " is now ignoring you " + value)
+		}
+		return banner(lookupName(source) + " is now ignoring you")
+
+	case "unignore":
+		return banner(lookupName(source) + " is no longer ignoring you")
+
+	// ── Review ────────────────────────────────────────────────────────────────
+
+	case "review":
+		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
+			return banner(lookupName(source) + " has cleared the review for discussion " + lookupRecips(recips))
+		}
+		return banner(lookupName(source) + " has cleared a review")
+
+	// ── System ────────────────────────────────────────────────────────────────
 
 	case "sysmsg":
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s ***", value))
+		return slcpBodyStyle.Render("*** " + value + " ***")
 
 	case "pa":
-		return slcpBodyStyle.Render(fmt.Sprintf("** Public address message from %s: %s **", formatUser(source, publicSenderStyle, publicBlurbStyle), value))
+		return slcpBodyStyle.Render("** Public address message from " +
+			formatUser(source, publicSenderStyle, publicBlurbStyle) + ": " + value + " **")
 
 	default:
-		// Unknown event type - show all available data
 		return fmt.Sprintf("[%s] %s %s", event, source, value)
 	}
 }

@@ -72,6 +72,12 @@ type EventData struct {
 	Notify   bool                  `json:"notify"`
 	Stamp    bool                  `json:"stamp,omitempty"`
 	Entities map[string]EntityJSON `json:"entities,omitempty"`
+	// Text is a pre-formatted plain-text representation of the event suitable
+	// for direct display.  Simple events (status, membership, permissions) are
+	// fully formatted here; message events (public, private, emote, pa) get a
+	// compact single-line summary — rich clients should override those with
+	// their own presentation.
+	Text string `json:"text,omitempty"`
 }
 
 // TextData carries a single line of unformatted text from the server.

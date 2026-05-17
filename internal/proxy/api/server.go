@@ -645,6 +645,7 @@ func msgToWS(msg *slcp.Message, sess *Session) *WSServerMsg {
 				Notify:   ev.Notify,
 				Stamp:    ev.Stamp,
 				Entities: entities,
+				Text:     formatEventText(ev, entities, sess.conn.State().Whoami),
 			},
 		}
 	case slcp.MsgRaw:
