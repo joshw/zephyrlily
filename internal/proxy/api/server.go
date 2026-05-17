@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -43,13 +45,15 @@ type savedState struct {
 type Server struct {
 	cfg         Config
 	sessions    sync.Map // token -> *Session
-	savedStates sync.Map // token -> savedState (persists across session deletions)
+	userTokens  sync.Map // username -> token (for finding an existing session by username)
+	savedStates sync.Map // username -> savedState (persists across reconnects/token rotation)
 }
 
 // Session represents an authenticated proxy session for one Lily user.
 type Session struct {
-	token string
-	conn  *lily.Conn
+	token    string
+	username string
+	conn     *lily.Conn
 
 	subsMu      sync.Mutex
 	subscribers map[*wsClient]struct{}
@@ -150,11 +154,12 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return existing session if already connected.
-	token := sessionToken(req.Username)
-	if _, ok := s.sessions.Load(token); ok {
-		writeJSON(w, AuthResponse{Token: token})
-		return
+	// Return the existing session token if this user is already connected.
+	if existing, ok := s.userTokens.Load(req.Username); ok {
+		if _, ok := s.sessions.Load(existing.(string)); ok {
+			writeJSON(w, AuthResponse{Token: existing.(string)})
+			return
+		}
 	}
 
 	conn := lily.NewConn(s.cfg.LilyAddr, req.Username, req.Password)
@@ -163,21 +168,30 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	token, err := generateToken()
+	if err != nil {
+		http.Error(w, "token generation failed", http.StatusInternalServerError)
+		return
+	}
+
 	sess := &Session{
 		token:       token,
+		username:    req.Username,
 		conn:        conn,
 		subscribers: make(map[*wsClient]struct{}),
 		cmdBuffer:   make(map[int][]string),
 	}
 
-	// Restore event buffer and last-seen position from the previous session if present.
-	if v, ok := s.savedStates.LoadAndDelete(token); ok {
+	// Restore event buffer and last-seen position keyed by username so history
+	// survives reconnects even when the token rotates.
+	if v, ok := s.savedStates.LoadAndDelete(req.Username); ok {
 		saved := v.(savedState)
 		sess.eventBuf = saved.eventBuf
 		sess.lastSeenID.Store(saved.lastSeenID)
 	}
 
 	s.sessions.Store(token, sess)
+	s.userTokens.Store(req.Username, token)
 
 	go s.fanOut(sess)
 
@@ -419,11 +433,12 @@ func (s *Server) fanOut(sess *Session) {
 	bufCopy := make([]*WSServerMsg, len(sess.eventBuf))
 	copy(bufCopy, sess.eventBuf)
 	sess.eventBufMu.RUnlock()
-	s.savedStates.Store(sess.token, savedState{
+	s.savedStates.Store(sess.username, savedState{
 		eventBuf:   bufCopy,
 		lastSeenID: sess.lastSeenID.Load(),
 	})
 	s.sessions.Delete(sess.token)
+	s.userTokens.Delete(sess.username)
 }
 
 // handleEvents returns buffered event and text messages after a given ID.
@@ -501,7 +516,7 @@ func (s *Server) handleSeen(w http.ResponseWriter, r *http.Request) {
 			bufCopy := make([]*WSServerMsg, len(sess.eventBuf))
 			copy(bufCopy, sess.eventBuf)
 			sess.eventBufMu.RUnlock()
-			s.savedStates.Store(sess.token, savedState{
+			s.savedStates.Store(sess.username, savedState{
 				eventBuf:   bufCopy,
 				lastSeenID: req.LastSeenID,
 			})
@@ -579,10 +594,13 @@ func (s *Server) sessionFromRequest(r *http.Request) (*Session, bool) {
 	return v.(*Session), true
 }
 
-// sessionToken derives a stable token from a username.
-// TODO: replace with a cryptographically random token stored in a map.
-func sessionToken(username string) string {
-	return "zlily-" + username
+// generateToken returns a cryptographically random 32-byte hex token.
+func generateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // msgToWS converts a parsed SLCP message to a WebSocket server message.
