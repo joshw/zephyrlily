@@ -96,6 +96,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/events", s.handleEvents)
 	mux.HandleFunc("/seen", s.handleSeen)
+	mux.HandleFunc("/expand", s.handleExpand)
 
 	// Wrap with logging middleware
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -467,7 +468,7 @@ func (c *wsClient) readLoop(sess *Session) {
 		if err := wsjson.Read(c.ctx, c.ws, &cm); err != nil {
 			return
 		}
-		if cm.Type == "command" && cm.Text != "" {
+		if cm.Type == "command" {
 			// Check for client commands (starting with %)
 			if strings.HasPrefix(cm.Text, "%") {
 				// Execute client command
@@ -607,6 +608,66 @@ func entityToJSON(e *lily.Entity) EntityJSON {
 		j.Kind = "group"
 	}
 	return j
+}
+
+// handleExpand returns entities whose names match the given partial string.
+// Exact matches (case-insensitive) are returned first; if none, prefix matches
+// are returned instead. The TUI applies the reference "unique match wins" rule.
+//
+// Query parameters:
+//
+//	q        - the partial name to match
+//	valid_dest_only=1 - exclude discussions the current user is not a member of
+func (s *Server) handleExpand(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.sessionFromRequest(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeJSON(w, ExpandResponse{Matches: []EntityJSON{}})
+		return
+	}
+	validDestOnly := r.URL.Query().Get("valid_dest_only") == "1"
+
+	state := sess.conn.State()
+	entities := state.AllEntities()
+	qLower := strings.ToLower(q)
+
+	// isValid reports whether an entity is a valid send destination.
+	// With validDestOnly, discussions the user is not a member of are excluded.
+	isValid := func(e *lily.Entity) bool {
+		if validDestOnly && e.Kind == lily.KindDisc {
+			return state.IsDiscMember(e.Handle)
+		}
+		return true
+	}
+
+	// Exact match first.
+	var exact []EntityJSON
+	for _, e := range entities {
+		if strings.EqualFold(e.Name, q) && isValid(e) {
+			exact = append(exact, entityToJSON(e))
+		}
+	}
+	if len(exact) > 0 {
+		writeJSON(w, ExpandResponse{Matches: exact})
+		return
+	}
+
+	// Prefix match.
+	var prefix []EntityJSON
+	for _, e := range entities {
+		if strings.HasPrefix(strings.ToLower(e.Name), qLower) && isValid(e) {
+			prefix = append(prefix, entityToJSON(e))
+		}
+	}
+	if prefix == nil {
+		prefix = []EntityJSON{}
+	}
+	writeJSON(w, ExpandResponse{Matches: prefix})
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

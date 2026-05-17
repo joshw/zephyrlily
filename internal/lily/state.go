@@ -2,6 +2,7 @@
 package lily
 
 import (
+	"log"
 	"strings"
 	"sync"
 
@@ -21,6 +22,10 @@ type State struct {
 	// Entity databases
 	byHandle map[string]*Entity // keyed by handle "#123"
 	byName   map[string]*Entity // keyed by lowercase name
+
+	// Discussions the current user is a member of (keyed by handle).
+	// Seeded from %DISC ATTRIB during sync; updated by join/quit events.
+	discMembership map[string]bool
 }
 
 // EntityKind distinguishes users from discussions.
@@ -49,8 +54,9 @@ type Entity struct {
 // NewState returns an empty State.
 func NewState() *State {
 	return &State{
-		byHandle: make(map[string]*Entity),
-		byName:   make(map[string]*Entity),
+		byHandle:       make(map[string]*Entity),
+		byName:         make(map[string]*Entity),
+		discMembership: make(map[string]bool),
 	}
 }
 
@@ -73,6 +79,8 @@ func (s *State) ApplyUser(u *slcp.UserRecord) {
 }
 
 // ApplyDisc upserts a discussion entity from a parsed DiscRecord.
+// Disc membership is tracked separately via ApplyWhereResponse and
+// the join/quit cases in ApplyNotify.
 func (s *State) ApplyDisc(d *slcp.DiscRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -81,6 +89,66 @@ func (s *State) ApplyDisc(d *slcp.DiscRecord) {
 	e.Title = d.Title
 	e.Attrib = d.Attrib
 	e.Creation = d.Creation
+}
+
+// ApplyWhereResponse parses the output lines of a "/where me" command and
+// marks every named discussion as a member disc. Expected format:
+//
+//	You are a member of disc1, disc2, disc3
+func (s *State) ApplyWhereResponse(lines []string) {
+	const prefix = "You are a member of "
+	for _, line := range lines {
+		// Strip the "%command [id] " prefix that +leaf-cmd adds to output lines.
+		if strings.HasPrefix(line, "%command [") {
+			if idx := strings.Index(line, "] "); idx != -1 {
+				line = line[idx+2:]
+			}
+		}
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		rest := strings.TrimSuffix(strings.TrimPrefix(line, prefix), ".")
+		log.Printf("lily: ApplyWhereResponse names=%q", rest)
+		for _, name := range strings.Split(rest, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			s.mu.Lock()
+			e := s.byName[strings.ToLower(name)]
+			if e != nil && e.Kind == KindDisc {
+				s.discMembership[e.Handle] = true
+				log.Printf("lily: member disc set: %q handle=%s", name, e.Handle)
+			} else {
+				log.Printf("lily: member disc miss: %q entityFound=%v", name, e != nil)
+			}
+			s.mu.Unlock()
+		}
+		break
+	}
+}
+
+// JoinDisc marks the current user as a member of the discussion with the
+// given handle. Called when the user's own join event is observed.
+func (s *State) JoinDisc(handle string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.discMembership[handle] = true
+}
+
+// QuitDisc removes the current user's membership for the given discussion.
+func (s *State) QuitDisc(handle string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.discMembership, handle)
+}
+
+// IsDiscMember reports whether the current user is a member of the discussion
+// identified by handle.
+func (s *State) IsDiscMember(handle string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.discMembership[handle]
 }
 
 // ApplyGroup upserts a group entity from a parsed GroupRecord.
@@ -133,6 +201,20 @@ func (s *State) ApplyNotify(ev *slcp.NotifyEvent) {
 	case "retitle":
 		if e := s.byHandle[ev.Source]; e != nil {
 			e.Title = ev.Value
+		}
+	case "join":
+		// Track when the current user joins a discussion.
+		if ev.Source == s.Whoami {
+			for _, h := range ev.Recips {
+				s.discMembership[h] = true
+			}
+		}
+	case "quit":
+		// Track when the current user leaves a discussion.
+		if ev.Source == s.Whoami {
+			for _, h := range ev.Recips {
+				delete(s.discMembership, h)
+			}
 		}
 	}
 }

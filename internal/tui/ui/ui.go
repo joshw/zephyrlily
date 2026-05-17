@@ -78,6 +78,12 @@ type Model struct {
 	storedLastSeenID     int64 // lastSeenID from proxy at startup, used to restore pagerTop
 	needsPositionRestore bool  // true until we have window size to set pagerTop
 
+	// Intelligent expand state (mirrors tigerlily expand.pl)
+	expandSender    string   // last person who private/emoted us  (recalled by ':')
+	expandRecips    string   // last destination we sent to        (recalled by ';')
+	expandSendgroup string   // group from last multi-recip private (recalled by '=')
+	pastSends       []string // recent destinations, newest first (capped at pastSendsMax)
+
 	// Logging
 	logChan <-chan logMsg // receives log messages to display
 }
@@ -198,6 +204,11 @@ func (m Model) Init() tea.Cmd {
 		listenCmd(m.client),
 		listenLogCmd(m.logChan),
 		// seen reporting starts from WindowSizeMsg once we know the real lastSeenID
+		// Hide the terminal hardware cursor: after every frame Bubble Tea parks
+		// it at column 1 of the last rendered row (the input line start), which
+		// sits right next to our software cursor at position 0 and makes it look
+		// extra wide.  We draw our own cursor so the hardware one is redundant.
+		tea.HideCursor,
 	)
 }
 
@@ -284,19 +295,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.deleteForward()
 
 		case "enter", "ctrl+m", "ctrl+j":
-			if m.input == "" {
+			line := m.input
+			// Blank Enter advances the pager and sends an empty line to the server.
+			// Non-blank Enter only sends (no pager advance).
+			if line == "" {
 				m.pagerTop += m.height - 3
 				m.advanceLastSeenID()
-				break
+			} else {
+				m = m.addHistoryEntry(line)
 			}
-			line := m.input
-			m = m.addHistoryEntry(line)
+			// Always echo the sent line (including blank) so there is a visible
+			// output entry matching what was sent.
+			m.output = append(m.output, OutputItem{Type: "input", Data: line})
 			m.historyPos = -1
 			m.historySave = ""
 			m.input = ""
 			m.cursor = 0
 			m.inputScroll = 0
-			m.output = append(m.output, OutputItem{Type: "input", Data: line})
 
 			// Log outgoing command to debug (formatted)
 			cmdMsg := api.WSClientMsg{Type: "command", Text: line}
@@ -307,8 +322,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.debugScrollOffset = 0
 
-			if err := m.client.Send(line); err != nil {
-				m.output = append(m.output, OutputItem{Type: "error", Data: err.Error()})
+			localOutput, handled := m.handleLocalCommand(line)
+			if localOutput != nil {
+				m.output = append(m.output, OutputItem{Type: "command", Data: localOutput})
+			}
+			if !handled {
+				m = m.trackOutgoingSend(line)
+				if err := m.client.Send(line); err != nil {
+					m.output = append(m.output, OutputItem{Type: "error", Data: err.Error()})
+				}
 			}
 
 		case "ctrl+a":
@@ -393,6 +415,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+n", "down":
 			m = m.historyNext()
 
+		case "tab", "ctrl+i":
+			m = m.tabComplete()
+
 		case "alt+p":
 			m.pasteMode = !m.pasteMode
 			m.pasteEatFlag = false
@@ -402,6 +427,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.enterSearch(true)
 		case "ctrl+s":
 			m = m.enterSearch(false)
+
+		case "alt+g":
+			m.debugMode = !m.debugMode
+			m.debugScrollOffset = 0
 
 		case "ctrl+l":
 			// redraw — Bubble Tea redraws automatically
@@ -451,7 +480,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		default:
 			if msg.Type == tea.KeyRunes {
-				m = m.insertString(string(msg.Runes))
+				s := string(msg.Runes)
+				switch s {
+				case ";", ":", ",", "=":
+					m = m.handleExpandKey(s)
+				default:
+					m = m.insertString(s)
+				}
 			} else if msg.String() == " " {
 				m = m.insertString(" ")
 			}
@@ -478,7 +513,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, listenCmd(m.client)
 
 	case logMsg:
-		m.output = append(m.output, OutputItem{Type: "log", Data: msg})
+		if msg.level == "DEBUG" {
+			m.debugMsgs = append(m.debugMsgs, msg.text)
+		} else {
+			m.output = append(m.output, OutputItem{Type: "log", Data: msg})
+		}
 		return m, listenLogCmd(m.logChan)
 
 	case seenTickMsg:
@@ -493,7 +532,7 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 	switch msg.Type {
 	case "text":
 		if d, ok := msg.Data.(map[string]interface{}); ok {
-			if text, ok := d["text"].(string); ok && text != "" {
+			if text, ok := d["text"].(string); ok {
 				m.output = append(m.output, OutputItem{Type: "text", Data: text, ID: msg.ID})
 			}
 		}
@@ -507,9 +546,7 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 						lines = append(lines, line)
 					}
 				}
-				if len(lines) > 0 {
-					m.output = append(m.output, OutputItem{Type: "command", Data: lines, ID: msg.ID})
-				}
+				m.output = append(m.output, OutputItem{Type: "command", Data: lines, ID: msg.ID})
 			}
 		}
 
@@ -523,6 +560,11 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 			// and suppress unidle for the current user regardless.
 			if notify && !(event == "unidle" && m.state != nil && source == m.state.Whoami) {
 				m.output = append(m.output, OutputItem{Type: "event", Data: d, ID: msg.ID})
+			}
+
+			// Update intelligent-expand state for incoming privates and emotes.
+			if event == "private" || event == "emote" {
+				m = m.trackIncomingPrivate(d)
 			}
 
 			// Update local state for events that affect the current user
@@ -631,10 +673,10 @@ func reportSeenNow(c *client.Client, lastSeenID int64) tea.Cmd {
 	}
 }
 
-// reportSeenCmd waits 30 seconds, reports lastSeenID, then re-schedules itself.
+// reportSeenCmd waits 5 seconds, reports lastSeenID (no-op if unchanged), then re-schedules.
 func reportSeenCmd(c *client.Client, lastSeenID int64) tea.Cmd {
 	return func() tea.Msg {
-		time.Sleep(30 * time.Second)
+		time.Sleep(5 * time.Second)
 		_ = c.ReportSeen(lastSeenID)
 		return seenTickMsg{}
 	}
@@ -668,12 +710,25 @@ func (m Model) renderOutputItem(item OutputItem) []string {
 
 	case "command":
 		if lines, ok := item.Data.([]string); ok {
-			return lines
+			wrapWidth := width - 2 // leave a 2-col margin to avoid boundary clipping
+			if wrapWidth < 1 {
+				wrapWidth = 1
+			}
+			var out []string
+			for _, line := range lines {
+				wrapped := strings.Split(wordwrap.String(line, wrapWidth), "\n")
+				out = append(out, wrapped...)
+			}
+			return out
 		}
 
 	case "event":
 		if d, ok := item.Data.(map[string]interface{}); ok {
-			formatted := formatEvent(d, width)
+			whoami := ""
+			if m.state != nil {
+				whoami = m.state.Whoami
+			}
+			formatted := formatEvent(d, width, whoami)
 			return strings.Split(formatted, "\n")
 		}
 

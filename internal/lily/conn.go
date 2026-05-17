@@ -81,6 +81,14 @@ func (c *Conn) Connect() error {
 	}
 
 	log.Printf("lily: handshake complete")
+
+	// Ask the server which discussions we belong to.  The response is parsed
+	// by readLoop and suppressed from the Events channel so it never reaches
+	// clients as visible output.
+	if err := c.Send("/where me"); err != nil {
+		log.Printf("lily: /where me send: %v", err)
+	}
+
 	go c.readLoop()
 	return nil
 }
@@ -216,8 +224,18 @@ func (c *Conn) validateOptions(optionsText string) error {
 }
 
 // readLoop runs after the handshake and delivers messages on Events.
+// It silently intercepts the /where me command response to seed disc
+// membership without exposing it as visible output.
 func (c *Conn) readLoop() {
 	defer close(c.Events)
+
+	// Track the /where me command we sent before starting the loop.
+	// whereCmdID is non-zero when we are inside a %begin/%end block for
+	// /where me.  waitingForWhere stays true until we either receive the
+	// membership line OR confirm the /where me %end arrived.
+	var whereCmdID int
+	waitingForWhere := true
+
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -239,6 +257,36 @@ func (c *Conn) readLoop() {
 
 		// Keep state up to date
 		c.applyLive(msg)
+
+		// Intercept the /where me response before forwarding to clients.
+		suppress := false
+		if waitingForWhere {
+			switch msg.Type {
+			case slcp.MsgCmdBegin:
+				log.Printf("lily: where-wait CmdBegin cmdID=%d text=%q", msg.CmdID, msg.Text)
+				if strings.Contains(msg.Text, "/where") {
+					whereCmdID = msg.CmdID
+					suppress = true
+				}
+			case slcp.MsgRaw:
+				log.Printf("lily: where-wait MsgRaw whereCmdID=%d text=%q", whereCmdID, msg.Text)
+				if whereCmdID > 0 {
+					c.state.ApplyWhereResponse([]string{msg.Text})
+					suppress = true
+				}
+			case slcp.MsgCmdEnd:
+				log.Printf("lily: where-wait CmdEnd cmdID=%d whereCmdID=%d", msg.CmdID, whereCmdID)
+				if whereCmdID > 0 && msg.CmdID == whereCmdID {
+					whereCmdID = 0
+					waitingForWhere = false
+					suppress = true
+				}
+			}
+		}
+
+		if suppress {
+			continue
+		}
 
 		select {
 		case c.Events <- msg:

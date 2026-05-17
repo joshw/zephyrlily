@@ -33,10 +33,10 @@ func (m Model) inputPromptText() string {
 	return m.prompt
 }
 
-// inputPromptDisplayWidth returns the terminal columns consumed by the prompt
-// plus its trailing space separator.
+// inputPromptDisplayWidth returns the terminal columns consumed by the prompt,
+// including the "▸ " separator (2 columns) embedded inside the styled render.
 func (m Model) inputPromptDisplayWidth() int {
-	return len(m.inputPromptText()) + 1
+	return len(m.inputPromptText()) + 2
 }
 
 // inputFirstLineWidth returns the columns available for input text on line 0
@@ -109,7 +109,10 @@ func (m Model) renderInputArea(visibleLines int) []string {
 		visibleLines = 1
 	}
 
-	promptRendered := promptStyle.Render(m.inputPromptText())
+	// The trailing space is inside the Render call so it shares the same ANSI
+	// reset as the prompt, acting as a separator that prevents the background
+	// color of the adjacent cursor block from bleeding into the prompt glyph.
+	promptRendered := promptStyle.Render(m.inputPromptText() + "▸ ")
 	firstWidth := m.inputFirstLineWidth()
 	rw := m.width
 	if rw < 1 {
@@ -158,7 +161,6 @@ func (m Model) renderInputArea(visibleLines int) []string {
 
 		if lineIdx == 0 {
 			sb.WriteString(promptRendered)
-			sb.WriteString(" ")
 		}
 
 		start := lineStart(lineIdx)
@@ -178,9 +180,9 @@ func (m Model) renderInputArea(visibleLines int) []string {
 			j += size
 		}
 
-		// Cursor past end of input: show '_' on the cursor's own line.
+		// Cursor past end of input: solid box (background-colored space, no glyph).
 		if cursor >= len(m.input) && lineIdx == cursorLine {
-			sb.WriteString(cursorStyle.Render("_"))
+			sb.WriteString(cursorStyle.Render(" "))
 		}
 
 		out[i] = sb.String()

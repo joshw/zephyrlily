@@ -84,7 +84,9 @@ func wrapText(curLine, wordPrefix, text string, maxWidth int, initialSep string)
 // formatEvent produces a human-readable line for a notify event.
 // Formatting is based on tigerlily's slcp_output.pl message templates.
 // width is the maximum line width for wrapping messages.
-func formatEvent(d map[string]interface{}, width int) string {
+// whoami is the current user's handle; when source == whoami the message
+// uses second-person language ("you have/are") instead of third-person.
+func formatEvent(d map[string]interface{}, width int, whoami string) string {
 	event, _ := d["event"].(string)
 	source, _ := d["source"].(string)
 	value, _ := d["value"].(string)
@@ -173,6 +175,34 @@ func formatEvent(d map[string]interface{}, width int) string {
 		return strings.Join(wrapText(prefix, prefix, strings.TrimSpace(msg), width, ""), "\n")
 	}
 
+	// Second-person helpers: when the event source is the current user,
+	// produce "you"/"have"/"are"/"your" instead of name/"has"/"is"/"their".
+	isSelf := whoami != "" && source == whoami
+	subj := func() string {
+		if isSelf {
+			return "you"
+		}
+		return lookupName(source)
+	}
+	have := func() string {
+		if isSelf {
+			return "have"
+		}
+		return "has"
+	}
+	are := func() string {
+		if isSelf {
+			return "are"
+		}
+		return "is"
+	}
+	your := func() string {
+		if isSelf {
+			return "your"
+		}
+		return "their"
+	}
+
 	switch event {
 	case "public":
 		// Format: " -> (timestamp) From user [blurb], to target1, target2:\n - message"
@@ -235,71 +265,71 @@ func formatEvent(d map[string]interface{}, width int) string {
 		return emoteBodyStyle.Render(strings.Join(lines, "\n"))
 
 	case "connect":
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has entered lily ***", lookupName(source)))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s entered lily ***", subj(), have()))
 
 	case "disconnect":
 		if value != "" {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s has left lily (%s) ***", lookupName(source), value))
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s left lily (%s) ***", subj(), have(), value))
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has left lily ***", lookupName(source)))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s left lily ***", subj(), have()))
 
 	case "attach":
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has reattached ***", lookupName(source)))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s reattached ***", subj(), have()))
 
 	case "detach":
 		if value != "" {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s has been detached %s ***", lookupName(source), value))
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s been detached %s ***", subj(), have(), value))
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has detached ***", lookupName(source)))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s detached ***", subj(), have()))
 
 	case "here":
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s is now \"here\" ***", lookupName(source)))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s now \"here\" ***", subj(), are()))
 
 	case "away":
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s is now \"away\" ***", lookupName(source)))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s now \"away\" ***", subj(), are()))
 
 	case "rename":
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s is now named %s ***", lookupName(source), value))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s now named %s ***", subj(), are(), value))
 
 	case "blurb":
 		if value != "" {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s has changed their blurb to [%s] ***", lookupName(source), value))
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s changed %s blurb to [%s] ***", subj(), have(), your(), value))
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has turned their blurb off ***", lookupName(source)))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s turned %s blurb off ***", subj(), have(), your()))
 
 	case "unidle":
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s is now unidle ***", lookupName(source)))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s now unidle ***", subj(), are()))
 
 	case "create":
 		// For discussion creation, RECIPS holds the discussion handle
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s has created discussion %s ***", lookupName(source), lookupRecips(recips)))
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s created discussion %s ***", subj(), have(), lookupRecips(recips)))
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has created a discussion ***", lookupName(source)))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s created a discussion ***", subj(), have()))
 
 	case "destroy":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s has destroyed discussion %s ***", lookupName(source), lookupRecips(recips)))
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s destroyed discussion %s ***", subj(), have(), lookupRecips(recips)))
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has destroyed a discussion ***", lookupName(source)))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s destroyed a discussion ***", subj(), have()))
 
 	case "join":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s is now a member of %s ***", lookupName(source), lookupRecips(recips)))
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s now a member of %s ***", subj(), are(), lookupRecips(recips)))
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has joined a discussion ***", lookupName(source)))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s joined a discussion ***", subj(), have()))
 
 	case "quit":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s is no longer a member of %s ***", lookupName(source), lookupRecips(recips)))
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s no longer a member of %s ***", subj(), are(), lookupRecips(recips)))
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has quit a discussion ***", lookupName(source)))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s quit a discussion ***", subj(), have()))
 
 	case "retitle":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			return slcpBodyStyle.Render(fmt.Sprintf("*** %s has changed the title of %s to \"%s\" ***", lookupName(source), lookupRecips(recips), value))
+			return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s changed the title of %s to \"%s\" ***", subj(), have(), lookupRecips(recips), value))
 		}
-		return slcpBodyStyle.Render(fmt.Sprintf("*** %s has changed a discussion title to \"%s\" ***", lookupName(source), value))
+		return slcpBodyStyle.Render(fmt.Sprintf("*** %s %s changed a discussion title to \"%s\" ***", subj(), have(), value))
 
 	case "drename":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {

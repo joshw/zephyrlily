@@ -84,3 +84,9 @@ type CommandResultData struct {
 	CmdID int      `json:"cmd_id"`
 	Lines []string `json:"lines"`
 }
+
+// ExpandResponse is returned by GET /expand.
+// Matches contains exact matches first; if none, prefix matches.
+type ExpandResponse struct {
+	Matches []EntityJSON `json:"matches"`
+}
