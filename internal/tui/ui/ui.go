@@ -79,6 +79,9 @@ type Model struct {
 	storedLastSeenID     int64 // lastSeenID from proxy at startup, used to restore pagerTop
 	needsPositionRestore bool  // true until we have window size to set pagerTop
 
+	// Reconnect prompt: shown when the Lily connection drops.
+	reconnectPrompt bool
+
 	// Intelligent expand state (mirrors tigerlily expand.pl)
 	expandSender    string   // last person who private/emoted us  (recalled by ':')
 	expandRecips    string   // last destination we sent to        (recalled by ';')
@@ -186,6 +189,44 @@ func New(c *client.Client, state *api.StateResponse, logChan <-chan logMsg, init
 // serverEventMsg wraps a message arriving from the proxy.
 type serverEventMsg struct{ msg *api.WSServerMsg }
 
+// reconnectResultMsg is delivered when an async reconnect attempt completes.
+type reconnectResultMsg struct {
+	newClient *client.Client
+	state     *api.StateResponse
+	events    []api.WSServerMsg
+	err       error
+}
+
+// reconnectCmd closes the current connection and establishes a new one,
+// then fetches fresh state and any events since lastSeenID.
+func reconnectCmd(c *client.Client, lastSeenID int64) tea.Cmd {
+	return func() tea.Msg {
+		nc, err := c.Reconnect()
+		if err != nil {
+			return reconnectResultMsg{err: err}
+		}
+		state, err := nc.FetchState()
+		if err != nil {
+			return reconnectResultMsg{err: err}
+		}
+		// Replay events that arrived during the outage.
+		var events []api.WSServerMsg
+		afterID := lastSeenID
+		for {
+			batch, more, err := nc.FetchEvents(afterID, 200)
+			if err != nil {
+				break
+			}
+			events = append(events, batch...)
+			if !more || len(batch) == 0 {
+				break
+			}
+			afterID = batch[len(batch)-1].ID
+		}
+		return reconnectResultMsg{newClient: nc, state: state, events: events}
+	}
+}
+
 // listenCmd returns a Bubble Tea command that blocks on the next proxy event.
 func listenCmd(c *client.Client) tea.Cmd {
 	return func() tea.Msg {
@@ -239,6 +280,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.editMode {
 			updated, cmd, _ := m.handleEditorMsg(msg)
 			return updated, cmd
+		}
+
+		if m.reconnectPrompt {
+			switch msg.String() {
+			case "y", "Y", "enter", "ctrl+m", "ctrl+j":
+				m.reconnectPrompt = false
+				m.output = append(m.output, OutputItem{Type: "text", Data: "(reconnecting…)"})
+				return m, reconnectCmd(m.client, m.lastSeenID)
+			case "n", "N", "esc", "ctrl+c":
+				return m, tea.Quit
+			}
+			return m, nil // ignore all other keys while prompting
 		}
 
 		if m.searchMode {
@@ -514,8 +567,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case serverEventMsg:
 		if msg.msg == nil {
-			m.output = append(m.output, OutputItem{Type: "error", Data: "--- disconnected ---"})
-			return m, nil
+			// WebSocket closed — the proxy session is gone.
+			m.reconnectPrompt = true
+			return m, nil // don't restart listenCmd
 		}
 
 		// Log incoming message to debug (pretty-printed and wrapped)
@@ -528,6 +582,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.handleProxy(msg.msg)
 		m.advanceLastSeenID()
 
+		if m.reconnectPrompt {
+			return m, nil // proxy sent "lily connection closed"; don't restart
+		}
 		return m, listenCmd(m.client)
 
 	case logMsg:
@@ -540,6 +597,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case seenTickMsg:
 		return m, reportSeenCmd(m.client, m.lastSeenID)
+
+	case reconnectResultMsg:
+		if msg.err != nil {
+			m.output = append(m.output, OutputItem{Type: "error", Data: "reconnect failed: " + msg.err.Error()})
+			m.reconnectPrompt = true // offer to try again
+			return m, nil
+		}
+		m.client = msg.newClient
+		m.state = msg.state
+		for i := range msg.events {
+			m = m.handleProxy(&msg.events[i])
+		}
+		m.output = append(m.output, OutputItem{Type: "text", Data: "(reconnected)"})
+		return m, listenCmd(m.client)
 
 	case editorFetchResultMsg:
 		content := strings.Join(msg.lines, "\n")
@@ -645,6 +716,9 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 	case "error":
 		if e, ok := msg.Data.(string); ok {
 			m.output = append(m.output, OutputItem{Type: "error", Data: e, ID: msg.ID})
+			if e == "lily connection closed" {
+				m.reconnectPrompt = true
+			}
 		}
 	}
 	return m

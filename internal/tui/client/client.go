@@ -19,6 +19,8 @@ import (
 type Client struct {
 	proxyAddr string // e.g. "localhost:7888"
 	token     string
+	username  string // stored for reconnection
+	password  string // stored for reconnection
 	ws        *websocket.Conn
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -65,6 +67,8 @@ func (c *Client) Auth(username, password string) error {
 		return fmt.Errorf("auth decode: %w", err)
 	}
 	c.token = ar.Token
+	c.username = username
+	c.password = password
 	return nil
 }
 
@@ -227,12 +231,30 @@ func (c *Client) Close() {
 }
 
 func (c *Client) readLoop() {
-	defer close(c.Events)
+	// Capture the channel at goroutine start so that a reconnect that replaces
+	// c.Events doesn't cause this goroutine to close the new channel.
+	ch := c.Events
+	defer close(ch)
 	for {
 		var msg api.WSServerMsg
 		if err := wsjson.Read(c.ctx, c.ws, &msg); err != nil {
 			return
 		}
-		c.Events <- &msg
+		ch <- &msg
 	}
+}
+
+// Reconnect closes the current connection and returns a fresh Client using the
+// same proxy address and stored credentials.  The caller should replace its
+// client reference with the returned one.
+func (c *Client) Reconnect() (*Client, error) {
+	c.Close()
+	nc := New(c.proxyAddr)
+	if err := nc.Auth(c.username, c.password); err != nil {
+		return nil, fmt.Errorf("reconnect auth: %w", err)
+	}
+	if err := nc.Connect(); err != nil {
+		return nil, fmt.Errorf("reconnect ws: %w", err)
+	}
+	return nc, nil
 }

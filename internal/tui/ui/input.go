@@ -20,6 +20,9 @@ var (
 
 // inputPromptText returns the text to display as the input prompt.
 func (m Model) inputPromptText() string {
+	if m.reconnectPrompt {
+		return "Reconnect? (Y/n)"
+	}
 	if m.searchMode {
 		dir := "i-search"
 		if m.searchBack {
