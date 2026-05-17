@@ -69,6 +69,18 @@ type Session struct {
 	// Keepalive: unix nanoseconds of the most recent %pong received from Lily.
 	// Written by fanOut, read by runKeepalive. Zero until the first pong arrives.
 	lastPongReceivedAt atomic.Int64
+
+	// Fetch coordination: an HTTP handler sets fetchResultCh before sending
+	// the fetch command to Lily; fanOut routes the first command result that
+	// arrives while the channel is set back through it instead of broadcasting.
+	fetchMu      sync.Mutex
+	fetchResultCh chan []string
+	fetchCmdID   int
+
+	// Store coordination: set before sending #$# export_file; fanOut routes
+	// the %export_file OKAY/ERROR message back through the channel.
+	storeMu      sync.Mutex
+	storeResultCh chan string
 }
 
 // wsClient is a single WebSocket connection to the proxy.
@@ -97,6 +109,8 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/events", s.handleEvents)
 	mux.HandleFunc("/seen", s.handleSeen)
 	mux.HandleFunc("/expand", s.handleExpand)
+	mux.HandleFunc("/fetch", s.handleFetch)
+	mux.HandleFunc("/store", s.handleStore)
 
 	// Wrap with logging middleware
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -252,6 +266,20 @@ func (s *Server) fanOut(sess *Session) {
 			continue
 		}
 
+		// %export_file OKAY/ERROR — route to a waiting store handler.
+		if msg.Type == slcp.MsgExportFile {
+			sess.storeMu.Lock()
+			if sess.storeResultCh != nil {
+				select {
+				case sess.storeResultCh <- msg.Text:
+				default:
+				}
+				sess.storeResultCh = nil
+			}
+			sess.storeMu.Unlock()
+			continue
+		}
+
 		// Handle command leafing: buffer output between %begin and %end
 		sess.cmdMu.Lock()
 		switch msg.Type {
@@ -260,12 +288,38 @@ func (s *Server) fanOut(sess *Session) {
 			id := msg.CmdID
 			sess.cmdBuffer[id] = []string{}
 			sess.cmdMu.Unlock()
+			// If a fetch is pending and we haven't pinned a command ID yet,
+			// claim this one.  We don't match on text because the server may
+			// echo a different form of the command than we sent.
+			sess.fetchMu.Lock()
+			if sess.fetchResultCh != nil && sess.fetchCmdID == 0 {
+				log.Printf("proxy: fetch pinning cmdID=%d (begin text=%q)", id, msg.Text)
+				sess.fetchCmdID = id
+			}
+			sess.fetchMu.Unlock()
 			continue // don't send individual begin messages
 
 		case slcp.MsgCmdEnd:
 			// Send the complete buffered output
 			id := msg.CmdID
 			if lines, ok := sess.cmdBuffer[id]; ok {
+				delete(sess.cmdBuffer, id)
+				sess.cmdMu.Unlock()
+
+				// Route to a waiting fetch handler instead of broadcasting.
+				sess.fetchMu.Lock()
+				if sess.fetchResultCh != nil && id == sess.fetchCmdID {
+					select {
+					case sess.fetchResultCh <- lines:
+					default:
+					}
+					sess.fetchResultCh = nil
+					sess.fetchCmdID = 0
+					sess.fetchMu.Unlock()
+					continue
+				}
+				sess.fetchMu.Unlock()
+
 				wsMsg := &WSServerMsg{
 					Type: "commandresult",
 					Data: CommandResultData{
@@ -274,8 +328,6 @@ func (s *Server) fanOut(sess *Session) {
 					},
 				}
 				sess.assignID(wsMsg)
-				delete(sess.cmdBuffer, id)
-				sess.cmdMu.Unlock()
 
 				if wsMsg.Type == "event" || wsMsg.Type == "text" || wsMsg.Type == "commandresult" {
 					sess.eventBufMu.Lock()
@@ -668,6 +720,165 @@ func (s *Server) handleExpand(w http.ResponseWriter, r *http.Request) {
 		prefix = []EntityJSON{}
 	}
 	writeJSON(w, ExpandResponse{Matches: prefix})
+}
+
+// handleFetch fetches the content of an info or memo from the Lily server.
+// Query params: type=info|memo, target=<handle or "me">, name=<memo name>.
+// The command result is intercepted by fanOut and returned here rather than
+// broadcast to WebSocket clients.
+func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.sessionFromRequest(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	contentType := r.URL.Query().Get("type")
+	if contentType == "" {
+		contentType = "info"
+	}
+	target := r.URL.Query().Get("target")
+	if target == "" {
+		target = "me"
+	}
+	name := r.URL.Query().Get("name")
+
+	var cmd string
+	switch contentType {
+	case "info":
+		cmd = "/info " + target
+	case "memo":
+		cmd = "/memo " + target + " " + name
+	default:
+		http.Error(w, "unknown type", http.StatusBadRequest)
+		return
+	}
+
+	resultCh := make(chan []string, 1)
+	sess.fetchMu.Lock()
+	if sess.fetchResultCh != nil {
+		sess.fetchMu.Unlock()
+		http.Error(w, "fetch already in progress", http.StatusConflict)
+		return
+	}
+	sess.fetchResultCh = resultCh
+	sess.fetchCmdID = 0
+	sess.fetchMu.Unlock()
+
+	if err := sess.conn.Send(cmd); err != nil {
+		sess.fetchMu.Lock()
+		sess.fetchResultCh = nil
+		sess.fetchMu.Unlock()
+		http.Error(w, "send failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	select {
+	case lines := <-resultCh:
+		// Content lines are prefixed "* " by the server; strip those two chars.
+		var content []string
+		for _, line := range lines {
+			if strings.HasPrefix(line, "* ") {
+				content = append(content, line[2:])
+			}
+		}
+		if content == nil {
+			content = []string{}
+		}
+		writeJSON(w, FetchResponse{Lines: content})
+	case <-time.After(10 * time.Second):
+		sess.fetchMu.Lock()
+		sess.fetchResultCh = nil
+		sess.fetchMu.Unlock()
+		http.Error(w, "fetch timeout", http.StatusGatewayTimeout)
+	}
+}
+
+// handleStore stores new content for an info or memo via the Lily export_file protocol.
+func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sess, ok := s.sessionFromRequest(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req StoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// Lily uses an empty target string to mean "me".
+	target := req.Target
+	if target == "me" {
+		target = ""
+	}
+
+	var exportCmd string
+	switch req.Type {
+	case "info":
+		if target == "" {
+			exportCmd = fmt.Sprintf("#$# export_file info %d", len(req.Lines))
+		} else {
+			exportCmd = fmt.Sprintf("#$# export_file info %d %s", len(req.Lines), target)
+		}
+	case "memo":
+		byteSize := 0
+		for _, line := range req.Lines {
+			byteSize += len(line)
+		}
+		if target == "" {
+			exportCmd = fmt.Sprintf("#$# export_file memo %d %d %s", byteSize, len(req.Lines), req.Name)
+		} else {
+			exportCmd = fmt.Sprintf("#$# export_file memo %d %d %s %s", byteSize, len(req.Lines), req.Name, target)
+		}
+	default:
+		http.Error(w, "unknown type", http.StatusBadRequest)
+		return
+	}
+
+	resultCh := make(chan string, 1)
+	sess.storeMu.Lock()
+	if sess.storeResultCh != nil {
+		sess.storeMu.Unlock()
+		http.Error(w, "store already in progress", http.StatusConflict)
+		return
+	}
+	sess.storeResultCh = resultCh
+	sess.storeMu.Unlock()
+
+	if err := sess.conn.Send(exportCmd); err != nil {
+		sess.storeMu.Lock()
+		sess.storeResultCh = nil
+		sess.storeMu.Unlock()
+		http.Error(w, "send failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	select {
+	case response := <-resultCh:
+		if response != "OKAY" {
+			http.Error(w, "server rejected store: "+response, http.StatusBadGateway)
+			return
+		}
+		for _, line := range req.Lines {
+			if err := sess.conn.Send(line); err != nil {
+				http.Error(w, "send line failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case <-time.After(10 * time.Second):
+		sess.storeMu.Lock()
+		sess.storeResultCh = nil
+		sess.storeMu.Unlock()
+		http.Error(w, "store timeout", http.StatusGatewayTimeout)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

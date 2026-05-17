@@ -150,6 +150,57 @@ func (c *Client) Expand(partial string, validDestOnly bool) ([]api.EntityJSON, e
 	return er.Matches, nil
 }
 
+// FetchContent fetches the content of an info or memo from the proxy.
+// contentType is "info" or "memo". target is "me" or a handle. name is the
+// memo name (empty for info). Returns parsed content lines (stripped of "* " prefix).
+func (c *Client) FetchContent(contentType, target, name string) ([]string, error) {
+	u := fmt.Sprintf("http://%s/fetch?type=%s&target=%s",
+		c.proxyAddr, url.QueryEscape(contentType), url.QueryEscape(target))
+	if name != "" {
+		u += "&name=" + url.QueryEscape(name)
+	}
+	req, _ := http.NewRequest(http.MethodGet, u, nil)
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch: HTTP %s", resp.Status)
+	}
+	var fr api.FetchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&fr); err != nil {
+		return nil, fmt.Errorf("fetch decode: %w", err)
+	}
+	return fr.Lines, nil
+}
+
+// StoreContent stores new content for an info or memo via the proxy.
+func (c *Client) StoreContent(contentType, target, name string, lines []string) error {
+	if lines == nil {
+		lines = []string{}
+	}
+	body, _ := json.Marshal(api.StoreRequest{
+		Type:   contentType,
+		Target: target,
+		Name:   name,
+		Lines:  lines,
+	})
+	req, _ := http.NewRequest(http.MethodPost, "http://"+c.proxyAddr+"/store", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("store request: %w", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("store: HTTP %s", resp.Status)
+	}
+	return nil
+}
+
 // Connect upgrades to a WebSocket and starts delivering events on c.Events.
 func (c *Client) Connect() error {
 	ws, _, err := websocket.Dial(c.ctx, "ws://"+c.proxyAddr+"/ws?token="+c.token, nil)

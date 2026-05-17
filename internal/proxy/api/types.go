@@ -90,3 +90,16 @@ type CommandResultData struct {
 type ExpandResponse struct {
 	Matches []EntityJSON `json:"matches"`
 }
+
+// FetchResponse is returned by GET /fetch.
+type FetchResponse struct {
+	Lines []string `json:"lines"`
+}
+
+// StoreRequest is the body for POST /store.
+type StoreRequest struct {
+	Type   string   `json:"type"`   // "info" or "memo"
+	Target string   `json:"target"` // empty string means current user
+	Name   string   `json:"name"`   // memo name (empty for info)
+	Lines  []string `json:"lines"`
+}

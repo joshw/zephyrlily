@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
@@ -83,6 +84,11 @@ type Model struct {
 	expandRecips    string   // last destination we sent to        (recalled by ';')
 	expandSendgroup string   // group from last multi-recip private (recalled by '=')
 	pastSends       []string // recent destinations, newest first (capped at pastSendsMax)
+
+	// In-TUI editor (info / memo)
+	editMode bool
+	editor   textarea.Model
+	editMeta editMeta
 
 	// Logging
 	logChan <-chan logMsg // receives log messages to display
@@ -219,6 +225,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		if m.editMode {
+			m.editor.SetWidth(m.width)
+			m.editor.SetHeight(m.height - 2)
+		}
 		if m.needsPositionRestore {
 			m.restorePosition()
 		}
@@ -226,6 +236,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, reportSeenNow(m.client, m.lastSeenID)
 
 	case tea.KeyMsg:
+		if m.editMode {
+			updated, cmd, _ := m.handleEditorMsg(msg)
+			return updated, cmd
+		}
+
 		if m.searchMode {
 			m.metaPrefix = false
 			m = m.handleSearchKey(msg)
@@ -322,9 +337,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.debugScrollOffset = 0
 
-			localOutput, handled := m.handleLocalCommand(line)
+			localOutput, handled, asyncCmd := m.handleLocalCommand(line)
 			if localOutput != nil {
 				m.output = append(m.output, OutputItem{Type: "command", Data: localOutput})
+			}
+			if asyncCmd != nil {
+				return m, asyncCmd
 			}
 			if !handled {
 				m = m.trackOutgoingSend(line)
@@ -522,6 +540,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case seenTickMsg:
 		return m, reportSeenCmd(m.client, m.lastSeenID)
+
+	case editorFetchResultMsg:
+		content := strings.Join(msg.lines, "\n")
+		// err means no existing content — open a blank editor anyway
+		m.editMeta = msg.meta
+		m.editor = newEditorModel(m.width, m.height-2, content)
+		m.editMode = true
+		return m, nil
+
+	case editorSaveResultMsg:
+		m.editMode = false
+		if msg.err != nil {
+			m.output = append(m.output, OutputItem{Type: "error", Data: msg.err.Error()})
+		} else {
+			var saved string
+			switch msg.meta.contentType {
+			case "info":
+				saved = "(info saved)"
+			case "memo":
+				saved = "(memo \"" + msg.meta.name + "\" saved)"
+			}
+			m.output = append(m.output, OutputItem{Type: "text", Data: saved})
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -686,6 +728,9 @@ func reportSeenCmd(c *client.Client, lastSeenID int64) tea.Cmd {
 func (m Model) View() string {
 	if m.height == 0 {
 		return "connecting..."
+	}
+	if m.editMode {
+		return m.viewEditor()
 	}
 
 	if m.debugMode {
