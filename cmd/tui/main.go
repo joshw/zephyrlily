@@ -8,7 +8,6 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 	"github.com/joshw/zephyrlily/internal/tui/ui"
 )
@@ -30,36 +29,22 @@ func main() {
 		log.Fatalf("auth: %v", err)
 	}
 
-	state, err := c.FetchState()
-	if err != nil {
-		log.Fatalf("state: %v", err)
-	}
-
-	// Set up TUI logger now so history fetch errors appear in the output window.
-	logChan, logger := ui.NewLogger()
-	slog.SetDefault(logger)
-
-	var initialEvents []api.WSServerMsg
-	afterID := int64(0)
-	for {
-		events, more, err := c.FetchEvents(afterID, 200)
-		if err != nil {
-			slog.Error(fmt.Sprintf("history fetch: %v", err))
-			break
-		}
-		initialEvents = append(initialEvents, events...)
-		if !more || len(events) == 0 {
-			break
-		}
-		afterID = events[len(events)-1].ID
-	}
-
+	// Connect the WebSocket before starting the TUI so that SLCP sync messages
+	// (including interactive prompts) can flow to the UI immediately.
 	if err := c.Connect(); err != nil {
 		log.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
 
-	m := ui.New(c, state, logChan, initialEvents, state.LastSeenID)
+	// Logger must be set up before the TUI starts so messages go to the output
+	// window rather than stderr.
+	logChan, logger := ui.NewLogger()
+	slog.SetDefault(logger)
+
+	// State and initial event history are fetched asynchronously inside the
+	// TUI so that the user sees (and can respond to) any SLCP prompts that
+	// arrive during the login sync.
+	m := ui.New(c, logChan)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("tui: %v", err)

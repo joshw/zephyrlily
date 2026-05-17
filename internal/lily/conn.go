@@ -36,6 +36,11 @@ type Conn struct {
 	phase ConnPhase
 	state *State
 
+	// syncComplete is closed when the initial %SLCP-SYNC completes (%connected
+	// received).  Callers that need fully-populated state (e.g. /state) block
+	// on this channel before reading entity data.
+	syncComplete chan struct{}
+
 	// nextCmdID is incremented for each command we originate (if needed).
 	nextCmdID atomic.Int64
 
@@ -52,14 +57,21 @@ type Conn struct {
 func NewConn(addr, username, password string) *Conn {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Conn{
-		addr:     addr,
-		username: username,
-		password: password,
-		state:    NewState(),
-		Events:   make(chan *slcp.Message, 256),
-		ctx:      ctx,
-		cancel:   cancel,
+		addr:         addr,
+		username:     username,
+		password:     password,
+		state:        NewState(),
+		Events:       make(chan *slcp.Message, 256),
+		ctx:          ctx,
+		cancel:       cancel,
+		syncComplete: make(chan struct{}),
 	}
+}
+
+// SyncComplete returns a channel that is closed when the initial SLCP sync
+// finishes (%connected is received and state is fully populated).
+func (c *Conn) SyncComplete() <-chan struct{} {
+	return c.syncComplete
 }
 
 // Connect dials the Lily server and runs the handshake, blocking until
@@ -80,15 +92,7 @@ func (c *Conn) Connect() error {
 		return err
 	}
 
-	log.Printf("lily: handshake complete")
-
-	// Ask the server which discussions we belong to.  The response is parsed
-	// by readLoop and suppressed from the Events channel so it never reaches
-	// clients as visible output.
-	if err := c.Send("/where me"); err != nil {
-		log.Printf("lily: /where me send: %v", err)
-	}
-
+	log.Printf("lily: login confirmed, handing sync off to readLoop")
 	go c.readLoop()
 	return nil
 }
@@ -159,39 +163,33 @@ func (c *Conn) runHandshake() error {
 		case PhaseSync:
 			msg, err := slcp.Parse(line)
 			if err != nil {
-				log.Printf("slcp parse during sync: %v", err)
+				log.Printf("slcp parse during pre-sync: %v", err)
 				continue
 			}
 
-			// Validate server options
-			if msg.Type == slcp.MsgOptions {
+			switch msg.Type {
+			case slcp.MsgServer:
+				// %server carries version/name metadata; apply it and keep reading.
+				if err := c.applySync(msg); err != nil {
+					log.Printf("sync apply: %v", err)
+				}
+
+			case slcp.MsgOptions:
+				// %options confirms the server accepted our credentials.
+				// Return immediately so readLoop can handle everything that
+				// follows (raw text, interactive prompts, entity data,
+				// %connected) and forward it to the TUI for the user to see
+				// and respond to.
 				if err := c.validateOptions(msg.Text); err != nil {
 					return err
 				}
-			}
-
-			// Handle prompts during sync (blurb, etc.) - send blank line
-			if msg.Type == slcp.MsgPrompt {
-				log.Printf("lily: got prompt during sync, sending blank line")
-				if err := c.Send(""); err != nil {
-					return err
-				}
-				continue
-			}
-
-			if err := c.applySync(msg); err != nil {
-				log.Printf("sync apply: %v", err)
-			}
-
-			// Wait for %connected to indicate login/sync is complete
-			if msg.Type == slcp.MsgConnected {
-				log.Printf("lily: got %%connected, sending client name")
-				// After %connected, send client name
-				if err := c.Send("#$# client zlily 0.1.0"); err != nil {
-					return err
-				}
+				log.Printf("lily: login confirmed, handing off to readLoop")
 				c.phase = PhaseReady
 				return nil
+
+			default:
+				// Unexpected message before %options (rare); skip it.
+				log.Printf("lily: pre-options message type=%v text=%q", msg.Type, msg.Text)
 			}
 		}
 	}
@@ -223,18 +221,21 @@ func (c *Conn) validateOptions(optionsText string) error {
 	return nil
 }
 
-// readLoop runs after the handshake and delivers messages on Events.
-// It silently intercepts the /where me command response to seed disc
-// membership without exposing it as visible output.
+// readLoop runs after the initial login handshake and delivers messages on
+// Events.  It handles the full SLCP sync (entity data, prompts, %connected)
+// and silently intercepts the /where me command response used to seed disc
+// membership.
 func (c *Conn) readLoop() {
 	defer close(c.Events)
 
-	// Track the /where me command we sent before starting the loop.
-	// whereCmdID is non-zero when we are inside a %begin/%end block for
-	// /where me.  waitingForWhere stays true until we either receive the
-	// membership line OR confirm the /where me %end arrived.
+	// inSync is true while we are processing the initial %SLCP-SYNC block.
+	// Messages are applied with fromSync=true so disc membership is seeded.
+	inSync := true
+
+	// waitingForWhere becomes true after we send /where me on %connected, and
+	// reverts to false once the response is fully received and processed.
 	var whereCmdID int
-	waitingForWhere := true
+	waitingForWhere := false
 
 	for {
 		select {
@@ -255,8 +256,29 @@ func (c *Conn) readLoop() {
 			continue
 		}
 
-		// Keep state up to date
-		c.applyLive(msg)
+		// Apply to state (sync mode until %connected so disc membership is set).
+		if inSync {
+			c.applySync(msg)
+		} else {
+			c.applyLive(msg)
+		}
+
+		// %connected marks the end of the initial sync.
+		if msg.Type == slcp.MsgConnected {
+			inSync = false
+			log.Printf("lily: got %%connected, sending client name")
+			if err := c.Send("#$# client zlily 0.1.0"); err != nil {
+				log.Printf("lily: client name send: %v", err)
+			}
+			// Signal that state is fully populated.
+			close(c.syncComplete)
+			// Ask the server which discussions we belong to.
+			if err := c.Send("/where me"); err != nil {
+				log.Printf("lily: /where me send: %v", err)
+			}
+			waitingForWhere = true
+			continue // %connected itself is not forwarded to clients
+		}
 
 		// Intercept the /where me response before forwarding to clients.
 		suppress := false

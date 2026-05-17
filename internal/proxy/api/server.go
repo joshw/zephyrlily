@@ -206,6 +206,15 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Block until the initial SLCP sync completes so the caller receives fully-
+	// populated entity data.  The timeout prevents an indefinite hang if the
+	// Lily server never sends %connected.
+	select {
+	case <-sess.conn.SyncComplete():
+	case <-time.After(60 * time.Second):
+		log.Printf("handleState: sync timeout for %s", sess.username)
+	}
+
 	st := sess.conn.State()
 	entities := st.AllEntities()
 	sess.eventBufMu.RLock()
@@ -253,6 +262,23 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	sess.subsMu.Lock()
 	sess.subscribers[client] = struct{}{}
 	sess.subsMu.Unlock()
+
+	// For fresh sessions (no prior history), replay the buffered event ring
+	// immediately so the subscriber receives messages — including interactive
+	// prompts and raw server text — that arrived before it connected.
+	// Reconnecting sessions retrieve missed history via GET /events instead.
+	if sess.lastSeenID.Load() == 0 {
+		sess.eventBufMu.RLock()
+		snapshot := make([]*WSServerMsg, len(sess.eventBuf))
+		copy(snapshot, sess.eventBuf)
+		sess.eventBufMu.RUnlock()
+		for _, msg := range snapshot {
+			select {
+			case client.send <- msg:
+			default:
+			}
+		}
+	}
 
 	go client.writeLoop()
 	client.readLoop(sess) // blocks until client disconnects
@@ -343,7 +369,7 @@ func (s *Server) fanOut(sess *Session) {
 				}
 				sess.assignID(wsMsg)
 
-				if wsMsg.Type == "event" || wsMsg.Type == "text" || wsMsg.Type == "commandresult" {
+				if wsMsg.Type == "event" || wsMsg.Type == "text" || wsMsg.Type == "commandresult" || wsMsg.Type == "prompt" {
 					sess.eventBufMu.Lock()
 					sess.eventBuf = append(sess.eventBuf, wsMsg)
 					if len(sess.eventBuf) > maxEventBuf {
@@ -396,7 +422,7 @@ func (s *Server) fanOut(sess *Session) {
 		}
 		sess.assignID(wsMsg)
 
-		if wsMsg.Type == "event" || wsMsg.Type == "text" || wsMsg.Type == "commandresult" {
+		if wsMsg.Type == "event" || wsMsg.Type == "text" || wsMsg.Type == "commandresult" || wsMsg.Type == "prompt" {
 			sess.eventBufMu.Lock()
 			sess.eventBuf = append(sess.eventBuf, wsMsg)
 			if len(sess.eventBuf) > maxEventBuf {

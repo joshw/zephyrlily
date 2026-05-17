@@ -125,65 +125,63 @@ func NewLogger() (chan logMsg, *slog.Logger) {
 	return ch, slog.New(&slogHandler{ch: ch})
 }
 
-// New creates a Model wired to the given proxy client.
-// state is the initial state snapshot fetched at startup.
-// logChan should be created with NewLogger().
-// initialEvents is the historical event buffer fetched from the proxy.
-// storedLastSeenID is the last seen ID from the proxy (used to restore scroll position).
-func New(c *client.Client, state *api.StateResponse, logChan <-chan logMsg, initialEvents []api.WSServerMsg, storedLastSeenID int64) Model {
-	// Create initial output with logo
+// New creates a Model wired to the given proxy client.  State and event
+// history are fetched asynchronously in Init() so that SLCP prompts arriving
+// during the login sync are visible and answerable in the TUI.
+func New(c *client.Client, logChan <-chan logMsg) Model {
 	logoLines := formatLogo()
 	output := make([]OutputItem, 0, len(logoLines)+1)
 	for _, line := range logoLines {
 		output = append(output, OutputItem{Type: "text", Data: line})
 	}
-	output = append(output, OutputItem{Type: "text", Data: ""}) // blank line
+	output = append(output, OutputItem{Type: "text", Data: ""})
 
-	if state != nil {
-		displayName := state.Whoami
-		for _, e := range state.Entities {
-			if e.Handle == state.Whoami && e.Kind == "user" {
-				displayName = e.Name
-				break
+	return Model{
+		client:       c,
+		output:       output,
+		spellChecker: NewSpellChecker(),
+		logChan:      logChan,
+		historyPos:   -1,
+		searchIdx:    -1,
+	}
+}
+
+// initialStateMsg is delivered when the async state+history fetch completes.
+type initialStateMsg struct {
+	state  *api.StateResponse
+	events []api.WSServerMsg
+	err    error
+}
+
+// fetchInitialStateCmd fetches state (blocking until the SLCP sync is done).
+// For reconnect sessions (LastSeenID > 0) it also pages through missed events
+// via GET /events.  For fresh sessions, pre-sync messages (text, prompts) are
+// delivered via WebSocket replay when the subscriber connects, so no separate
+// history fetch is needed.
+func fetchInitialStateCmd(c *client.Client) tea.Cmd {
+	return func() tea.Msg {
+		state, err := c.FetchState()
+		if err != nil {
+			return initialStateMsg{err: err}
+		}
+		var events []api.WSServerMsg
+		if state.LastSeenID > 0 {
+			// Reconnect: replay events from the stored scroll position.
+			afterID := state.LastSeenID
+			for {
+				batch, more, err := c.FetchEvents(afterID, 200)
+				if err != nil {
+					break
+				}
+				events = append(events, batch...)
+				if !more || len(batch) == 0 {
+					break
+				}
+				afterID = batch[len(batch)-1].ID
 			}
 		}
-		connLine := "Connected to " + state.Server + " as " +
-			privateSenderStyle.Render(displayName) + " (" + state.Whoami + ")"
-		output = append(output, OutputItem{Type: "text", Data: connLine})
-		output = append(output, OutputItem{Type: "text", Data: ""})
+		return initialStateMsg{state: state, events: events}
 	}
-
-	m := Model{
-		client:           c,
-		state:            state,
-		output:           output,
-		prompt:           "",
-		spellChecker:     NewSpellChecker(),
-		logChan:          logChan,
-		storedLastSeenID: storedLastSeenID,
-		historyPos:       -1,
-		searchIdx:        -1,
-	}
-
-	for i := range initialEvents {
-		m = m.handleProxy(&initialEvents[i])
-	}
-
-	bufSize := 0
-	if state != nil {
-		bufSize = state.EventBufSize
-	}
-	if len(initialEvents) > 0 {
-		slog.Info(fmt.Sprintf("loaded %d events from history (proxy buffer: %d)", len(initialEvents), bufSize))
-	} else {
-		slog.Info(fmt.Sprintf("no history events loaded (proxy buffer: %d, stored lastSeenID: %d)", bufSize, storedLastSeenID))
-	}
-
-	if storedLastSeenID > 0 {
-		m.needsPositionRestore = true
-	}
-
-	return m
 }
 
 // serverEventMsg wraps a message arriving from the proxy.
@@ -250,12 +248,11 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		listenCmd(m.client),
 		listenLogCmd(m.logChan),
-		// seen reporting starts from WindowSizeMsg once we know the real lastSeenID
-		// Hide the terminal hardware cursor: after every frame Bubble Tea parks
-		// it at column 1 of the last rendered row (the input line start), which
-		// sits right next to our software cursor at position 0 and makes it look
-		// extra wide.  We draw our own cursor so the hardware one is redundant.
 		tea.HideCursor,
+		// Fetch state (blocks until SLCP sync completes) and event history.
+		// Running this as a Cmd means the TUI is already live when the sync
+		// happens, so any %prompt messages flow through and are visible.
+		fetchInitialStateCmd(m.client),
 	)
 }
 
@@ -364,11 +361,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "enter", "ctrl+m", "ctrl+j":
 			line := m.input
-			// Blank Enter advances the pager and sends an empty line to the server.
-			// Non-blank Enter only sends (no pager advance).
 			if line == "" {
-				m.pagerTop += m.height - 3
-				m.advanceLastSeenID()
+				if m.prompt != "" {
+					// Responding to an active server prompt with a blank line.
+					// Echo an empty output entry so the user has visible
+					// confirmation that Enter was received — the server may
+					// immediately issue another %prompt, which would otherwise
+					// make it look as if nothing happened.
+				} else {
+					// No active prompt — treat as a pager advance.
+					m.pagerTop += m.height - 3
+					m.advanceLastSeenID()
+				}
 			} else {
 				m = m.addHistoryEntry(line)
 			}
@@ -380,6 +384,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input = ""
 			m.cursor = 0
 			m.inputScroll = 0
+			m.prompt = "" // cleared until the server sends the next %prompt
 
 			// Log outgoing command to debug (formatted)
 			cmdMsg := api.WSClientMsg{Type: "command", Text: line}
@@ -611,6 +616,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.output = append(m.output, OutputItem{Type: "text", Data: "(reconnected)"})
 		return m, listenCmd(m.client)
+
+	case initialStateMsg:
+		if msg.err != nil {
+			m.output = append(m.output, OutputItem{Type: "error", Data: "state: " + msg.err.Error()})
+			return m, nil
+		}
+		m.state = msg.state
+		// Show the connection line now that we know who we are.
+		if m.state != nil {
+			displayName := m.state.Whoami
+			for _, e := range m.state.Entities {
+				if e.Handle == m.state.Whoami && e.Kind == "user" {
+					displayName = e.Name
+					break
+				}
+			}
+			connLine := "Connected to " + m.state.Server + " as " +
+				privateSenderStyle.Render(displayName) + " (" + m.state.Whoami + ")"
+			m.output = append(m.output, OutputItem{Type: "text", Data: connLine})
+			m.output = append(m.output, OutputItem{Type: "text", Data: ""})
+		}
+		// Replay history events.
+		if len(msg.events) > 0 {
+			slog.Info(fmt.Sprintf("loaded %d events from history (proxy buffer: %d)", len(msg.events), m.state.EventBufSize))
+		} else {
+			slog.Info(fmt.Sprintf("no history events loaded (proxy buffer: %d)", m.state.EventBufSize))
+		}
+		for i := range msg.events {
+			m = m.handleProxy(&msg.events[i])
+		}
+		// Restore scroll position.
+		m.storedLastSeenID = m.state.LastSeenID
+		if m.storedLastSeenID > 0 {
+			m.needsPositionRestore = true
+		}
+		return m, reportSeenNow(m.client, m.lastSeenID)
 
 	case editorFetchResultMsg:
 		content := strings.Join(msg.lines, "\n")
