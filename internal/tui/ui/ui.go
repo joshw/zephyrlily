@@ -112,7 +112,13 @@ type slogHandler struct {
 func (h *slogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
 
 func (h *slogHandler) Handle(_ context.Context, r slog.Record) error {
-	h.ch <- logMsg{level: r.Level.String(), text: r.Message}
+	var b strings.Builder
+	b.WriteString(r.Message)
+	r.Attrs(func(a slog.Attr) bool {
+		fmt.Fprintf(&b, " %s=%v", a.Key, a.Value.Any())
+		return true
+	})
+	h.ch <- logMsg{level: r.Level.String(), text: b.String()}
 	return nil
 }
 

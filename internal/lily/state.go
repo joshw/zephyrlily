@@ -2,7 +2,7 @@
 package lily
 
 import (
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -108,7 +108,7 @@ func (s *State) ApplyWhereResponse(lines []string) {
 			continue
 		}
 		rest := strings.TrimSuffix(strings.TrimPrefix(line, prefix), ".")
-		log.Printf("lily: ApplyWhereResponse names=%q", rest)
+		slog.Debug("lily: where response", "names", rest)
 		for _, name := range strings.Split(rest, ",") {
 			name = strings.TrimSpace(name)
 			if name == "" {
@@ -118,9 +118,9 @@ func (s *State) ApplyWhereResponse(lines []string) {
 			e := s.byName[strings.ToLower(name)]
 			if e != nil && e.Kind == KindDisc {
 				s.discMembership[e.Handle] = true
-				log.Printf("lily: member disc set: %q handle=%s", name, e.Handle)
+				slog.Debug("lily: disc membership set", "name", name, "handle", e.Handle)
 			} else {
-				log.Printf("lily: member disc miss: %q entityFound=%v", name, e != nil)
+				slog.Debug("lily: disc membership miss", "name", name, "found", e != nil)
 			}
 			s.mu.Unlock()
 		}

@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -77,12 +77,12 @@ func (c *Conn) SyncComplete() <-chan struct{} {
 // Connect dials the Lily server and runs the handshake, blocking until
 // %connected is received or an error occurs.
 func (c *Conn) Connect() error {
-	log.Printf("lily: dialing %s", c.addr)
+	slog.Debug("lily: dialing", "addr", c.addr)
 	nc, err := net.Dial("tcp", c.addr)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", c.addr, err)
 	}
-	log.Printf("lily: connected to %s", c.addr)
+	slog.Debug("lily: connected", "addr", c.addr)
 	c.conn = nc
 	c.reader = bufio.NewReader(nc)
 	c.phase = PhaseFirstPrompt
@@ -92,7 +92,7 @@ func (c *Conn) Connect() error {
 		return err
 	}
 
-	log.Printf("lily: login confirmed, handing sync off to readLoop")
+	slog.Debug("lily: login confirmed, starting readLoop")
 	go c.readLoop()
 	return nil
 }
@@ -114,7 +114,7 @@ func (c *Conn) State() *State {
 func (c *Conn) Send(line string) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	log.Printf("lily: send: %q", line)
+	slog.Debug("lily: send", "line", line)
 	_, err := fmt.Fprintf(c.conn, "%s\n", line)
 	return err
 }
@@ -123,7 +123,7 @@ func (c *Conn) Send(line string) error {
 func (c *Conn) sendRaw(s string) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	log.Printf("lily: send raw: %q", s)
+	slog.Debug("lily: send raw", "data", s)
 	_, err := fmt.Fprint(c.conn, s)
 	return err
 }
@@ -136,7 +136,7 @@ func (c *Conn) runHandshake() error {
 		if err != nil {
 			return fmt.Errorf("handshake read: %w", err)
 		}
-		log.Printf("lily: [%v] recv: %q", c.phase, line)
+		slog.Debug("lily: recv", "phase", c.phase, "line", line)
 
 		switch c.phase {
 		case PhaseFirstPrompt:
@@ -144,12 +144,12 @@ func (c *Conn) runHandshake() error {
 			if strings.HasPrefix(line, "Welcome to lily at ") {
 				serverName := strings.TrimSpace(line[len("Welcome to lily at "):])
 				c.state.Name = serverName
-				log.Printf("lily: detected server name: %s", serverName)
+				slog.Debug("lily: server name", "name", serverName)
 			}
 
 			// Wait for the actual "login:" prompt before sending options.
 			if strings.HasPrefix(line, "login:") || line == "login:" {
-				log.Printf("lily: got login prompt, sending options and credentials")
+				slog.Debug("lily: sending options and credentials")
 				if err := c.Send("#$# options +version +prompt +prompt2 +leaf-notify +leaf-cmd +connected"); err != nil {
 					return err
 				}
@@ -163,7 +163,7 @@ func (c *Conn) runHandshake() error {
 		case PhaseSync:
 			msg, err := slcp.Parse(line)
 			if err != nil {
-				log.Printf("slcp parse during pre-sync: %v", err)
+				slog.Debug("slcp parse error (pre-sync)", "err", err)
 				continue
 			}
 
@@ -171,7 +171,7 @@ func (c *Conn) runHandshake() error {
 			case slcp.MsgServer:
 				// %server carries version/name metadata; apply it and keep reading.
 				if err := c.applySync(msg); err != nil {
-					log.Printf("sync apply: %v", err)
+					slog.Debug("sync apply error", "err", err)
 				}
 
 			case slcp.MsgOptions:
@@ -183,13 +183,13 @@ func (c *Conn) runHandshake() error {
 				if err := c.validateOptions(msg.Text); err != nil {
 					return err
 				}
-				log.Printf("lily: login confirmed, handing off to readLoop")
+				slog.Debug("lily: login confirmed")
 				c.phase = PhaseReady
 				return nil
 
 			default:
 				// Unexpected message before %options (rare); skip it.
-				log.Printf("lily: pre-options message type=%v text=%q", msg.Type, msg.Text)
+				slog.Debug("lily: pre-options message", "type", msg.Type, "text", msg.Text)
 			}
 		}
 	}
@@ -217,7 +217,7 @@ func (c *Conn) validateOptions(optionsText string) error {
 		return fmt.Errorf("server does not support required options: %s", strings.Join(missing, " "))
 	}
 
-	log.Printf("lily: server supports all required options")
+	slog.Debug("lily: options validated")
 	return nil
 }
 
@@ -246,13 +246,13 @@ func (c *Conn) readLoop() {
 
 		line, err := c.readLine()
 		if err != nil {
-			log.Printf("lily read error: %v", err)
+			slog.Debug("lily read error", "err", err)
 			return
 		}
 
 		msg, err := slcp.Parse(line)
 		if err != nil {
-			log.Printf("slcp parse: %v", err)
+			slog.Debug("slcp parse error", "err", err)
 			continue
 		}
 
@@ -266,15 +266,15 @@ func (c *Conn) readLoop() {
 		// %connected marks the end of the initial sync.
 		if msg.Type == slcp.MsgConnected {
 			inSync = false
-			log.Printf("lily: got %%connected, sending client name")
+			slog.Debug("lily: connected")
 			if err := c.Send("#$# client zlily 0.1.0"); err != nil {
-				log.Printf("lily: client name send: %v", err)
+				slog.Debug("lily: client name send error", "err", err)
 			}
 			// Signal that state is fully populated.
 			close(c.syncComplete)
 			// Ask the server which discussions we belong to.
 			if err := c.Send("/where me"); err != nil {
-				log.Printf("lily: /where me send: %v", err)
+				slog.Debug("lily: where me send error", "err", err)
 			}
 			waitingForWhere = true
 			continue // %connected itself is not forwarded to clients
@@ -285,19 +285,19 @@ func (c *Conn) readLoop() {
 		if waitingForWhere {
 			switch msg.Type {
 			case slcp.MsgCmdBegin:
-				log.Printf("lily: where-wait CmdBegin cmdID=%d text=%q", msg.CmdID, msg.Text)
+				slog.Debug("lily: where-wait begin", "cmdID", msg.CmdID, "text", msg.Text)
 				if strings.Contains(msg.Text, "/where") {
 					whereCmdID = msg.CmdID
 					suppress = true
 				}
 			case slcp.MsgRaw:
-				log.Printf("lily: where-wait MsgRaw whereCmdID=%d text=%q", whereCmdID, msg.Text)
+				slog.Debug("lily: where-wait raw", "cmdID", whereCmdID, "text", msg.Text)
 				if whereCmdID > 0 {
 					c.state.ApplyWhereResponse([]string{msg.Text})
 					suppress = true
 				}
 			case slcp.MsgCmdEnd:
-				log.Printf("lily: where-wait CmdEnd cmdID=%d whereCmdID=%d", msg.CmdID, whereCmdID)
+				slog.Debug("lily: where-wait end", "cmdID", msg.CmdID, "whereCmdID", whereCmdID)
 				if whereCmdID > 0 && msg.CmdID == whereCmdID {
 					whereCmdID = 0
 					waitingForWhere = false
@@ -364,7 +364,7 @@ func (c *Conn) applySync(msg *slcp.Message) error {
 // applyLive updates state from messages received after handshake.
 func (c *Conn) applyLive(msg *slcp.Message) {
 	if err := c.applyMsg(msg); err != nil {
-		log.Printf("state apply: %v", err)
+		slog.Debug("state apply error", "err", err)
 	}
 }
 

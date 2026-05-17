@@ -6,7 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -104,8 +105,19 @@ func New(cfg Config) *Server {
 	return &Server{cfg: cfg}
 }
 
-// Run starts the HTTP server and blocks until ctx is cancelled.
+// Run starts the HTTP server bound to ListenAddr and blocks until ctx is cancelled.
 func (s *Server) Run(ctx context.Context) error {
+	l, err := net.Listen("tcp", s.cfg.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", s.cfg.ListenAddr, err)
+	}
+	return s.RunWithListener(ctx, l)
+}
+
+// RunWithListener starts the HTTP server using the provided listener and blocks
+// until ctx is cancelled.  Use this to start on an OS-assigned ephemeral port
+// by passing a listener created with net.Listen("tcp", "127.0.0.1:0").
+func (s *Server) RunWithListener(ctx context.Context, l net.Listener) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/auth", s.handleAuth)
 	mux.HandleFunc("/state", s.handleState)
@@ -116,21 +128,20 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/fetch", s.handleFetch)
 	mux.HandleFunc("/store", s.handleStore)
 
-	// Wrap with logging middleware
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("incoming: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+		slog.Debug("request", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
 		mux.ServeHTTP(w, r)
 	})
 
-	srv := &http.Server{Addr: s.cfg.ListenAddr, Handler: handler}
+	srv := &http.Server{Handler: handler}
 
 	go func() {
 		<-ctx.Done()
 		srv.Shutdown(context.Background())
 	}()
 
-	log.Printf("zlily-proxy listening on %s", s.cfg.ListenAddr)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	slog.Debug("zlily-proxy listening", "addr", l.Addr())
+	if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
@@ -138,7 +149,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 // handleAuth authenticates a user against the Lily server and returns a token.
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
-	log.Printf("handleAuth: %s %s", r.Method, r.URL.Path)
+	slog.Debug("handleAuth", "method", r.Method, "path", r.URL.Path)
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -212,7 +223,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	select {
 	case <-sess.conn.SyncComplete():
 	case <-time.After(60 * time.Second):
-		log.Printf("handleState: sync timeout for %s", sess.username)
+		slog.Debug("handleState: sync timeout", "user", sess.username)
 	}
 
 	st := sess.conn.State()
@@ -247,7 +258,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		InsecureSkipVerify: true, // CORS — clients are same-host or trusted
 	})
 	if err != nil {
-		log.Printf("ws accept: %v", err)
+		slog.Debug("ws accept error", "err", err)
 		return
 	}
 	defer ws.CloseNow()
@@ -333,7 +344,7 @@ func (s *Server) fanOut(sess *Session) {
 			// echo a different form of the command than we sent.
 			sess.fetchMu.Lock()
 			if sess.fetchResultCh != nil && sess.fetchCmdID == 0 {
-				log.Printf("proxy: fetch pinning cmdID=%d (begin text=%q)", id, msg.Text)
+				slog.Debug("fetch pinning", "cmdID", id, "beginText", msg.Text)
 				sess.fetchCmdID = id
 			}
 			sess.fetchMu.Unlock()
@@ -584,7 +595,7 @@ func (c *wsClient) readLoop(sess *Session) {
 
 			// Forward to Lily server
 			if err := sess.conn.Send(cm.Text); err != nil {
-				log.Printf("lily send: %v", err)
+				slog.Debug("lily send error", "err", err)
 				return
 			}
 		}
