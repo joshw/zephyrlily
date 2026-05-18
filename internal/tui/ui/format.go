@@ -98,7 +98,12 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		case "public", "private", "emote", "pa":
 			// fall through to rich formatting below
 		default:
-			return slcpBodyStyle.Render(text)
+			// Word-wrap the text to fit the terminal width, then style each line.
+			lines := wrapText("", "", text, max(width-2, 1), "")
+			for i := range lines {
+				lines[i] = slcpBodyStyle.Render(lines[i])
+			}
+			return strings.Join(lines, "\n")
 		}
 	}
 
@@ -250,8 +255,21 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 
 	// quiet wraps a message in parentheses — used for self-originated confirmations.
 	// banner wraps a message in *** *** — used for third-party observations.
-	quiet := func(msg string) string { return slcpBodyStyle.Render("(" + msg + ")") }
-	banner := func(msg string) string { return slcpBodyStyle.Render("*** " + msg + " ***") }
+	// Both word-wrap their content to fit the terminal width.
+	renderLines := func(lines []string) string {
+		for i := range lines {
+			lines[i] = slcpBodyStyle.Render(lines[i])
+		}
+		return strings.Join(lines, "\n")
+	}
+	quiet := func(msg string) string {
+		lines := wrapText("(", "(", msg+")", max(width-2, 1), "")
+		return renderLines(lines)
+	}
+	banner := func(msg string) string {
+		lines := wrapText("*** ", "*** ", msg+" ***", max(width-4, 1), "")
+		return renderLines(lines)
+	}
 
 	switch event {
 	case "public":

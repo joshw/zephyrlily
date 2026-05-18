@@ -60,13 +60,15 @@ func cmdServer(args []string) {
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
 	listen := fs.String("listen", ":7888", "proxy listen address")
 	lily := fs.String("lily", "rpi.lily.org:7777", "Lily server address")
+	tlsFlag := fs.Bool("tls", false, "connect to Lily over TLS")
+	tlsInsecure := fs.Bool("tls-insecure", false, "skip TLS certificate verification (use with caution)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: zlily server [flags]")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
 
-	cfg := api.Config{ListenAddr: *listen, LilyAddr: *lily}
+	cfg := api.Config{ListenAddr: *listen, LilyAddr: *lily, LilyTLS: *tlsFlag, LilyTLSInsecure: *tlsInsecure}
 	srv := api.New(cfg)
 	ctx := signalCtx()
 	if err := srv.Run(ctx); err != nil {
@@ -95,6 +97,8 @@ func cmdCombined(args []string) {
 	user := fs.String("user", "", "Lily username")
 	pass := fs.String("pass", "", "Lily password (prompted if omitted)")
 	port := fs.Int("port", 0, "embedded proxy port (0 = OS-assigned ephemeral)")
+	tlsFlag := fs.Bool("tls", false, "connect to Lily over TLS")
+	tlsInsecure := fs.Bool("tls-insecure", false, "skip TLS certificate verification (use with caution)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: zlily [combined] [flags]")
 		fs.PrintDefaults()
@@ -111,7 +115,7 @@ func cmdCombined(args []string) {
 	}
 	proxyAddr := l.Addr().String()
 
-	cfg := api.Config{ListenAddr: proxyAddr, LilyAddr: *lily}
+	cfg := api.Config{ListenAddr: proxyAddr, LilyAddr: *lily, LilyTLS: *tlsFlag, LilyTLSInsecure: *tlsInsecure}
 	srv := api.New(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -212,18 +216,22 @@ func printUsage() {
   zlily client  [flags]         TUI only (connect to a running proxy)
 
 Combined flags:
-  --lily   addr   Lily server address (default: rpi.lily.org:7777)
-  --user   name   Lily username       (prompted if not provided)
-  --pass   secret Lily password       (prompted if not provided)
-  --port   n      Embedded proxy port (default: OS-assigned ephemeral)
+  --lily         addr   Lily server address (default: rpi.lily.org:7777)
+  --user         name   Lily username       (prompted if not provided)
+  --pass         secret Lily password       (prompted if not provided)
+  --port         n      Embedded proxy port (default: OS-assigned ephemeral)
+  --tls                 Connect to Lily over TLS
+  --tls-insecure        Skip TLS certificate verification (use with caution)
 
 Server flags:
-  --lily   addr   Lily server address (default: rpi.lily.org:7777)
-  --listen addr   Proxy listen address (default: :7888)
+  --lily         addr   Lily server address (default: rpi.lily.org:7777)
+  --listen       addr   Proxy listen address (default: :7888)
+  --tls                 Connect to Lily over TLS
+  --tls-insecure        Skip TLS certificate verification (use with caution)
 
 Client flags:
-  --proxy  addr   Proxy address  (default: localhost:7888)
-  --user   name   Lily username  (prompted if not provided)
-  --pass   secret Lily password  (prompted if not provided)
+  --proxy        addr   Proxy address  (default: localhost:7888)
+  --user         name   Lily username  (prompted if not provided)
+  --pass         secret Lily password  (prompted if not provided)
 `)
 }

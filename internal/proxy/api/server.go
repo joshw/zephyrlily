@@ -31,6 +31,8 @@ const (
 type Config struct {
 	ListenAddr string // e.g. ":7888"
 	LilyAddr   string // e.g. "rpi.lily.org:7777"
+	LilyTLS           bool // connect to Lily over TLS
+	LilyTLSInsecure   bool // skip TLS certificate verification
 }
 
 const maxEventBuf = 5000
@@ -173,7 +175,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	conn := lily.NewConn(s.cfg.LilyAddr, req.Username, req.Password)
+	conn := lily.NewConn(s.cfg.LilyAddr, req.Username, req.Password, s.cfg.LilyTLS, s.cfg.LilyTLSInsecure)
 	if err := conn.Connect(); err != nil {
 		http.Error(w, "lily connect failed: "+err.Error(), http.StatusUnauthorized)
 		return

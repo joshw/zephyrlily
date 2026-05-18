@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"crypto/tls"
 	"log/slog"
 	"net"
 
@@ -30,6 +31,8 @@ type Conn struct {
 	addr     string
 	username string
 	password string
+	tls           bool
+	tlsInsecure   bool
 
 	conn   net.Conn
 	reader *bufio.Reader
@@ -56,12 +59,14 @@ type Conn struct {
 }
 
 // NewConn creates a Conn but does not connect yet.
-func NewConn(addr, username, password string) *Conn {
+func NewConn(addr, username, password string, tlsEnabled, tlsInsecure bool) *Conn {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Conn{
 		addr:         addr,
 		username:     username,
 		password:     password,
+		tls:          tlsEnabled,
+		tlsInsecure:  tlsInsecure,
 		state:        NewState(),
 		Events:       make(chan *slcp.Message, 256),
 		ctx:          ctx,
@@ -79,8 +84,18 @@ func (c *Conn) SyncComplete() <-chan struct{} {
 // Connect dials the Lily server and runs the handshake, blocking until
 // %connected is received or an error occurs.
 func (c *Conn) Connect() error {
-	slog.Debug("lily: dialing", "addr", c.addr)
-	nc, err := net.Dial("tcp", c.addr)
+	slog.Debug("lily: dialing", "addr", c.addr, "tls", c.tls)
+	var nc net.Conn
+	var err error
+	if c.tls {
+		host, _, _ := net.SplitHostPort(c.addr)
+		nc, err = tls.Dial("tcp", c.addr, &tls.Config{
+			ServerName:         host,
+			InsecureSkipVerify: c.tlsInsecure, //nolint:gosec
+		})
+	} else {
+		nc, err = net.Dial("tcp", c.addr)
+	}
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", c.addr, err)
 	}
