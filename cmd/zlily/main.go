@@ -27,6 +27,7 @@ import (
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 	"github.com/joshw/zephyrlily/internal/tui/ui"
+	"github.com/joshw/zephyrlily/internal/version"
 )
 
 func main() {
@@ -40,6 +41,9 @@ func main() {
 			return
 		case "combined":
 			cmdCombined(os.Args[2:])
+			return
+		case "version", "-v", "--version":
+			fmt.Println("zlily", version.Version)
 			return
 		case "help", "-h", "--help":
 			printUsage()
@@ -200,9 +204,8 @@ func signalCtx() context.Context {
 }
 
 func printUsage() {
-	fmt.Fprint(os.Stderr, `zlily — ZephyrLily Lily chat client
-
-Usage:
+	fmt.Fprintf(os.Stderr, "zlily %s — ZephyrLily Lily chat client\n\n", version.Version)
+	fmt.Fprint(os.Stderr, `Usage:
   zlily [flags]                 Combined mode (TUI + embedded proxy, default)
   zlily combined [flags]        Same as above
   zlily server  [flags]         Proxy only (no TUI)

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+
+	"github.com/joshw/zephyrlily/internal/version"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -267,7 +269,7 @@ func (c *Conn) readLoop() {
 		if msg.Type == slcp.MsgConnected {
 			inSync = false
 			slog.Debug("lily: connected")
-			if err := c.Send("#$# client zlily 0.1.0"); err != nil {
+			if err := c.Send(fmt.Sprintf("#$# client zlily %s", version.Version)); err != nil {
 				slog.Debug("lily: client name send error", "err", err)
 			}
 			// Signal that state is fully populated.

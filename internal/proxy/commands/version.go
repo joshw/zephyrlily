@@ -1,6 +1,11 @@
 package commands
 
-import "github.com/joshw/zephyrlily/internal/lily"
+import (
+	"fmt"
+
+	"github.com/joshw/zephyrlily/internal/lily"
+	"github.com/joshw/zephyrlily/internal/version"
+)
 
 func init() {
 	RegisterHelp(HelpTopic{
@@ -16,6 +21,6 @@ func init() {
 }
 
 // handleVersion implements the %version command.
-func handleVersion(state *lily.State, args []string, respond func(lines []string)) {
-	respond([]string{"zlily proxy version 0.1.0"})
+func handleVersion(_ *lily.State, _ []string, respond func(lines []string)) {
+	respond([]string{fmt.Sprintf("zlily version %s", version.Version)})
 }
