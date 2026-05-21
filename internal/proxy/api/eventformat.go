@@ -84,7 +84,7 @@ func formatEventText(ev *slcp.NotifyEvent, entities map[string]EntityJSON, whoam
 		return "Private from " + srcB + ": " + ev.Value
 
 	case "emote":
-		return src + " " + ev.Value
+		return src + ev.Value
 
 	case "pa":
 		return "Public address from " + srcB + ": " + ev.Value

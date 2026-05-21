@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -29,10 +30,16 @@ const (
 
 // Config holds proxy server configuration.
 type Config struct {
-	ListenAddr string // e.g. ":7888"
-	LilyAddr   string // e.g. "rpi.lily.org:7777"
-	LilyTLS           bool // connect to Lily over TLS
-	LilyTLSInsecure   bool // skip TLS certificate verification
+	ListenAddr      string // e.g. ":7888"
+	LilyAddr        string // e.g. "rpi.lily.org:7777"
+	LilyTLS         bool   // connect to Lily over TLS
+	LilyTLSInsecure bool   // skip TLS certificate verification
+
+	// Web UI
+	ServeWeb    bool   // serve the embedded Svelte web app
+	WebTLS      bool   // serve the web interface over HTTPS
+	WebCertFile string // path to TLS cert PEM (empty = self-signed)
+	WebKeyFile  string // path to TLS key PEM (empty = self-signed)
 }
 
 const maxEventBuf = 5000
@@ -116,11 +123,8 @@ func (s *Server) Run(ctx context.Context) error {
 	return s.RunWithListener(ctx, l)
 }
 
-// RunWithListener starts the HTTP server using the provided listener and blocks
-// until ctx is cancelled.  Use this to start on an OS-assigned ephemeral port
-// by passing a listener created with net.Listen("tcp", "127.0.0.1:0").
-func (s *Server) RunWithListener(ctx context.Context, l net.Listener) error {
-	mux := http.NewServeMux()
+// registerAPIRoutes mounts all proxy API endpoints on mux.
+func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/auth", s.handleAuth)
 	mux.HandleFunc("/state", s.handleState)
 	mux.HandleFunc("/ws", s.handleWS)
@@ -129,20 +133,44 @@ func (s *Server) RunWithListener(ctx context.Context, l net.Listener) error {
 	mux.HandleFunc("/expand", s.handleExpand)
 	mux.HandleFunc("/fetch", s.handleFetch)
 	mux.HandleFunc("/store", s.handleStore)
+}
+
+// RunWithListener starts the HTTP server using the provided listener and blocks
+// until ctx is cancelled.  Use this to start on an OS-assigned ephemeral port
+// by passing a listener created with net.Listen("tcp", "127.0.0.1:0").
+func (s *Server) RunWithListener(ctx context.Context, l net.Listener) error {
+	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
+
+	// Mount the web UI catch-all last so API routes take priority.
+	if s.cfg.ServeWeb {
+		if err := addWebHandler(mux); err != nil {
+			return fmt.Errorf("web handler: %w", err)
+		}
+	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("request", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
 		mux.ServeHTTP(w, r)
 	})
 
-	srv := &http.Server{Handler: handler}
+	if s.cfg.WebTLS {
+		tlsCfg, err := s.buildTLSConfig()
+		if err != nil {
+			return fmt.Errorf("TLS config: %w", err)
+		}
+		l = tls.NewListener(l, tlsCfg)
+		slog.Debug("zlily-proxy listening (TLS)", "addr", l.Addr())
+	} else {
+		slog.Debug("zlily-proxy listening", "addr", l.Addr())
+	}
 
+	srv := &http.Server{Handler: handler}
 	go func() {
 		<-ctx.Done()
 		srv.Shutdown(context.Background())
 	}()
 
-	slog.Debug("zlily-proxy listening", "addr", l.Addr())
 	if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
 		return err
 	}
@@ -243,7 +271,11 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		EventBufSize: eventBufSize,
 	}
 	for _, e := range entities {
-		resp.Entities = append(resp.Entities, entityToJSON(e))
+		j := entityToJSON(e)
+		if e.Kind == lily.KindDisc {
+			j.Member = st.IsDiscMember(e.Handle)
+		}
+		resp.Entities = append(resp.Entities, j)
 	}
 	writeJSON(w, resp)
 }
@@ -506,7 +538,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sess.eventBufMu.RLock()
-	var collected []WSServerMsg
+	collected := make([]WSServerMsg, 0)
 	for _, msg := range sess.eventBuf {
 		if msg.ID > afterID {
 			collected = append(collected, *msg)
@@ -664,10 +696,15 @@ func msgToWS(msg *slcp.Message, sess *Session) *WSServerMsg {
 		}
 
 		// Look up entity state for each handle
+		st := sess.conn.State()
 		entities := make(map[string]EntityJSON)
 		for handle := range handles {
-			if entity := sess.conn.State().Get(handle); entity != nil {
-				entities[handle] = entityToJSON(entity)
+			if entity := st.Get(handle); entity != nil {
+				j := entityToJSON(entity)
+				if entity.Kind == lily.KindDisc {
+					j.Member = st.IsDiscMember(entity.Handle)
+				}
+				entities[handle] = j
 			}
 		}
 
@@ -684,7 +721,7 @@ func msgToWS(msg *slcp.Message, sess *Session) *WSServerMsg {
 				Notify:   ev.Notify,
 				Stamp:    ev.Stamp,
 				Entities: entities,
-				Text:     formatEventText(ev, entities, sess.conn.State().Whoami),
+				Text:     formatEventText(ev, entities, st.Whoami),
 			},
 		}
 	case slcp.MsgRaw:

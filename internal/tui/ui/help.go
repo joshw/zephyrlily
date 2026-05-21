@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -10,6 +11,15 @@ import (
 // Entries here are served by the TUI itself and never forwarded to the proxy.
 // Add new topics by inserting into this map.
 var tuiHelp = map[string][]string{
+	"keys": {
+		"Toggle keypress debugging",
+		"",
+		"Usage: %set debug keys",
+		"",
+		"When enabled, every key event is logged to the debug window.",
+		"Run the command again to turn it off.",
+		"Tip: open the debug view with ESC G to see the key log.",
+	},
 	"info": {
 		"Edit your info (or a discussion's info) in the TUI",
 		"",
@@ -62,6 +72,9 @@ func (m Model) handleLocalCommand(line string) (localOutput []string, handled bo
 	}
 
 	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return nil, false, nil
+	}
 	command := parts[0]
 	args := parts[1:]
 
@@ -137,6 +150,30 @@ func tuiHelpSummary() []string {
 	}
 	lines = append(lines, "")
 	return lines
+}
+
+// escapeKeyString replaces control characters in a key string with printable
+// representations so that debug log lines containing newlines or other
+// non-printable bytes don't break the single-line debug window rendering.
+func escapeKeyString(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				b.WriteString(fmt.Sprintf(`\x%02x`, r))
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
 }
 
 // splitTwo parses up to two whitespace-separated tokens from s into a and b.

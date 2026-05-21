@@ -68,6 +68,7 @@ type Model struct {
 
 	// Debug view
 	debugMode bool
+	debugKeys bool     // log every key event to debugMsgs
 	debugMsgs []string // raw JSON messages
 
 	// Scroll state
@@ -134,13 +135,17 @@ func NewLogger() (chan logMsg, *slog.Logger) {
 // New creates a Model wired to the given proxy client.  State and event
 // history are fetched asynchronously in Init() so that SLCP prompts arriving
 // during the login sync are visible and answerable in the TUI.
-func New(c *client.Client, logChan <-chan logMsg) Model {
+// Optional startupMsgs are shown below the logo on first render.
+func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 	logoLines := formatLogo()
-	output := make([]OutputItem, 0, len(logoLines)+1)
+	output := make([]OutputItem, 0, len(logoLines)+1+len(startupMsgs))
 	for _, line := range logoLines {
 		output = append(output, OutputItem{Type: "text", Data: line})
 	}
 	output = append(output, OutputItem{Type: "text", Data: ""})
+	for _, msg := range startupMsgs {
+		output = append(output, OutputItem{Type: "text", Data: msg})
+	}
 
 	return Model{
 		client:       c,
@@ -192,6 +197,21 @@ func fetchInitialStateCmd(c *client.Client) tea.Cmd {
 
 // serverEventMsg wraps a message arriving from the proxy.
 type serverEventMsg struct{ msg *api.WSServerMsg }
+
+// pastedRuneMsg delivers one rune from a multi-rune paste, with the remaining
+// runes queued as the tail for sequential processing.
+type pastedRuneMsg struct {
+	r    rune
+	tail []rune
+}
+
+// splitPastedRunes returns a Cmd that delivers runes[0] as a pastedRuneMsg and
+// queues the rest.  Using a chain (rather than tea.Batch) guarantees order.
+func splitPastedRunes(runes []rune) tea.Cmd {
+	return func() tea.Msg {
+		return pastedRuneMsg{r: runes[0], tail: runes[1:]}
+	}
+}
 
 // reconnectResultMsg is delivered when an async reconnect attempt completes.
 type reconnectResultMsg struct {
@@ -280,6 +300,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, reportSeenNow(m.client, m.lastSeenID)
 
 	case tea.KeyMsg:
+		if m.debugKeys {
+			m.debugMsgs = append(m.debugMsgs, fmt.Sprintf("KEY: %s", escapeKeyString(msg.String())))
+			m.debugScrollOffset = 0
+		}
+
+		// A bracketed paste may deliver many characters as one KeyRunes event.
+		// Split it into individual events so paste mode (space-collapsing,
+		// newline→space) and all other per-key handlers apply correctly.
+		// Normal typing always produces single-rune events, so this only
+		// fires for actual paste input.
+		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 {
+			return m, splitPastedRunes(msg.Runes)
+		}
+
 		if m.editMode {
 			updated, cmd, _ := m.handleEditorMsg(msg)
 			return updated, cmd
@@ -400,6 +434,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.debugMsgs = append(m.debugMsgs, lines...)
 			}
 			m.debugScrollOffset = 0
+
+			// %set debug keys toggles key-event logging to the debug window.
+			if strings.EqualFold(strings.TrimSpace(line), "%set debug keys") {
+				m.debugKeys = !m.debugKeys
+				state := "off"
+				if m.debugKeys {
+					state = "on"
+				}
+				m.output = append(m.output, OutputItem{Type: "command", Data: []string{"Key debug logging: " + state}})
+				return m, nil
+			}
 
 			localOutput, handled, asyncCmd := m.handleLocalCommand(line)
 			if localOutput != nil {
@@ -562,6 +607,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		default:
 			if msg.Type == tea.KeyRunes {
+				// A lone \r or \n arrives here from splitPastedRunes; treat it
+				// like Enter in paste mode (space + eat-whitespace if active).
+				if len(msg.Runes) == 1 && (msg.Runes[0] == '\r' || msg.Runes[0] == '\n') {
+					if m.pasteMode {
+						if m.pasteEatFlag {
+							return m, nil
+						}
+						m.pasteEatFlag = true
+						m.pasteEatBuf = false
+					}
+					m = m.insertString(" ")
+					m = m.adjustInputScroll()
+					return m, nil
+				}
 				s := string(msg.Runes)
 				switch s {
 				case ";", ":", ",", "=":
@@ -575,6 +634,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m = m.adjustInputScroll()
+
+	case pastedRuneMsg:
+		// Re-enter the key pipeline for a single rune, then queue the rest.
+		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{msg.r}})
+		m = updated.(Model)
+		var cmds []tea.Cmd
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		if len(msg.tail) > 0 {
+			cmds = append(cmds, splitPastedRunes(msg.tail))
+		}
+		if len(cmds) == 0 {
+			return m, nil
+		}
+		return m, tea.Batch(cmds...)
 
 	case serverEventMsg:
 		if msg.msg == nil {

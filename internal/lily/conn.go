@@ -283,17 +283,20 @@ func (c *Conn) readLoop() {
 		// %connected marks the end of the initial sync.
 		if msg.Type == slcp.MsgConnected {
 			inSync = false
-			slog.Debug("lily: connected")
+			slog.Debug("lily: sync complete")
 			if err := c.Send(fmt.Sprintf("#$# client zlily %s", version.Version)); err != nil {
 				slog.Debug("lily: client name send error", "err", err)
 			}
-			// Signal that state is fully populated.
-			close(c.syncComplete)
-			// Ask the server which discussions we belong to.
+			// Ask for disc membership before signalling sync complete so that
+			// handleState sees the populated discMembership map.
+			// syncComplete is closed once the /where me response arrives.
 			if err := c.Send("/where me"); err != nil {
 				slog.Debug("lily: where me send error", "err", err)
+				// If the send fails, unblock callers anyway.
+				close(c.syncComplete)
+			} else {
+				waitingForWhere = true
 			}
-			waitingForWhere = true
 			continue // %connected itself is not forwarded to clients
 		}
 
@@ -319,6 +322,8 @@ func (c *Conn) readLoop() {
 					whereCmdID = 0
 					waitingForWhere = false
 					suppress = true
+					// Membership is now populated; unblock handleState.
+					close(c.syncComplete)
 				}
 			}
 		}

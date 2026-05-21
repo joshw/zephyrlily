@@ -168,7 +168,11 @@ type Word struct {
 }
 
 // ParseWords splits input into words and checks their spelling.
+// Words inside skip regions (message targets and URL tokens) are never
+// marked as misspelled.
 func (s *SpellChecker) ParseWords(input string) []Word {
+	skip := buildSkipRegions(input)
+
 	var words []Word
 	var currentWord strings.Builder
 	wordStart := -1
@@ -186,7 +190,7 @@ func (s *SpellChecker) ParseWords(input string) []Word {
 					Text:       word,
 					Start:      wordStart,
 					End:        i,
-					Misspelled: !s.CheckWord(word),
+					Misspelled: !skip[wordStart] && !s.CheckWord(word),
 				})
 				currentWord.Reset()
 				wordStart = -1
@@ -206,4 +210,66 @@ func (s *SpellChecker) ParseWords(input string) []Word {
 	}
 
 	return words
+}
+
+// buildSkipRegions returns a per-byte boolean slice; true means the byte falls
+// inside a region that should never be spell-checked:
+//
+//   - The message target: everything before the first ';' or ':' when the input
+//     is not a command (doesn't start with '/' or '%').
+//   - URL tokens: runs of URL-safe characters that contain "://" or start with
+//     "www.".
+func buildSkipRegions(input string) []bool {
+	skip := make([]bool, len(input)+1)
+
+	// Message target: skip everything before the first ; or : separator.
+	if len(input) > 0 && input[0] != '/' && input[0] != '%' {
+		for i, r := range input {
+			if r == ';' || r == ':' {
+				for j := 0; j < i; j++ {
+					skip[j] = true
+				}
+				break
+			}
+		}
+	}
+
+	// URL tokens: find "://" and mark the surrounding run of URL characters.
+	for i := 0; i+2 < len(input); i++ {
+		if input[i] == ':' && input[i+1] == '/' && input[i+2] == '/' {
+			start := i
+			for start > 0 && isURLChar(rune(input[start-1])) {
+				start--
+			}
+			end := i + 3
+			for end < len(input) && isURLChar(rune(input[end])) {
+				end++
+			}
+			for j := start; j < end; j++ {
+				skip[j] = true
+			}
+		}
+	}
+
+	// www. tokens: mark the whole hostname that follows.
+	for i := 0; i+4 <= len(input); i++ {
+		if input[i:i+4] == "www." {
+			end := i + 4
+			for end < len(input) && isURLChar(rune(input[end])) {
+				end++
+			}
+			for j := i; j < end; j++ {
+				skip[j] = true
+			}
+		}
+	}
+
+	return skip
+}
+
+// isURLChar reports whether r is a character that can appear inside a URL token.
+func isURLChar(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) ||
+		r == '.' || r == '/' || r == ':' || r == '-' || r == '_' ||
+		r == '~' || r == '?' || r == '#' || r == '&' || r == '=' || r == '+'
 }

@@ -45,6 +45,7 @@ type EntityJSON struct {
 	Attrib   string   `json:"attrib,omitempty"`
 	Creation int64    `json:"creation,omitempty"`
 	Members  []string `json:"members,omitempty"`
+	Member   bool     `json:"member,omitempty"` // true when the current user is a member (disc only)
 }
 
 // WSClientMsg is a message sent from a thin client to the proxy over WebSocket.
