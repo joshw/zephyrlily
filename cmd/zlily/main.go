@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -53,6 +54,14 @@ func main() {
 }
 
 // ── subcommands ───────────────────────────────────────────────────────────────
+
+func isCmdExe() bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	// cmd.exe doesn't set TERM; modern terminals (Windows Terminal, ConEmu, etc.) do
+	return os.Getenv("TERM") == ""
+}
 
 func cmdServer(args []string) {
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
@@ -100,7 +109,12 @@ func cmdClient(args []string) {
 	}
 	_ = fs.Parse(args)
 
-	runTUI(*proxy)
+	var startupMsgs []string
+	if isCmdExe() {
+		startupMsgs = append(startupMsgs, "⚠ Warning: cmd.exe has limited key support (PgUp/PgDn won't work)")
+		startupMsgs = append(startupMsgs, "  Try Windows Terminal or ConEmu for full key binding support")
+	}
+	runTUI(*proxy, startupMsgs...)
 }
 
 func cmdCombined(args []string) {
@@ -157,6 +171,10 @@ func cmdCombined(args []string) {
 	// Run the TUI in the foreground; cancel the proxy when it exits.
 	// Pass the web URL as a startup message so it appears after the splash screen.
 	var startupMsgs []string
+	if isCmdExe() {
+		startupMsgs = append(startupMsgs, "⚠ Warning: cmd.exe has limited key support (PgUp/PgDn won't work)")
+		startupMsgs = append(startupMsgs, "  Try Windows Terminal or ConEmu for full key binding support")
+	}
 	if *webUI {
 		startupMsgs = append(startupMsgs, "Web UI: "+webURL(proxyAddr, *webTLS))
 	}
