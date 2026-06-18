@@ -942,7 +942,7 @@ func (m Model) formatStatusBar() string {
 	if !m.viewport.AtBottom() && m.viewport.TotalLineCount() > m.viewport.Height {
 		moreCount := m.viewport.TotalLineCount() - m.viewport.YOffset - m.viewport.Height
 		if moreCount > 0 {
-			center = fmt.Sprintf("MORE (%d)", moreCount)
+			center = fmt.Sprintf("-- MORE (%d) --", moreCount)
 		}
 	}
 
