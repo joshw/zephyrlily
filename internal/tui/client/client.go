@@ -143,7 +143,7 @@ func (c *Client) Expand(partial string, validDestOnly bool) ([]api.EntityJSON, e
 	if err != nil {
 		return nil, fmt.Errorf("expand request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("expand: HTTP %s", resp.Status)
 	}
@@ -169,7 +169,7 @@ func (c *Client) FetchContent(contentType, target, name string) ([]string, error
 	if err != nil {
 		return nil, fmt.Errorf("fetch request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch: HTTP %s", resp.Status)
 	}
@@ -198,7 +198,7 @@ func (c *Client) StoreContent(contentType, target, name string, lines []string) 
 	if err != nil {
 		return fmt.Errorf("store request: %w", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("store: HTTP %s", resp.Status)
 	}
