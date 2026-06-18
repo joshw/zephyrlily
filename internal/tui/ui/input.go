@@ -196,4 +196,3 @@ func (m Model) renderInputArea(visibleLines int) []string {
 
 // renderInputLine renders the input as a single display line (used by callers
 // that haven't switched to the multi-line renderInputArea path yet).
-

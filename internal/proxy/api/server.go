@@ -87,13 +87,13 @@ type Session struct {
 	// Fetch coordination: an HTTP handler sets fetchResultCh before sending
 	// the fetch command to Lily; fanOut routes the first command result that
 	// arrives while the channel is set back through it instead of broadcasting.
-	fetchMu      sync.Mutex
+	fetchMu       sync.Mutex
 	fetchResultCh chan []string
-	fetchCmdID   int
+	fetchCmdID    int
 
 	// Store coordination: set before sending #$# export_file; fanOut routes
 	// the %export_file OKAY/ERROR message back through the channel.
-	storeMu      sync.Mutex
+	storeMu       sync.Mutex
 	storeResultCh chan string
 }
 

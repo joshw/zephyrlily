@@ -3,15 +3,16 @@ package lily
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"crypto/tls"
+	"fmt"
 	"log/slog"
 	"net"
 
-	"github.com/joshw/zephyrlily/internal/version"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/joshw/zephyrlily/internal/version"
 
 	"github.com/joshw/zephyrlily/internal/slcp"
 )
@@ -27,11 +28,11 @@ const (
 
 // Conn is a single user's persistent connection to the Lily server.
 type Conn struct {
-	addr     string
-	username string
-	password string
-	tls           bool
-	tlsInsecure   bool
+	addr        string
+	username    string
+	password    string
+	tls         bool
+	tlsInsecure bool
 
 	conn   net.Conn
 	reader *bufio.Reader

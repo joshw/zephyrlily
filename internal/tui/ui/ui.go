@@ -26,13 +26,13 @@ type OutputItem struct {
 
 // Model is the root Bubble Tea model for the TUI.
 type Model struct {
-	client    *client.Client
-	state     *api.StateResponse
-	output    []OutputItem // scrollback items (raw, to be formatted at render time)
-	input     string       // current input buffer
-	prompt    string       // latest prompt text from server
-	width     int
-	height    int
+	client *client.Client
+	state  *api.StateResponse
+	output []OutputItem // scrollback items (raw, to be formatted at render time)
+	input  string       // current input buffer
+	prompt string       // latest prompt text from server
+	width  int
+	height int
 
 	// Input cursor and edit state
 	cursor   int    // byte cursor position in m.input

@@ -701,4 +701,3 @@ func wordEndAfter(s string, pos int) int {
 }
 
 // adjustInputScroll is a compatibility method (viewport handles this now)
-
