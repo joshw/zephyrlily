@@ -942,11 +942,23 @@ func (m Model) viewAuth() string {
 		dialogContent.WriteString("Authenticating...\n")
 		dialogContent.WriteString("Please wait while we verify your credentials.")
 	} else {
-		dialogContent.WriteString("Username: " + m.usernameInput.Value() + "\n")
-		dialogContent.WriteString("Password: ")
-		// Show masked password
+		cursorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow
+
+		// Username field
+		usernameVal := m.usernameInput.Value()
+		if m.authField == 0 {
+			dialogContent.WriteString("Username: " + usernameVal + cursorStyle.Render("▌") + "\n")
+		} else {
+			dialogContent.WriteString("Username: " + usernameVal + "\n")
+		}
+
+		// Password field
 		maskedPass := strings.Repeat("•", utf8.RuneCountInString(m.passwordInput.Value()))
-		dialogContent.WriteString(maskedPass + "\n")
+		dialogContent.WriteString("Password: " + maskedPass)
+		if m.authField == 1 {
+			dialogContent.WriteString(cursorStyle.Render("▌"))
+		}
+		dialogContent.WriteString("\n")
 
 		if m.authError != "" {
 			errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
