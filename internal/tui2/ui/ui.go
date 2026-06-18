@@ -87,6 +87,12 @@ type Model struct {
 	// Auto-paging: after user sends input, auto-scroll up to one page of new output
 	autoPageAnchor int // line count when user sent command; -1 = disabled
 
+	// scrollAnchor is the output-item index to keep at the top of the viewport
+	// across a width-changing resize (which rewraps and invalidates raw line
+	// offsets). -1 means no anchor / use the raw offset. Set by the resize/debug
+	// callers and consumed once by updateViewportSize.
+	scrollAnchor int
+
 	// Position restore
 	storedLastSeenID     int64 // lastSeenID from proxy at startup, used to restore scroll position
 	needsPositionRestore bool  // true until we have window size to set scroll position
@@ -181,6 +187,7 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		historyPos:     -1,
 		searchIdx:      -1,
 		autoPageAnchor: -1,
+		scrollAnchor:   -1,
 	}
 }
 
@@ -325,6 +332,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.ClearScreen
 
 	case tea.WindowSizeMsg:
+		// A width change rewraps the output, so the raw scroll offset no longer
+		// maps to the same message. Anchor on the item currently at the top
+		// (computed at the OLD width, before we mutate m.width) so the view stays
+		// put instead of jumping — e.g. when re-attaching screen from a
+		// different-sized terminal. Skip on the first size (m.width == 0): there
+		// is nothing to preserve and rendering at width 0 is meaningless.
+		if m.width > 0 && msg.Width != m.width {
+			m.scrollAnchor = m.topVisibleItemIndex()
+		}
 		m.width = msg.Width
 		m.height = msg.Height
 		m = m.updateViewportSize()
@@ -505,14 +521,55 @@ func (m Model) updateViewportSize() Model {
 
 	m = m.syncViewportContent()
 
-	// Restore scroll position after content sync
-	if wasAtBottom {
+	// Restore scroll position after content sync.
+	switch {
+	case wasAtBottom:
 		m.viewport.GotoBottom()
-	} else {
+	case m.scrollAnchor >= 0:
+		// Width changed: re-anchor on the item that was at the top, recomputed at
+		// the new width so the same message stays in view instead of jumping.
+		off := m.itemStartLine(m.scrollAnchor)
+		if max := m.viewport.TotalLineCount() - m.viewport.Height; off > max {
+			off = max
+		}
+		if off < 0 {
+			off = 0
+		}
+		m.viewport.SetYOffset(off)
+	default:
 		m.viewport.SetYOffset(oldYOffset)
 	}
+	m.scrollAnchor = -1
 
 	return m
+}
+
+// topVisibleItemIndex returns the index of the output item occupying the top
+// visible line of the viewport (viewport.YOffset), measured at the current width.
+// Returns 0 when there is no output.
+func (m Model) topVisibleItemIndex() int {
+	target := m.viewport.YOffset
+	lineCount := 0
+	for i, item := range m.output {
+		lineCount += len(m.renderOutputItem(item))
+		if lineCount > target {
+			return i
+		}
+	}
+	if len(m.output) == 0 {
+		return 0
+	}
+	return len(m.output) - 1
+}
+
+// itemStartLine returns the number of rendered lines before output item idx,
+// measured at the current width.
+func (m Model) itemStartLine(idx int) int {
+	lineCount := 0
+	for i := 0; i < idx && i < len(m.output); i++ {
+		lineCount += len(m.renderOutputItem(m.output[i]))
+	}
+	return lineCount
 }
 
 // calculateInputHeight returns the number of lines needed for input area.

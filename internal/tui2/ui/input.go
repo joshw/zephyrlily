@@ -197,6 +197,9 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Mode toggles
 	case key.Matches(msg, m.keys.DebugMode):
+		// Toggling debug halves/restores the viewport width, which rewraps output;
+		// anchor on the top item (at the current width) so it stays in view.
+		m.scrollAnchor = m.topVisibleItemIndex()
 		m.debugMode = !m.debugMode
 		m = m.updateViewportSize()
 	case key.Matches(msg, m.keys.PasteMode):

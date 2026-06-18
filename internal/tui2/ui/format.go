@@ -27,6 +27,11 @@ func wrapTextLinkify(curLine, wordPrefix, text string, maxWidth int, initialSep 
 // be plain (no escape sequences); when linkify is true, URL words are rendered
 // with OSC8 escapes while wrapping arithmetic continues to use visible length.
 func wrapTextCore(curLine, wordPrefix, text string, maxWidth int, initialSep string, linkify bool) []string {
+	// Guard against a non-positive width: with maxWidth <= 0 the available space
+	// is always <= 0 and the consume loop can never advance, spinning forever.
+	if maxWidth < 1 {
+		maxWidth = 1
+	}
 	words := strings.Fields(text)
 	if len(words) == 0 {
 		return []string{curLine}
