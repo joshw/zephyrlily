@@ -11,6 +11,22 @@ import (
 
 // wrapText wraps text onto lines of at most maxWidth chars.
 func wrapText(curLine, wordPrefix, text string, maxWidth int, initialSep string) []string {
+	return wrapTextCore(curLine, wordPrefix, text, maxWidth, initialSep, false)
+}
+
+// wrapTextLinkify behaves like wrapText but renders any URLs as OSC8
+// hyperlinks. A URL that is hard-broken across lines emits each fragment as a
+// hyperlink to the full URL, all sharing one id so supporting terminals treat
+// them as a single clickable link. Width is measured on the visible text, so
+// the invisible escape bytes never affect wrapping.
+func wrapTextLinkify(curLine, wordPrefix, text string, maxWidth int, initialSep string) []string {
+	return wrapTextCore(curLine, wordPrefix, text, maxWidth, initialSep, true)
+}
+
+// wrapTextCore implements word wrapping. curLine and wordPrefix are assumed to
+// be plain (no escape sequences); when linkify is true, URL words are rendered
+// with OSC8 escapes while wrapping arithmetic continues to use visible length.
+func wrapTextCore(curLine, wordPrefix, text string, maxWidth int, initialSep string, linkify bool) []string {
 	words := strings.Fields(text)
 	if len(words) == 0 {
 		return []string{curLine}
@@ -20,10 +36,32 @@ func wrapText(curLine, wordPrefix, text string, maxWidth int, initialSep string)
 	sep := initialSep
 	lineHasContent := false
 	continuingWord := false
+	curVis := len(curLine) // visible length of curLine (may differ when linkify adds escapes)
 
 	for _, word := range words {
-		for len(word) > 0 {
-			avail := maxWidth - len(curLine) - len(sep)
+		// Resolve the URL span (if any) once against the original word so it
+		// stays valid as the word is consumed across hard-broken lines.
+		urlStart, urlEnd, clean := -1, -1, ""
+		var id int64
+		if linkify {
+			if urlStart, urlEnd, clean = urlSpanInWord(word); urlStart >= 0 {
+				id = linkID.Add(1)
+			}
+		}
+		// render returns word[a:b], wrapping any portion within the URL span in
+		// an OSC8 hyperlink to the full URL.
+		render := func(a, b int) string {
+			if urlStart < 0 || b <= urlStart || a >= urlEnd {
+				return word[a:b]
+			}
+			lo, hi := max(a, urlStart), min(b, urlEnd)
+			return word[a:lo] + osc8Link(clean, word[lo:hi], id) + word[hi:b]
+		}
+
+		consumed := 0
+		for consumed < len(word) {
+			remaining := len(word) - consumed
+			avail := maxWidth - curVis - len(sep)
 
 			if avail <= 0 {
 				lines = append(lines, curLine)
@@ -32,29 +70,33 @@ func wrapText(curLine, wordPrefix, text string, maxWidth int, initialSep string)
 				} else {
 					curLine = wordPrefix
 				}
+				curVis = len(curLine)
 				lineHasContent = false
 				sep = ""
-				avail = maxWidth - len(curLine)
 				continue
 			}
 
-			if len(word) <= avail {
-				curLine += sep + word
+			if remaining <= avail {
+				curLine += sep + render(consumed, len(word))
+				curVis += len(sep) + remaining
+				consumed = len(word)
 				sep = " "
-				word = ""
 				lineHasContent = true
 				continuingWord = false
 			} else if !lineHasContent {
-				curLine += sep + word[:avail]
-				word = word[avail:]
+				curLine += sep + render(consumed, consumed+avail)
+				curVis += len(sep) + avail
+				consumed += avail
 				lines = append(lines, curLine)
 				curLine = ""
+				curVis = 0
 				lineHasContent = false
 				sep = ""
 				continuingWord = true
 			} else {
 				lines = append(lines, curLine)
 				curLine = wordPrefix
+				curVis = len(wordPrefix)
 				lineHasContent = false
 				sep = ""
 				continuingWord = false
@@ -160,9 +202,9 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		case "public", "private", "emote", "pa":
 			// fall through to rich formatting below
 		default:
-			lines := wrapText("", "", text, max(width-2, 1), "")
+			lines := wrapTextLinkify("", "", text, max(width-2, 1), "")
 			for i := range lines {
-				lines[i] = slcpBodyStyle.Render(linkifyText(lines[i]))
+				lines[i] = slcpBodyStyle.Render(lines[i])
 			}
 			return strings.Join(lines, "\n")
 		}
@@ -241,11 +283,7 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		if msg == "" {
 			return ""
 		}
-		lines := wrapText(prefix, prefix, strings.TrimSpace(msg), width, "")
-		// Apply linkification after wrapping to avoid breaking URLs
-		for i := range lines {
-			lines[i] = linkifyText(lines[i])
-		}
+		lines := wrapTextLinkify(prefix, prefix, strings.TrimSpace(msg), width, "")
 		return strings.Join(lines, "\n")
 	}
 
@@ -364,11 +402,7 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		if value == "" {
 			return emoteBodyStyle.Render(headerStr)
 		}
-		lines := wrapText(headerStr, "> ", strings.TrimSpace(value), width, " ")
-		// Apply linkification after wrapping to avoid breaking URLs
-		for i := range lines {
-			lines[i] = linkifyText(lines[i])
-		}
+		lines := wrapTextLinkify(headerStr, "> ", strings.TrimSpace(value), width, " ")
 		return emoteBodyStyle.Render(strings.Join(lines, "\n"))
 
 	case "connect":

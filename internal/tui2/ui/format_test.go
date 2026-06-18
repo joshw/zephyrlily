@@ -1,0 +1,109 @@
+package ui
+
+import (
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// osc8Re matches a single OSC8 introducer or terminator: ESC ] 8 ; ... ESC \.
+var osc8Re = regexp.MustCompile("\x1b\\]8;[^\x1b]*\x1b\\\\")
+
+// stripOSC8 removes OSC8 hyperlink escapes, leaving the visible text.
+func stripOSC8(s string) string { return osc8Re.ReplaceAllString(s, "") }
+
+var idRe = regexp.MustCompile(`id=(\d+);`)
+
+func TestWrapText_Empty(t *testing.T) {
+	// With no words, the current line is returned unchanged.
+	got := wrapText("prefix> ", "  ", "", 40, " ")
+	assert.Equal(t, []string{"prefix> "}, got)
+}
+
+func TestWrapText_SimpleWrap(t *testing.T) {
+	// maxWidth small enough to force a wrap; continuation lines get wordPrefix.
+	got := wrapText("", "    ", "one two three four", 10, "")
+	require.NotEmpty(t, got)
+	for _, line := range got {
+		assert.LessOrEqual(t, len(line), 10, "line exceeds maxWidth: %q", line)
+	}
+	// Continuation lines start with the word prefix.
+	if len(got) > 1 {
+		assert.Equal(t, "    ", got[1][:4])
+	}
+}
+
+func TestWrapText_HardBreaksLongWord(t *testing.T) {
+	// A single token longer than maxWidth must be split across lines.
+	long := "abcdefghijklmnopqrstuvwxyz"
+	got := wrapText("", "", long, 10, "")
+	require.Greater(t, len(got), 1, "long word should span multiple lines")
+	var rejoined string
+	for _, line := range got {
+		assert.LessOrEqual(t, len(line), 10)
+		rejoined += line
+	}
+	assert.Equal(t, long, rejoined, "no characters lost when hard-breaking")
+}
+
+func TestWrapText_InitialSep(t *testing.T) {
+	// initialSep separates curLine from the first appended word.
+	got := wrapText("you say", " ", "hello there", 40, ": ")
+	require.NotEmpty(t, got)
+	assert.Equal(t, "you say: hello there", got[0])
+}
+
+func TestWrapTextLinkify_NoURLMatchesPlain(t *testing.T) {
+	// With no URLs, linkify output must be identical to plain wrapping.
+	text := "the quick brown fox jumps over the lazy dog"
+	plain := wrapText("", "  ", text, 12, "")
+	linked := wrapTextLinkify("", "  ", text, 12, "")
+	assert.Equal(t, plain, linked)
+}
+
+func TestWrapTextLinkify_InlineURL(t *testing.T) {
+	url := "https://example.com/x"
+	lines := wrapTextLinkify("", "", "visit "+url+" now", 80, "")
+	require.Len(t, lines, 1)
+	// Visible text is unchanged; the URL is wrapped in an OSC8 link to itself.
+	assert.Equal(t, "visit "+url+" now", stripOSC8(lines[0]))
+	assert.Contains(t, lines[0], ";"+url+"\x1b\\")
+}
+
+func TestWrapTextLinkify_StripsTrailingPunct(t *testing.T) {
+	lines := wrapTextLinkify("", "", "see https://example.com.", 80, "")
+	require.Len(t, lines, 1)
+	// The link target excludes the trailing period.
+	assert.Contains(t, lines[0], ";https://example.com\x1b\\")
+	// The period survives as visible text.
+	assert.True(t, strings.HasSuffix(stripOSC8(lines[0]), "."))
+}
+
+func TestWrapTextLinkify_SplitURLSharesID(t *testing.T) {
+	url := "https://example.com/a/very/long/path/that/keeps/going"
+	lines := wrapTextLinkify("", "", url, 20, "")
+	require.Greater(t, len(lines), 1, "long URL should be hard-broken across lines")
+
+	// Every line fits the visible width.
+	for _, l := range lines {
+		assert.LessOrEqual(t, len(stripOSC8(l)), 20, "visible line exceeds width: %q", stripOSC8(l))
+	}
+
+	joined := strings.Join(lines, "")
+	// Visible text reconstructs the full URL with no characters lost.
+	assert.Equal(t, url, stripOSC8(joined))
+
+	// Each fragment targets the full URL.
+	assert.GreaterOrEqual(t, strings.Count(joined, ";"+url+"\x1b\\"), 2,
+		"each fragment must link to the full URL")
+
+	// All fragments share a single OSC8 id so terminals group them.
+	ids := idRe.FindAllStringSubmatch(joined, -1)
+	require.GreaterOrEqual(t, len(ids), 2)
+	for _, m := range ids {
+		assert.Equal(t, ids[0][1], m[1], "wrapped URL fragments must share one id")
+	}
+}
