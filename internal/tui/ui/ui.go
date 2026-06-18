@@ -291,25 +291,6 @@ func attemptAuthCmd(c *client.Client, username, password string) tea.Cmd {
 		if err := c.Connect(); err != nil {
 			return authResultMsg{username: username, password: password, err: err}
 		}
-		state, err := c.FetchState()
-		if err != nil {
-			return authResultMsg{username: username, password: password, err: err}
-		}
-		var events []api.WSServerMsg
-		if state.LastSeenID > 0 {
-			afterID := state.LastSeenID
-			for {
-				batch, more, err := c.FetchEvents(afterID, 200)
-				if err != nil {
-					break
-				}
-				events = append(events, batch...)
-				if !more || len(batch) == 0 {
-					break
-				}
-				afterID = batch[len(batch)-1].ID
-			}
-		}
 		return authResultMsg{username: username, password: password, err: nil}
 	}
 }
