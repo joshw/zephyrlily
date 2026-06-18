@@ -45,7 +45,6 @@ func wrapText(curLine, wordPrefix, text string, maxWidth int, initialSep string)
 				}
 				lineHasContent = false
 				sep = ""
-				avail = maxWidth - len(curLine)
 				continue
 			}
 

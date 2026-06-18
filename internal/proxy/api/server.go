@@ -168,7 +168,7 @@ func (s *Server) RunWithListener(ctx context.Context, l net.Listener) error {
 	srv := &http.Server{Handler: handler}
 	go func() {
 		<-ctx.Done()
-		srv.Shutdown(context.Background())
+		_ = srv.Shutdown(context.Background())
 	}()
 
 	if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
@@ -295,7 +295,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("ws accept error", "err", err)
 		return
 	}
-	defer ws.CloseNow()
+	defer func() { _ = ws.CloseNow() }()
 
 	ctx := r.Context()
 	client := &wsClient{
@@ -447,9 +447,7 @@ func (s *Server) fanOut(sess *Session) {
 				text := msg.Text
 				// Strip "%command [id] " prefix if present
 				prefix := fmt.Sprintf("%%command [%d] ", id)
-				if strings.HasPrefix(text, prefix) {
-					text = text[len(prefix):]
-				}
+				text = strings.TrimPrefix(text, prefix)
 				sess.cmdBuffer[id] = append(sess.cmdBuffer[id], text)
 				added = true
 			}
@@ -978,7 +976,7 @@ func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // runKeepalive sends periodic pings to the Lily server and notifies subscribers

@@ -33,7 +33,6 @@ type Model struct {
 	prompt    string       // latest prompt text from server
 	width     int
 	height    int
-	connected bool
 
 	// Input cursor and edit state
 	cursor   int    // byte cursor position in m.input

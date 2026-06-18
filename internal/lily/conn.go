@@ -11,7 +11,6 @@ import (
 	"github.com/joshw/zephyrlily/internal/version"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/joshw/zephyrlily/internal/slcp"
@@ -45,9 +44,6 @@ type Conn struct {
 	// received).  Callers that need fully-populated state (e.g. /state) block
 	// on this channel before reading entity data.
 	syncComplete chan struct{}
-
-	// nextCmdID is incremented for each command we originate (if needed).
-	nextCmdID atomic.Int64
 
 	// Events is the channel on which parsed messages are delivered to the
 	// proxy layer. The proxy reads from this and fans out to WebSocket clients.
@@ -137,13 +133,6 @@ func (c *Conn) Send(line string) error {
 }
 
 // sendRaw writes bytes directly without adding a newline.
-func (c *Conn) sendRaw(s string) error {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	slog.Debug("lily: send raw", "data", s)
-	_, err := fmt.Fprint(c.conn, s)
-	return err
-}
 
 // runHandshake drives the login/options/sync sequence synchronously.
 // Returns once %connected is received.
@@ -275,7 +264,7 @@ func (c *Conn) readLoop() {
 
 		// Apply to state (sync mode until %connected so disc membership is set).
 		if inSync {
-			c.applySync(msg)
+			_ = c.applySync(msg)
 		} else {
 			c.applyLive(msg)
 		}
@@ -346,9 +335,9 @@ func (c *Conn) readLoop() {
 func (c *Conn) readLine() (string, error) {
 	var buf []byte
 	for {
-		c.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		_ = c.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 		b, err := c.reader.ReadByte()
-		c.conn.SetReadDeadline(time.Time{})
+		_ = c.conn.SetReadDeadline(time.Time{})
 
 		if err == nil {
 			if b == '\n' {

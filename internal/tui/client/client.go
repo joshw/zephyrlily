@@ -55,7 +55,7 @@ func (c *Client) Auth(username, password string) error {
 	if resp.StatusCode != http.StatusOK {
 		// Read the error body to get the detailed error message
 		var errBody bytes.Buffer
-		errBody.ReadFrom(resp.Body)
+		_, _ = errBody.ReadFrom(resp.Body)
 		errMsg := errBody.String()
 		if errMsg != "" {
 			return fmt.Errorf("auth failed: %s", errMsg)

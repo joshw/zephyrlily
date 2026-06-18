@@ -90,7 +90,6 @@ func wrapTextCore(curLine, wordPrefix, text string, maxWidth int, initialSep str
 				continuingWord = false
 			} else if !lineHasContent {
 				curLine += sep + render(consumed, consumed+avail)
-				curVis += len(sep) + avail
 				consumed += avail
 				lines = append(lines, curLine)
 				curLine = ""

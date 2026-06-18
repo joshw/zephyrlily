@@ -176,31 +176,3 @@ func escapeKeyString(s string) string {
 	return b.String()
 }
 
-// splitTwo parses up to two whitespace-separated tokens from s into a and b.
-// Returns the number of tokens found.
-func splitTwo(s string, a, b *string) (int, bool) {
-	i := 0
-	// skip leading spaces
-	for i < len(s) && s[i] == ' ' {
-		i++
-	}
-	if i == len(s) {
-		return 0, false
-	}
-	// first token
-	j := i
-	for j < len(s) && s[j] != ' ' {
-		j++
-	}
-	*a = s[i:j]
-	// skip spaces between tokens
-	for j < len(s) && s[j] == ' ' {
-		j++
-	}
-	if j == len(s) {
-		return 1, true
-	}
-	// second token (rest of string, trimmed)
-	*b = s[j:]
-	return 2, true
-}

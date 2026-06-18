@@ -72,7 +72,7 @@ func cmdServer(args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: zlily server [flags]")
 		fs.PrintDefaults()
 	}
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: parseSlogLevel(*logLevel),
@@ -104,7 +104,7 @@ func cmdClient(args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: zlily client [flags]")
 		fs.PrintDefaults()
 	}
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	username, password := resolveCredentials(*user, *pass)
 	runTUI(*proxy, username, password, !*tui1Flag)
@@ -128,7 +128,7 @@ func cmdCombined(args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: zlily [combined] [flags]")
 		fs.PrintDefaults()
 	}
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: parseSlogLevel(*logLevel),

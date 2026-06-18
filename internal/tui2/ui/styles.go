@@ -41,17 +41,10 @@ var (
 				Foreground(lipgloss.Color("7")) // white, normal
 
 	// Emote styles
-	emoteSenderStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("6")). // cyan
-				Bold(true)
-
 	emoteBodyStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("6")) // cyan, normal
 
 	// Blurb styles — context-matched to their message type
-	blurbStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("8")) // gray (default / system events)
-
 	publicBlurbStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("6")) // cyan, matching public color
 

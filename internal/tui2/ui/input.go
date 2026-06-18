@@ -168,24 +168,24 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.PageUp):
 		m.autoPageAnchor = -1
 		if m.debugMode {
-			m.debugViewport.ViewUp()
+			m.debugViewport.PageUp()
 		} else {
-			m.viewport.ViewUp()
+			m.viewport.PageUp()
 		}
 	case key.Matches(msg, m.keys.PageDown):
 		m.autoPageAnchor = -1
 		if m.debugMode {
-			m.debugViewport.ViewDown()
+			m.debugViewport.PageDown()
 		} else {
-			m.viewport.ViewDown()
+			m.viewport.PageDown()
 			m.advanceLastSeenID()
 		}
 	case key.Matches(msg, m.keys.ScrollUp):
 		m.autoPageAnchor = -1
-		m.viewport.LineUp(1)
+		m.viewport.ScrollUp(1)
 	case key.Matches(msg, m.keys.ScrollDown):
 		m.autoPageAnchor = -1
-		m.viewport.LineDown(1)
+		m.viewport.ScrollDown(1)
 		m.advanceLastSeenID()
 	case key.Matches(msg, m.keys.GotoTop):
 		m.autoPageAnchor = -1
@@ -242,7 +242,7 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 			// No prompt - echo blank line and advance pager
 			m.output = append(m.output, OutputItem{Type: "input", Data: ""})
 			m = m.syncViewportContent()
-			m.viewport.ViewDown()
+			m.viewport.PageDown()
 			m.advanceLastSeenID()
 			m.autoPageAnchor = -1 // clear auto-paging on manual pager advance
 			return m, nil
@@ -701,6 +701,4 @@ func wordEndAfter(s string, pos int) int {
 }
 
 // adjustInputScroll is a compatibility method (viewport handles this now)
-func (m Model) adjustInputScroll() Model {
-	return m
-}
+
