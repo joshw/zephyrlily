@@ -27,6 +27,7 @@ import (
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 	"github.com/joshw/zephyrlily/internal/tui/ui"
+	ui2 "github.com/joshw/zephyrlily/internal/tui2/ui"
 	"github.com/joshw/zephyrlily/internal/version"
 )
 
@@ -98,6 +99,7 @@ func cmdClient(args []string) {
 	proxy := fs.String("proxy", "localhost:7888", "proxy address")
 	user := fs.String("user", "", "Lily username")
 	pass := fs.String("pass", "", "Lily password (prompted if omitted)")
+	tui1Flag := fs.Bool("tui1", false, "use legacy TUI interface")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: zlily client [flags]")
 		fs.PrintDefaults()
@@ -105,7 +107,7 @@ func cmdClient(args []string) {
 	fs.Parse(args)
 
 	username, password := resolveCredentials(*user, *pass)
-	runTUI(*proxy, username, password)
+	runTUI(*proxy, username, password, !*tui1Flag)
 }
 
 func cmdCombined(args []string) {
@@ -121,6 +123,7 @@ func cmdCombined(args []string) {
 	webCert := fs.String("web-cert", "", "TLS certificate PEM for web UI (default: self-signed)")
 	webKey := fs.String("web-key", "", "TLS private key PEM for web UI (default: self-signed)")
 	logLevel := fs.String("log-level", "info", "minimum log level to display (debug, info, warn, error)")
+	tui1Flag := fs.Bool("tui1", false, "use legacy TUI interface")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: zlily [combined] [flags]")
 		fs.PrintDefaults()
@@ -169,7 +172,7 @@ func cmdCombined(args []string) {
 	if *webUI {
 		startupMsgs = append(startupMsgs, "Web UI: "+webURL(proxyAddr, *webTLS))
 	}
-	runTUI(proxyAddr, username, password, startupMsgs...)
+	runTUI(proxyAddr, username, password, !*tui1Flag, startupMsgs...)
 	cancel()
 	<-proxyDone
 }
@@ -178,7 +181,7 @@ func cmdCombined(args []string) {
 
 // runTUI connects to the proxy and starts the Bubble Tea event loop.
 // startupMsgs are displayed below the logo on first render.
-func runTUI(proxyAddr, username, password string, startupMsgs ...string) {
+func runTUI(proxyAddr, username, password string, useTUI2 bool, startupMsgs ...string) {
 	c := client.New(proxyAddr)
 
 	if err := c.Auth(username, password); err != nil {
@@ -189,13 +192,24 @@ func runTUI(proxyAddr, username, password string, startupMsgs ...string) {
 	}
 	defer c.Close()
 
-	logChan, logger := ui.NewLogger()
-	slog.SetDefault(logger)
+	if useTUI2 {
+		logChan, logger := ui2.NewLogger()
+		slog.SetDefault(logger)
 
-	m := ui.New(c, logChan, startupMsgs...)
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
-		log.Fatalf("tui: %v", err)
+		m := ui2.New(c, logChan, startupMsgs...)
+		p := tea.NewProgram(m, tea.WithAltScreen())
+		if _, err := p.Run(); err != nil {
+			log.Fatalf("tui: %v", err)
+		}
+	} else {
+		logChan, logger := ui.NewLogger()
+		slog.SetDefault(logger)
+
+		m := ui.New(c, logChan, startupMsgs...)
+		p := tea.NewProgram(m, tea.WithAltScreen())
+		if _, err := p.Run(); err != nil {
+			log.Fatalf("tui: %v", err)
+		}
 	}
 }
 
@@ -307,6 +321,7 @@ Combined flags (zlily / zlily combined):
   --port         n      Embedded proxy port     (default: OS-assigned ephemeral)
   --tls                 Connect to Lily over TLS
   --tls-insecure        Skip TLS certificate verification (use with caution)
+  --tui1                Use legacy TUI interface
   --web                 Serve the web UI        (default: off)
   --web-tls             Serve the web UI over HTTPS
   --web-cert     file   TLS certificate PEM     (default: auto-generated self-signed)
@@ -328,5 +343,6 @@ Client flags (zlily client):
   --proxy        addr   Proxy address  (default: localhost:7888)
   --user         name   Lily username  (prompted if not provided)
   --pass         secret Lily password  (prompted if not provided)
+  --tui1                Use legacy TUI interface
 `)
 }
