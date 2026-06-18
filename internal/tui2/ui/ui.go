@@ -318,6 +318,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case tea.ResumeMsg:
+		// Returning from suspend (C-z / fg). Bubbletea restores the terminal and
+		// re-hides the cursor automatically; force a full clear so any artifacts
+		// left by the foreground process are wiped and the UI repaints cleanly.
+		return m, tea.ClearScreen
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height

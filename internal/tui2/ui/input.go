@@ -96,6 +96,10 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m = m.deleteForward()
 
+	// Suspend (job control); the UI is repainted on resume via tea.ResumeMsg.
+	case key.Matches(msg, m.keys.Suspend):
+		return m, tea.Suspend
+
 	// Submit
 	case key.Matches(msg, m.keys.Submit):
 		return m.handleSubmit()
@@ -257,6 +261,12 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 	m.inputCursor = 0
 	m.input.SetValue("")
 	m.prompt = ""
+
+	// The input has collapsed back to a single line; reclaim the freed space
+	// for the viewport now so the layout doesn't stay expanded until the next
+	// keypress or scroll. Done before content is paged in so the subsequent
+	// syncViewportContent calls use the correct viewport height.
+	m = m.maybeResizeViewport()
 
 	// Log outgoing command to debug
 	if m.debugMode {

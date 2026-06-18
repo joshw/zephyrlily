@@ -10,6 +10,7 @@ type KeyMap struct {
 	// Application control
 	Quit      key.Binding
 	ForceQuit key.Binding
+	Suspend   key.Binding
 	Redraw    key.Binding
 	DebugMode key.Binding
 	PasteMode key.Binding
@@ -68,6 +69,10 @@ func NewKeyMap() KeyMap {
 		ForceQuit: key.NewBinding(
 			key.WithKeys("ctrl+d"),
 			key.WithHelp("C-d", "quit (empty input)"),
+		),
+		Suspend: key.NewBinding(
+			key.WithKeys("ctrl+z"),
+			key.WithHelp("C-z", "suspend"),
 		),
 		Redraw: key.NewBinding(
 			key.WithKeys("ctrl+l"),
