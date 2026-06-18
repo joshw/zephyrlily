@@ -925,29 +925,25 @@ func (m Model) viewNormal() string {
 func (m Model) viewAuth() string {
 	var sb strings.Builder
 
-	// Render splash/logo in background
-	sb.WriteString(m.viewport.View())
-	sb.WriteByte('\n')
-
-	// Calculate dialog dimensions
-	dialogWidth := 40
-	dialogHeight := 8
-	startRow := (m.height - dialogHeight) / 2
-	startCol := (m.width - dialogWidth) / 2
-	if startRow < 0 {
-		startRow = 0
-	}
-	if startCol < 0 {
-		startCol = 0
+	// Render splash/logo from output
+	splashLines := []string{}
+	for _, item := range m.output {
+		if s, ok := item.Data.(string); ok {
+			splashLines = append(splashLines, s)
+		}
 	}
 
-	// Render dialog
-	dialogStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("6")). // cyan
-		Padding(1).
-		Width(dialogWidth)
+	// Show splash (limit to top half)
+	maxSplashLines := m.height / 2
+	if len(splashLines) > maxSplashLines {
+		splashLines = splashLines[:maxSplashLines]
+	}
+	for _, line := range splashLines {
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+	}
 
+	// Build auth dialog
 	var dialogContent strings.Builder
 	dialogContent.WriteString("Username:\n")
 	dialogContent.WriteString(m.usernameInput.Value() + "\n\n")
@@ -963,31 +959,35 @@ func (m Model) viewAuth() string {
 
 	dialogContent.WriteString("Tab: switch | Enter: submit")
 
+	dialogStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("6")). // cyan
+		Padding(1).
+		Width(40)
+
 	dialog := dialogStyle.Render(dialogContent.String())
 
-	// Simple full-screen rendering (overlay on viewport)
-	lines := strings.Split(m.viewport.View(), "\n")
-	if len(lines) < m.height {
-		for len(lines) < m.height {
-			lines = append(lines, "")
-		}
-	}
-
-	// Insert dialog in the middle
+	// Center dialog horizontally
 	dialogLines := strings.Split(dialog, "\n")
-	for i, dline := range dialogLines {
-		lineIdx := startRow + i
-		if lineIdx >= 0 && lineIdx < len(lines) {
-			// Simple overlay - replace line
-			if startCol > 0 && startCol < len(lines[lineIdx]) {
-				lines[lineIdx] = lines[lineIdx][:startCol] + dline + lines[lineIdx][startCol+len(dline):]
-			} else {
-				lines[lineIdx] = dline
-			}
+	for _, line := range dialogLines {
+		lineWidth := lipgloss.Width(line)
+		padding := (m.width - lineWidth) / 2
+		if padding < 0 {
+			padding = 0
 		}
+		sb.WriteString(strings.Repeat(" ", padding))
+		sb.WriteString(line)
+		sb.WriteByte('\n')
 	}
 
-	return strings.Join(lines[:m.height], "\n")
+	// Pad to m.height
+	currentLines := strings.Count(sb.String(), "\n")
+	for currentLines < m.height {
+		sb.WriteByte('\n')
+		currentLines++
+	}
+
+	return sb.String()
 }
 
 // renderViewportWithPopup renders the viewport with the completion popup at the bottom.
