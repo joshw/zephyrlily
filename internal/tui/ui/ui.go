@@ -285,12 +285,17 @@ func fetchInitialStateCmd(c *client.Client) tea.Cmd {
 // attemptAuthCmd authenticates with the proxy and fetches initial state.
 func attemptAuthCmd(c *client.Client, username, password string) tea.Cmd {
 	return func() tea.Msg {
+		slog.Info("auth: starting")
 		if err := c.Auth(username, password); err != nil {
+			slog.Info("auth: failed", "error", err)
 			return authResultMsg{username: username, password: password, err: err}
 		}
+		slog.Info("auth: completed, connecting")
 		if err := c.Connect(); err != nil {
+			slog.Info("auth: connect failed", "error", err)
 			return authResultMsg{username: username, password: password, err: err}
 		}
+		slog.Info("auth: connect completed")
 		return authResultMsg{username: username, password: password, err: nil}
 	}
 }
@@ -429,6 +434,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleNormalKey(msg)
 
 	case authResultMsg:
+		slog.Info("auth result received", "err", msg.err)
 		if msg.err != nil {
 			m.authError = msg.err.Error()
 			m.authPassword = "" // clear password on error
@@ -436,6 +442,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.authInProgress = false
 			return m, nil
 		}
+		slog.Info("auth: success, transitioning to normal mode")
 		m.authMode = false
 		m.authenticated = true
 		m.authInProgress = false
