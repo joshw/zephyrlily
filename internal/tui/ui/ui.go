@@ -100,6 +100,16 @@ type Model struct {
 	// Reconnect prompt: shown when the Lily connection drops.
 	reconnectPrompt bool
 
+	// Authentication dialog
+	authMode       bool
+	authError      string
+	authUsername   string
+	authPassword   string
+	authField      int // 0=username, 1=password
+	usernameInput  textarea.Model
+	passwordInput  textarea.Model
+	authenticated  bool // true after auth succeeds
+
 	// Intelligent expand state (mirrors tigerlily expand.pl)
 	expandSender    string   // last person who private/emoted us  (recalled by ':')
 	expandRecips    string   // last destination we sent to        (recalled by ';')
@@ -177,17 +187,35 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 	ti.Prompt = ""
 	ti.SetHeight(1)
 
+	// Create auth textareas
+	usernameField := textarea.New()
+	usernameField.ShowLineNumbers = false
+	usernameField.CharLimit = 0
+	usernameField.Prompt = ""
+	usernameField.SetHeight(1)
+	usernameField.Focus()
+
+	passwordField := textarea.New()
+	passwordField.ShowLineNumbers = false
+	passwordField.CharLimit = 0
+	passwordField.Prompt = ""
+	passwordField.SetHeight(1)
+
 	return Model{
-		client:         c,
-		output:         output,
-		input:          ti,
-		keys:           NewKeyMap(),
-		spellChecker:   NewSpellChecker(),
-		logChan:        logChan,
-		historyPos:     -1,
-		searchIdx:      -1,
+		client:        c,
+		output:        output,
+		input:         ti,
+		keys:          NewKeyMap(),
+		spellChecker:  NewSpellChecker(),
+		logChan:       logChan,
+		historyPos:    -1,
+		searchIdx:     -1,
 		autoPageAnchor: -1,
-		scrollAnchor:   -1,
+		scrollAnchor:  -1,
+		authMode:      true,
+		authField:     0,
+		usernameInput: usernameField,
+		passwordInput: passwordField,
 	}
 }
 
@@ -209,6 +237,12 @@ type reconnectResultMsg struct {
 }
 
 type seenTickMsg struct{}
+
+type authResultMsg struct {
+	username string
+	password string
+	err      error
+}
 
 type editorFetchResultMsg struct {
 	meta  editMeta
@@ -244,6 +278,38 @@ func fetchInitialStateCmd(c *client.Client) tea.Cmd {
 			}
 		}
 		return initialStateMsg{state: state, events: events}
+	}
+}
+
+// attemptAuthCmd authenticates with the proxy and fetches initial state.
+func attemptAuthCmd(c *client.Client, username, password string) tea.Cmd {
+	return func() tea.Msg {
+		if err := c.Auth(username, password); err != nil {
+			return authResultMsg{username: username, password: password, err: err}
+		}
+		if err := c.Connect(); err != nil {
+			return authResultMsg{username: username, password: password, err: err}
+		}
+		state, err := c.FetchState()
+		if err != nil {
+			return authResultMsg{username: username, password: password, err: err}
+		}
+		var events []api.WSServerMsg
+		if state.LastSeenID > 0 {
+			afterID := state.LastSeenID
+			for {
+				batch, more, err := c.FetchEvents(afterID, 200)
+				if err != nil {
+					break
+				}
+				events = append(events, batch...)
+				if !more || len(batch) == 0 {
+					break
+				}
+				afterID = batch[len(batch)-1].ID
+			}
+		}
+		return authResultMsg{username: username, password: password, err: nil}
 	}
 }
 
@@ -312,6 +378,9 @@ func reportSeenCmd(c *client.Client, lastSeenID int64) tea.Cmd {
 
 // Init starts the event listener.
 func (m Model) Init() tea.Cmd {
+	if m.authMode {
+		return tea.HideCursor
+	}
 	return tea.Batch(
 		listenCmd(m.client),
 		listenLogCmd(m.logChan),
@@ -359,6 +428,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.debugMsgs = append(m.debugMsgs, fmt.Sprintf("KEY: %s", msg.String()))
 		}
 
+		if m.authMode {
+			return m.handleAuthKey(msg)
+		}
+
 		if m.editMode {
 			return m.handleEditorMsg(msg)
 		}
@@ -372,6 +445,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m.handleNormalKey(msg)
+
+	case authResultMsg:
+		if msg.err != nil {
+			m.authError = msg.err.Error()
+			m.authPassword = "" // clear password on error
+			m.passwordInput.SetValue("")
+			return m, nil
+		}
+		m.authMode = false
+		m.authenticated = true
+		// Now fetch initial state
+		return m, tea.Batch(
+			listenCmd(m.client),
+			listenLogCmd(m.logChan),
+			fetchInitialStateCmd(m.client),
+			reportSeenCmd(m.client, 0),
+		)
 
 	case serverEventMsg:
 		if msg.msg == nil {
@@ -797,6 +887,9 @@ func (m Model) View() string {
 	if m.height == 0 {
 		return "connecting..."
 	}
+	if m.authMode {
+		return m.viewAuth()
+	}
 	if m.editMode {
 		return m.viewEditor()
 	}
@@ -826,6 +919,75 @@ func (m Model) viewNormal() string {
 	sb.WriteString(m.renderInputArea())
 
 	return sb.String()
+}
+
+// viewAuth renders the authentication dialog on top of the splash screen.
+func (m Model) viewAuth() string {
+	var sb strings.Builder
+
+	// Render splash/logo in background
+	sb.WriteString(m.viewport.View())
+	sb.WriteByte('\n')
+
+	// Calculate dialog dimensions
+	dialogWidth := 40
+	dialogHeight := 8
+	startRow := (m.height - dialogHeight) / 2
+	startCol := (m.width - dialogWidth) / 2
+	if startRow < 0 {
+		startRow = 0
+	}
+	if startCol < 0 {
+		startCol = 0
+	}
+
+	// Render dialog
+	dialogStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("6")). // cyan
+		Padding(1).
+		Width(dialogWidth)
+
+	var dialogContent strings.Builder
+	dialogContent.WriteString("Username:\n")
+	dialogContent.WriteString(m.usernameInput.Value() + "\n\n")
+	dialogContent.WriteString("Password:\n")
+	// Show masked password
+	maskedPass := strings.Repeat("•", utf8.RuneCountInString(m.passwordInput.Value()))
+	dialogContent.WriteString(maskedPass + "\n\n")
+
+	if m.authError != "" {
+		errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+		dialogContent.WriteString(errorStyle.Render("Error: " + m.authError) + "\n")
+	}
+
+	dialogContent.WriteString("Tab: switch | Enter: submit")
+
+	dialog := dialogStyle.Render(dialogContent.String())
+
+	// Simple full-screen rendering (overlay on viewport)
+	lines := strings.Split(m.viewport.View(), "\n")
+	if len(lines) < m.height {
+		for len(lines) < m.height {
+			lines = append(lines, "")
+		}
+	}
+
+	// Insert dialog in the middle
+	dialogLines := strings.Split(dialog, "\n")
+	for i, dline := range dialogLines {
+		lineIdx := startRow + i
+		if lineIdx >= 0 && lineIdx < len(lines) {
+			// Simple overlay - replace line
+			if startCol > 0 && startCol < len(lines[lineIdx]) {
+				lines[lineIdx] = lines[lineIdx][:startCol] + dline + lines[lineIdx][startCol+len(dline):]
+			} else {
+				lines[lineIdx] = dline
+			}
+		}
+	}
+
+	return strings.Join(lines[:m.height], "\n")
 }
 
 // renderViewportWithPopup renders the viewport with the completion popup at the bottom.

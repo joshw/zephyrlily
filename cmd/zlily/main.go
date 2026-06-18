@@ -9,7 +9,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -22,7 +21,6 @@ import (
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"golang.org/x/term"
 
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
@@ -96,23 +94,18 @@ func cmdServer(args []string) {
 func cmdClient(args []string) {
 	fs := flag.NewFlagSet("client", flag.ExitOnError)
 	proxy := fs.String("proxy", "localhost:7888", "proxy address")
-	user := fs.String("user", "", "Lily username")
-	pass := fs.String("pass", "", "Lily password (prompted if omitted)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: zlily client [flags]")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args)
 
-	username, password := resolveCredentials(*user, *pass)
-	runTUI(*proxy, username, password)
+	runTUI(*proxy)
 }
 
 func cmdCombined(args []string) {
 	fs := flag.NewFlagSet("combined", flag.ExitOnError)
 	lily := fs.String("lily", "rpi.lily.org:7777", "Lily server address")
-	user := fs.String("user", "", "Lily username")
-	pass := fs.String("pass", "", "Lily password (prompted if omitted)")
 	port := fs.Int("port", 0, "embedded proxy port (0 = OS-assigned ephemeral)")
 	tlsFlag := fs.Bool("tls", false, "connect to Lily over TLS")
 	tlsInsecure := fs.Bool("tls-insecure", false, "skip TLS certificate verification (use with caution)")
@@ -130,8 +123,6 @@ func cmdCombined(args []string) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: parseSlogLevel(*logLevel),
 	})))
-
-	username, password := resolveCredentials(*user, *pass)
 
 	// Bind to an ephemeral port (or the one requested) on loopback only.
 	listenAddr := fmt.Sprintf("127.0.0.1:%d", *port)
@@ -169,24 +160,18 @@ func cmdCombined(args []string) {
 	if *webUI {
 		startupMsgs = append(startupMsgs, "Web UI: "+webURL(proxyAddr, *webTLS))
 	}
-	runTUI(proxyAddr, username, password, startupMsgs...)
+	runTUI(proxyAddr, startupMsgs...)
 	cancel()
 	<-proxyDone
 }
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 
-// runTUI connects to the proxy and starts the Bubble Tea event loop.
+// runTUI creates the client and starts the Bubble Tea event loop.
+// The TUI handles authentication interactively via modal dialog.
 // startupMsgs are displayed below the logo on first render.
-func runTUI(proxyAddr, username, password string, startupMsgs ...string) {
+func runTUI(proxyAddr string, startupMsgs ...string) {
 	c := client.New(proxyAddr)
-
-	if err := c.Auth(username, password); err != nil {
-		log.Fatalf("auth: %v", err)
-	}
-	if err := c.Connect(); err != nil {
-		log.Fatalf("connect: %v", err)
-	}
 	defer c.Close()
 
 	logChan, logger := ui.NewLogger()
@@ -197,44 +182,6 @@ func runTUI(proxyAddr, username, password string, startupMsgs ...string) {
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("tui: %v", err)
 	}
-}
-
-// resolveCredentials returns username and password, prompting for any that are
-// empty.  Username is shown; password input is hidden.
-func resolveCredentials(username, password string) (string, string) {
-	if username == "" {
-		username = promptLine("Username: ")
-	}
-	if username == "" {
-		fmt.Fprintln(os.Stderr, "username is required")
-		os.Exit(1)
-	}
-	if password == "" {
-		password = promptPassword("Password: ")
-	}
-	return username, password
-}
-
-// promptLine prints msg to stderr and reads a line from stdin.
-func promptLine(msg string) string {
-	fmt.Fprint(os.Stderr, msg)
-	r := bufio.NewReader(os.Stdin)
-	s, _ := r.ReadString('\n')
-	return strings.TrimRight(s, "\r\n")
-}
-
-// promptPassword prints msg to stderr and reads a password without echo.
-func promptPassword(msg string) string {
-	fmt.Fprint(os.Stderr, msg)
-	b, err := term.ReadPassword(int(os.Stdin.Fd()))
-	fmt.Fprintln(os.Stderr) // newline after the hidden input
-	if err != nil {
-		// Fall back to visible input (e.g. piped stdin).
-		r := bufio.NewReader(os.Stdin)
-		s, _ := r.ReadString('\n')
-		return strings.TrimRight(s, "\r\n")
-	}
-	return string(b)
 }
 
 // parseSlogLevel maps a string level name to slog.Level, defaulting to Info.
@@ -302,12 +249,9 @@ Web interface:
 
 Combined flags (zlily / zlily combined):
   --lily         addr   Lily server address     (default: rpi.lily.org:7777)
-  --user         name   Lily username           (prompted if not provided)
-  --pass         secret Lily password           (prompted if not provided)
   --port         n      Embedded proxy port     (default: OS-assigned ephemeral)
   --tls                 Connect to Lily over TLS
   --tls-insecure        Skip TLS certificate verification (use with caution)
-  --tui1                Use legacy TUI interface
   --web                 Serve the web UI        (default: off)
   --web-tls             Serve the web UI over HTTPS
   --web-cert     file   TLS certificate PEM     (default: auto-generated self-signed)
@@ -327,8 +271,5 @@ Server flags (zlily server):
 
 Client flags (zlily client):
   --proxy        addr   Proxy address  (default: localhost:7888)
-  --user         name   Lily username  (prompted if not provided)
-  --pass         secret Lily password  (prompted if not provided)
-  --tui1                Use legacy TUI interface
 `)
 }

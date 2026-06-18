@@ -28,6 +28,62 @@ func (m Model) maybeResizeViewport() Model {
 	return m
 }
 
+// handleAuthKey handles key events in authentication dialog mode.
+func (m Model) handleAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+
+	switch keyStr {
+	case "tab":
+		// Switch between username and password fields
+		if m.authField == 0 {
+			m.authField = 1
+			m.usernameInput.Blur()
+			m.passwordInput.Focus()
+		} else {
+			m.authField = 0
+			m.passwordInput.Blur()
+			m.usernameInput.Focus()
+		}
+		return m, nil
+
+	case "enter", "ctrl+m", "ctrl+j":
+		// Submit only when on password field
+		if m.authField != 1 {
+			// In username field, Tab to password instead
+			m.authField = 1
+			m.usernameInput.Blur()
+			m.passwordInput.Focus()
+			return m, nil
+		}
+		// Get values and attempt auth
+		m.authUsername = m.usernameInput.Value()
+		m.authPassword = m.passwordInput.Value()
+		if m.authUsername == "" {
+			m.authError = "Username required"
+			return m, nil
+		}
+		if m.authPassword == "" {
+			m.authError = "Password required"
+			return m, nil
+		}
+		m.authError = ""
+		return m, attemptAuthCmd(m.client, m.authUsername, m.authPassword)
+
+	case "esc", "ctrl+c":
+		// Could quit here, but for now just ignore
+		return m, nil
+
+	default:
+		// Route to active textarea
+		if m.authField == 0 {
+			m.usernameInput, _ = m.usernameInput.Update(msg)
+		} else {
+			m.passwordInput, _ = m.passwordInput.Update(msg)
+		}
+		return m, nil
+	}
+}
+
 // handleNormalKey handles key events in normal (non-special) mode.
 func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	keyStr := msg.String()
