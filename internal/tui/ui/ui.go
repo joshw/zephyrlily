@@ -109,6 +109,7 @@ type Model struct {
 	usernameInput  textarea.Model
 	passwordInput  textarea.Model
 	authenticated  bool // true after auth succeeds
+	authInProgress bool // true while attempting auth
 
 	// Intelligent expand state (mirrors tigerlily expand.pl)
 	expandSender    string   // last person who private/emoted us  (recalled by ':')
@@ -451,10 +452,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.authError = msg.err.Error()
 			m.authPassword = "" // clear password on error
 			m.passwordInput.SetValue("")
+			m.authInProgress = false
 			return m, nil
 		}
 		m.authMode = false
 		m.authenticated = true
+		m.authInProgress = false
 		// Now fetch initial state
 		return m, tea.Batch(
 			listenCmd(m.client),
@@ -945,19 +948,26 @@ func (m Model) viewAuth() string {
 
 	// Build auth dialog
 	var dialogContent strings.Builder
-	dialogContent.WriteString("Username:\n")
-	dialogContent.WriteString(m.usernameInput.Value() + "\n\n")
-	dialogContent.WriteString("Password:\n")
-	// Show masked password
-	maskedPass := strings.Repeat("•", utf8.RuneCountInString(m.passwordInput.Value()))
-	dialogContent.WriteString(maskedPass + "\n\n")
 
-	if m.authError != "" {
-		errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-		dialogContent.WriteString(errorStyle.Render("Error: " + m.authError) + "\n")
+	if m.authInProgress {
+		// Show authenticating message
+		dialogContent.WriteString("Authenticating...\n\n")
+		dialogContent.WriteString("Please wait while we verify your credentials.")
+	} else {
+		dialogContent.WriteString("Username:\n")
+		dialogContent.WriteString(m.usernameInput.Value() + "\n\n")
+		dialogContent.WriteString("Password:\n")
+		// Show masked password
+		maskedPass := strings.Repeat("•", utf8.RuneCountInString(m.passwordInput.Value()))
+		dialogContent.WriteString(maskedPass + "\n\n")
+
+		if m.authError != "" {
+			errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+			dialogContent.WriteString(errorStyle.Render("Error: " + m.authError) + "\n")
+		}
+
+		dialogContent.WriteString("Tab: switch | Enter: submit")
 	}
-
-	dialogContent.WriteString("Tab: switch | Enter: submit")
 
 	dialogStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

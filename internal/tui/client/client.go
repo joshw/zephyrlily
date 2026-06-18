@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sync"
 	"sync/atomic"
 
 	"github.com/coder/websocket"
@@ -31,6 +32,9 @@ type Client struct {
 	// lastReportedSeenID is the most recent value successfully sent to /seen.
 	// ReportSeen skips the HTTP call when the value hasn't changed.
 	lastReportedSeenID atomic.Int64
+
+	// closeOnce ensures the Events channel is only closed once.
+	closeOnce sync.Once
 }
 
 // New creates a Client pointing at the given proxy address.
@@ -234,7 +238,7 @@ func (c *Client) readLoop() {
 	// Capture the channel at goroutine start so that a reconnect that replaces
 	// c.Events doesn't cause this goroutine to close the new channel.
 	ch := c.Events
-	defer close(ch)
+	defer c.closeOnce.Do(func() { close(ch) })
 	for {
 		var msg api.WSServerMsg
 		if err := wsjson.Read(c.ctx, c.ws, &msg); err != nil {

@@ -67,6 +67,7 @@ func (m Model) handleAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.authError = ""
+		m.authInProgress = true
 		return m, attemptAuthCmd(m.client, m.authUsername, m.authPassword)
 
 	case "esc", "ctrl+c":
