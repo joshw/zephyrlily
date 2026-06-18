@@ -48,6 +48,10 @@ func (m Model) handleAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter", "ctrl+m", "ctrl+j":
+		// Ignore if auth is already in progress
+		if m.authInProgress {
+			return m, nil
+		}
 		// Submit only when on password field
 		if m.authField != 1 {
 			// In username field, Tab to password instead
