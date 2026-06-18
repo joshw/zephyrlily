@@ -71,8 +71,16 @@ func (m Model) handleAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, attemptAuthCmd(m.client, m.authUsername, m.authPassword)
 
 	case "esc", "ctrl+c":
-		// Could quit here, but for now just ignore
+		// Ctrl+C quits
+		if keyStr == "ctrl+c" {
+			return m, tea.Quit
+		}
+		// ESC dismisses auth dialog (but we don't allow that for now)
 		return m, nil
+
+	case "ctrl+z":
+		// Suspend: return a command that will suspend the app
+		return m, func() tea.Msg { return tea.Suspend() }
 
 	default:
 		// Route to active textarea
