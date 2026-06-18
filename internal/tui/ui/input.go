@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -120,31 +121,63 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleCompletionKey(msg)
 	}
 
+	// Check for paste mode toggle (allow escaping paste mode)
+	if key.Matches(msg, m.keys.PasteMode) {
+		m.pasteMode = !m.pasteMode
+		m.pasteEatFlag = false
+		m.pasteEatBuf = false
+		return m, nil
+	}
+
 	// Paste mode intercepts Enter and Space
 	if m.pasteMode {
-		switch keyStr {
-		case "enter", "ctrl+m", "ctrl+j":
-			if m.pasteEatFlag {
-				return m, nil
+		if m.debugMode {
+			m.debugMsgs = append(m.debugMsgs, fmt.Sprintf("[paste] keyStr=%q type=%v runes=%q", keyStr, msg.Type, string(msg.Runes)))
+		}
+		// Handle both pasted multi-line text (KeyRunes with multiple chars) and individual keystrokes
+		if msg.Type == tea.KeyRunes {
+			// Process each rune: spaces, \r, and \n all converted to spaces with eat-flag logic
+			for _, r := range msg.Runes {
+				if r == ' ' || r == '\n' || r == '\r' {
+					// Whitespace: convert to space, but eat consecutive whitespace
+					if m.pasteEatFlag {
+						continue
+					}
+					if m.pasteEatBuf {
+						m.pasteEatFlag = true
+						continue
+					}
+					// First whitespace in sequence: insert it and mark to eat future whitespace
+					m.pasteEatBuf = true
+					m = m.insertString(" ")
+				} else {
+					// Non-whitespace: clear flags and insert
+					m.pasteEatFlag = false
+					m.pasteEatBuf = false
+					m = m.insertString(string(r))
+				}
 			}
-			m.pasteEatFlag = true
-			m.pasteEatBuf = false
-			m = m.insertString(" ")
 			m.syncTextarea()
 			return m, nil
-		case " ":
+		}
+		// Non-rune keys: Enter/Ctrl+M/Ctrl+J treated same as \r/\n runes
+		if keyStr == "enter" || keyStr == "ctrl+m" || keyStr == "ctrl+j" {
 			if m.pasteEatFlag {
 				return m, nil
 			}
 			if m.pasteEatBuf {
 				m.pasteEatFlag = true
+				m.syncTextarea()
 				return m, nil
 			}
 			m.pasteEatBuf = true
-		default:
-			m.pasteEatFlag = false
-			m.pasteEatBuf = false
+			m = m.insertString(" ")
+			m.syncTextarea()
+			return m, nil
 		}
+		// Non-enter, non-rune key: clear flags
+		m.pasteEatFlag = false
+		m.pasteEatBuf = false
 	}
 
 	wasKill := m.lastKill
@@ -267,10 +300,6 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.scrollAnchor = m.topVisibleItemIndex()
 		m.debugMode = !m.debugMode
 		m = m.updateViewportSize()
-	case key.Matches(msg, m.keys.PasteMode):
-		m.pasteMode = !m.pasteMode
-		m.pasteEatFlag = false
-		m.pasteEatBuf = false
 	case key.Matches(msg, m.keys.Redraw):
 		// Bubbletea handles redraw automatically
 
