@@ -1130,7 +1130,7 @@ func (m Model) formatStatusBar() string {
 	if leftPad < 0 {
 		leftPad = 0
 	}
-	rightPad := m.width - leftLen - centerLen - leftPad
+	rightPad := m.width - rightLen - (leftLen + leftPad + centerLen)
 	if rightPad < 0 {
 		rightPad = 0
 	}
