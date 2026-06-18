@@ -52,20 +52,6 @@ var tuiHelp = map[string][]string{
 		"While in debug mode, PgUp / PgDn scroll the right panel independently.",
 		"Press ESC G again to return to the normal view.",
 	},
-	"tui2": {
-		"TUI2 - New Bubbletea-based interface",
-		"",
-		"This version uses more standard bubbletea components:",
-		"  - bubbles/viewport for scrolling",
-		"  - bubbles/textarea for input",
-		"  - bubbles/key for key bindings",
-		"",
-		"New features:",
-		"  - Clickable URLs (OSC8 hyperlinks)",
-		"  - Improved viewport scrolling",
-		"",
-		"Use '%help keys' for key binding reference.",
-	},
 }
 
 // handleLocalCommand inspects line and returns local output if applicable.

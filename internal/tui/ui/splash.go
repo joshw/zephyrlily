@@ -29,7 +29,7 @@ func formatLogo() []string {
 	banner := []string{
 		"",
 		bannerStyle.Render("ZephyrLily") + " v" + version,
-		"Lily Chat Client (tui2)",
+		"Lily Chat Client (TUI)",
 		"",
 	}
 
