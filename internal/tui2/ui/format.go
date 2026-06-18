@@ -90,9 +90,11 @@ func (m Model) renderOutputItem(item OutputItem) []string {
 			}
 			var out []string
 			for _, line := range lines {
-				// Apply linkification to command output
-				line = linkifyText(line)
 				wrapped := strings.Split(wordwrap.String(line, wrapWidth), "\n")
+				// Apply linkification after wrapping to avoid breaking URLs
+				for i := range wrapped {
+					wrapped[i] = linkifyText(wrapped[i])
+				}
 				out = append(out, wrapped...)
 			}
 			return out
@@ -239,9 +241,12 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		if msg == "" {
 			return ""
 		}
-		// Apply linkification to message body
-		msg = linkifyText(msg)
-		return strings.Join(wrapText(prefix, prefix, strings.TrimSpace(msg), width, ""), "\n")
+		lines := wrapText(prefix, prefix, strings.TrimSpace(msg), width, "")
+		// Apply linkification after wrapping to avoid breaking URLs
+		for i := range lines {
+			lines[i] = linkifyText(lines[i])
+		}
+		return strings.Join(lines, "\n")
 	}
 
 	var targetsRaw []interface{}
@@ -359,9 +364,11 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		if value == "" {
 			return emoteBodyStyle.Render(headerStr)
 		}
-		// Apply linkification to emote body
-		value = linkifyText(value)
 		lines := wrapText(headerStr, "> ", strings.TrimSpace(value), width, " ")
+		// Apply linkification after wrapping to avoid breaking URLs
+		for i := range lines {
+			lines[i] = linkifyText(lines[i])
+		}
 		return emoteBodyStyle.Render(strings.Join(lines, "\n"))
 
 	case "connect":
