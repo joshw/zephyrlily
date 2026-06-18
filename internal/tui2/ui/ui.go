@@ -962,10 +962,16 @@ func (m Model) formatStatusBar() string {
 		return statusBarStyle.Width(m.width).Render(left + padding + right)
 	}
 
-	// Center the center text
-	availableSpace := m.width - leftLen - rightLen
-	leftPad := (availableSpace - centerLen) / 2
-	rightPad := availableSpace - centerLen - leftPad
+	// Center the center text (overall in the status bar, not between left/right)
+	overallCenter := (m.width - centerLen) / 2
+	leftPad := overallCenter - leftLen
+	if leftPad < 0 {
+		leftPad = 0
+	}
+	rightPad := m.width - leftLen - centerLen - leftPad
+	if rightPad < 0 {
+		rightPad = 0
+	}
 
 	content := left + strings.Repeat(" ", leftPad) + center + strings.Repeat(" ", rightPad) + right
 	return statusBarStyle.Width(m.width).Render(content)
