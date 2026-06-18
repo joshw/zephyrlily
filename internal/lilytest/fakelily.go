@@ -138,10 +138,10 @@ func (s *Server) WaitCommand(t testing.TB, want string) {
 // Close shuts the server down and joins its goroutine.
 func (s *Server) Close() {
 	s.closeOnce.Do(func() {
-		s.ln.Close()
+		_ = s.ln.Close()
 		s.mu.Lock()
 		if s.conn != nil {
-			s.conn.Close()
+			_ = s.conn.Close()
 		}
 		s.mu.Unlock()
 	})
@@ -264,5 +264,5 @@ func (s *Server) write(line string) {
 	if s.conn == nil {
 		return
 	}
-	fmt.Fprintf(s.conn, "%s\n", line)
+	_, _ = fmt.Fprintf(s.conn, "%s\n", line)
 }

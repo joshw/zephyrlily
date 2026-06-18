@@ -102,7 +102,7 @@ func (c *Conn) Connect() error {
 	c.phase = PhaseFirstPrompt
 
 	if err := c.runHandshake(); err != nil {
-		nc.Close()
+		_ = nc.Close()
 		return err
 	}
 
@@ -115,7 +115,7 @@ func (c *Conn) Connect() error {
 func (c *Conn) Close() {
 	c.cancel()
 	if c.conn != nil {
-		c.conn.Close()
+		_ = c.conn.Close()
 	}
 }
 

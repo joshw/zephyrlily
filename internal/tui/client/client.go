@@ -51,7 +51,7 @@ func (c *Client) Auth(username, password string) error {
 	if err != nil {
 		return fmt.Errorf("auth request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		// Read the error body to get the detailed error message
 		var errBody bytes.Buffer

@@ -332,7 +332,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	delete(sess.subscribers, client)
 	sess.subsMu.Unlock()
 
-	ws.Close(websocket.StatusNormalClosure, "")
+	_ = ws.Close(websocket.StatusNormalClosure, "")
 }
 
 // fanOut reads from sess.conn.Events and broadcasts to all WebSocket subscribers.
@@ -571,7 +571,7 @@ func (s *Server) handleSeen(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	// CAS loop: only update if new value is higher
 	for {
@@ -904,7 +904,7 @@ func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	// Lily uses an empty target string to mean "me".
 	target := req.Target

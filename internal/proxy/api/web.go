@@ -93,7 +93,7 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		f.Close()
+		_ = f.Close()
 	}
 	http.FileServer(h.fs).ServeHTTP(w, r)
 }
