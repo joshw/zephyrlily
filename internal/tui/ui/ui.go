@@ -7,13 +7,15 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
-	"github.com/muesli/reflow/wordwrap"
 )
 
 // OutputItem represents a single item in the output buffer.
@@ -29,13 +31,24 @@ type Model struct {
 	client *client.Client
 	state  *api.StateResponse
 	output []OutputItem // scrollback items (raw, to be formatted at render time)
-	input  string       // current input buffer
 	prompt string       // latest prompt text from server
 	width  int
 	height int
 
-	// Input cursor and edit state
-	cursor   int    // byte cursor position in m.input
+	// Output area - using bubbles/viewport
+	viewport viewport.Model
+
+	// Input area - using bubbles/textarea for display
+	input textarea.Model
+
+	// Manual cursor tracking (textarea doesn't expose byte position)
+	inputValue  string
+	inputCursor int
+
+	// Key bindings
+	keys KeyMap
+
+	// Kill ring for emacs-style editing
 	killRing string // last killed text for C-y yank
 	lastKill bool   // whether prev action was a kill (for kill-append)
 
@@ -54,9 +67,6 @@ type Model struct {
 	// Meta prefix: Esc followed by a key is treated as M-<key>
 	metaPrefix bool
 
-	// Input area scroll: first visible wrapped line of the input area
-	inputScroll int
-
 	// Paste mode: newlines become spaces, leading spaces after newlines are eaten
 	pasteMode    bool
 	pasteEatFlag bool // eating whitespace after a newline
@@ -66,18 +76,26 @@ type Model struct {
 	spellChecker *SpellChecker
 
 	// Debug view
-	debugMode bool
-	debugKeys bool     // log every key event to debugMsgs
-	debugMsgs []string // raw JSON messages
+	debugMode     bool
+	debugKeys     bool     // log every key event to debugMsgs
+	debugMsgs     []string // raw JSON messages
+	debugViewport viewport.Model
 
 	// Scroll state
-	pagerTop          int   // index of first visible output line (pager model)
-	debugScrollOffset int   // lines scrolled back in debug (from bottom)
-	lastSeenID        int64 // highest WSServerMsg.ID whose output has been visible; never decreases
+	lastSeenID int64 // highest WSServerMsg.ID whose output has been visible; never decreases
+
+	// Auto-paging: after user sends input, auto-scroll up to one page of new output
+	autoPageAnchor int // line count when user sent command; -1 = disabled
+
+	// scrollAnchor is the output-item index to keep at the top of the viewport
+	// across a width-changing resize (which rewraps and invalidates raw line
+	// offsets). -1 means no anchor / use the raw offset. Set by the resize/debug
+	// callers and consumed once by updateViewportSize.
+	scrollAnchor int
 
 	// Position restore
-	storedLastSeenID     int64 // lastSeenID from proxy at startup, used to restore pagerTop
-	needsPositionRestore bool  // true until we have window size to set pagerTop
+	storedLastSeenID     int64 // lastSeenID from proxy at startup, used to restore scroll position
+	needsPositionRestore bool  // true until we have window size to set scroll position
 
 	// Reconnect prompt: shown when the Lily connection drops.
 	reconnectPrompt bool
@@ -87,6 +105,12 @@ type Model struct {
 	expandRecips    string   // last destination we sent to        (recalled by ';')
 	expandSendgroup string   // group from last multi-recip private (recalled by '=')
 	pastSends       []string // recent destinations, newest first (capped at pastSendsMax)
+
+	// Completion popup state
+	completionActive bool       // true when popup is visible
+	completionList   list.Model // bubbles/list for selection
+	completionToken  string     // the partial text being completed
+	completionFore   string     // text before the token (to preserve)
 
 	// In-TUI editor (info / memo)
 	editMode bool
@@ -131,10 +155,9 @@ func NewLogger() (chan logMsg, *slog.Logger) {
 	return ch, slog.New(&slogHandler{ch: ch})
 }
 
-// New creates a Model wired to the given proxy client.  State and event
-// history are fetched asynchronously in Init() so that SLCP prompts arriving
-// during the login sync are visible and answerable in the TUI.
-// Optional startupMsgs are shown below the logo on first render.
+// New creates a Model wired to the given proxy client.
+// State and event history are fetched asynchronously in Init() so that SLCP prompts
+// arriving during the login sync are visible and answerable in the TUI.
 func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 	logoLines := formatLogo()
 	output := make([]OutputItem, 0, len(logoLines)+1+len(startupMsgs))
@@ -146,28 +169,59 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		output = append(output, OutputItem{Type: "text", Data: msg})
 	}
 
+	// Create input textarea
+	ti := textarea.New()
+	ti.ShowLineNumbers = false
+	ti.CharLimit = 0
+	ti.Focus()
+	ti.Prompt = ""
+	ti.SetHeight(1)
+
 	return Model{
-		client:       c,
-		output:       output,
-		spellChecker: NewSpellChecker(),
-		logChan:      logChan,
-		historyPos:   -1,
-		searchIdx:    -1,
+		client:         c,
+		output:         output,
+		input:          ti,
+		keys:           NewKeyMap(),
+		spellChecker:   NewSpellChecker(),
+		logChan:        logChan,
+		historyPos:     -1,
+		searchIdx:      -1,
+		autoPageAnchor: -1,
+		scrollAnchor:   -1,
 	}
 }
 
-// initialStateMsg is delivered when the async state+history fetch completes.
+// Messages for async operations
+
 type initialStateMsg struct {
 	state  *api.StateResponse
 	events []api.WSServerMsg
 	err    error
 }
 
+type serverEventMsg struct{ msg *api.WSServerMsg }
+
+type reconnectResultMsg struct {
+	newClient *client.Client
+	state     *api.StateResponse
+	events    []api.WSServerMsg
+	err       error
+}
+
+type seenTickMsg struct{}
+
+type editorFetchResultMsg struct {
+	meta  editMeta
+	lines []string
+	err   error
+}
+
+type editorSaveResultMsg struct {
+	meta editMeta
+	err  error
+}
+
 // fetchInitialStateCmd fetches state (blocking until the SLCP sync is done).
-// For reconnect sessions (LastSeenID > 0) it also pages through missed events
-// via GET /events.  For fresh sessions, pre-sync messages (text, prompts) are
-// delivered via WebSocket replay when the subscriber connects, so no separate
-// history fetch is needed.
 func fetchInitialStateCmd(c *client.Client) tea.Cmd {
 	return func() tea.Msg {
 		state, err := c.FetchState()
@@ -176,7 +230,6 @@ func fetchInitialStateCmd(c *client.Client) tea.Cmd {
 		}
 		var events []api.WSServerMsg
 		if state.LastSeenID > 0 {
-			// Reconnect: replay events from the stored scroll position.
 			afterID := state.LastSeenID
 			for {
 				batch, more, err := c.FetchEvents(afterID, 200)
@@ -191,62 +244,6 @@ func fetchInitialStateCmd(c *client.Client) tea.Cmd {
 			}
 		}
 		return initialStateMsg{state: state, events: events}
-	}
-}
-
-// serverEventMsg wraps a message arriving from the proxy.
-type serverEventMsg struct{ msg *api.WSServerMsg }
-
-// pastedRuneMsg delivers one rune from a multi-rune paste, with the remaining
-// runes queued as the tail for sequential processing.
-type pastedRuneMsg struct {
-	r    rune
-	tail []rune
-}
-
-// splitPastedRunes returns a Cmd that delivers runes[0] as a pastedRuneMsg and
-// queues the rest.  Using a chain (rather than tea.Batch) guarantees order.
-func splitPastedRunes(runes []rune) tea.Cmd {
-	return func() tea.Msg {
-		return pastedRuneMsg{r: runes[0], tail: runes[1:]}
-	}
-}
-
-// reconnectResultMsg is delivered when an async reconnect attempt completes.
-type reconnectResultMsg struct {
-	newClient *client.Client
-	state     *api.StateResponse
-	events    []api.WSServerMsg
-	err       error
-}
-
-// reconnectCmd closes the current connection and establishes a new one,
-// then fetches fresh state and any events since lastSeenID.
-func reconnectCmd(c *client.Client, lastSeenID int64) tea.Cmd {
-	return func() tea.Msg {
-		nc, err := c.Reconnect()
-		if err != nil {
-			return reconnectResultMsg{err: err}
-		}
-		state, err := nc.FetchState()
-		if err != nil {
-			return reconnectResultMsg{err: err}
-		}
-		// Replay events that arrived during the outage.
-		var events []api.WSServerMsg
-		afterID := lastSeenID
-		for {
-			batch, more, err := nc.FetchEvents(afterID, 200)
-			if err != nil {
-				break
-			}
-			events = append(events, batch...)
-			if !more || len(batch) == 0 {
-				break
-			}
-			afterID = batch[len(batch)-1].ID
-		}
-		return reconnectResultMsg{newClient: nc, state: state, events: events}
 	}
 }
 
@@ -268,26 +265,85 @@ func listenLogCmd(logChan <-chan logMsg) tea.Cmd {
 	}
 }
 
+// reconnectCmd closes the current connection and establishes a new one.
+func reconnectCmd(c *client.Client, lastSeenID int64) tea.Cmd {
+	return func() tea.Msg {
+		nc, err := c.Reconnect()
+		if err != nil {
+			return reconnectResultMsg{err: err}
+		}
+		state, err := nc.FetchState()
+		if err != nil {
+			return reconnectResultMsg{err: err}
+		}
+		var events []api.WSServerMsg
+		afterID := lastSeenID
+		for {
+			batch, more, err := nc.FetchEvents(afterID, 200)
+			if err != nil {
+				break
+			}
+			events = append(events, batch...)
+			if !more || len(batch) == 0 {
+				break
+			}
+			afterID = batch[len(batch)-1].ID
+		}
+		return reconnectResultMsg{newClient: nc, state: state, events: events}
+	}
+}
+
+// reportSeenNow reports lastSeenID to the proxy immediately.
+func reportSeenNow(c *client.Client, lastSeenID int64) tea.Cmd {
+	return func() tea.Msg {
+		_ = c.ReportSeen(lastSeenID)
+		return seenTickMsg{}
+	}
+}
+
+// reportSeenCmd waits 5 seconds, reports lastSeenID, then re-schedules.
+func reportSeenCmd(c *client.Client, lastSeenID int64) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(5 * time.Second)
+		_ = c.ReportSeen(lastSeenID)
+		return seenTickMsg{}
+	}
+}
+
 // Init starts the event listener.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		listenCmd(m.client),
 		listenLogCmd(m.logChan),
 		tea.HideCursor,
-		// Fetch state (blocks until SLCP sync completes) and event history.
-		// Running this as a Cmd means the TUI is already live when the sync
-		// happens, so any %prompt messages flow through and are visible.
 		fetchInitialStateCmd(m.client),
 	)
 }
 
 // Update handles messages and user input.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
 	switch msg := msg.(type) {
+	case tea.ResumeMsg:
+		// Returning from suspend (C-z / fg). Bubbletea restores the terminal and
+		// re-hides the cursor automatically; force a full clear so any artifacts
+		// left by the foreground process are wiped and the UI repaints cleanly.
+		return m, tea.ClearScreen
 
 	case tea.WindowSizeMsg:
+		// A width change rewraps the output, so the raw scroll offset no longer
+		// maps to the same message. Anchor on the item currently at the top
+		// (computed at the OLD width, before we mutate m.width) so the view stays
+		// put instead of jumping — e.g. when re-attaching screen from a
+		// different-sized terminal. Skip on the first size (m.width == 0): there
+		// is nothing to preserve and rendering at width 0 is meaningless.
+		if m.width > 0 && msg.Width != m.width {
+			m.scrollAnchor = m.topVisibleItemIndex()
+		}
 		m.width = msg.Width
 		m.height = msg.Height
+		m = m.updateViewportSize()
 		if m.editMode {
 			m.editor.SetWidth(m.width)
 			m.editor.SetHeight(m.height - 2)
@@ -300,375 +356,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if m.debugKeys {
-			m.debugMsgs = append(m.debugMsgs, fmt.Sprintf("KEY: %s", escapeKeyString(msg.String())))
-			m.debugScrollOffset = 0
-		}
-
-		// A bracketed paste may deliver many characters as one KeyRunes event.
-		// Split it into individual events so paste mode (space-collapsing,
-		// newline→space) and all other per-key handlers apply correctly.
-		// Normal typing always produces single-rune events, so this only
-		// fires for actual paste input.
-		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 {
-			return m, splitPastedRunes(msg.Runes)
+			m.debugMsgs = append(m.debugMsgs, fmt.Sprintf("KEY: %s", msg.String()))
 		}
 
 		if m.editMode {
-			updated, cmd, _ := m.handleEditorMsg(msg)
-			return updated, cmd
+			return m.handleEditorMsg(msg)
 		}
 
 		if m.reconnectPrompt {
-			switch msg.String() {
-			case "y", "Y", "enter", "ctrl+m", "ctrl+j":
-				m.reconnectPrompt = false
-				m.output = append(m.output, OutputItem{Type: "text", Data: "(reconnecting…)"})
-				return m, reconnectCmd(m.client, m.lastSeenID)
-			case "n", "N", "esc", "ctrl+c":
-				return m, tea.Quit
-			}
-			return m, nil // ignore all other keys while prompting
+			return m.handleReconnectKey(msg)
 		}
 
 		if m.searchMode {
-			m.metaPrefix = false
-			m = m.handleSearchKey(msg)
-			m = m.adjustInputScroll()
-			return m, nil
+			return m.handleSearchKey(msg)
 		}
 
-		// ESC as meta prefix: ESC <key> is equivalent to M-<key>
-		key := msg.String()
-		if m.metaPrefix {
-			m.metaPrefix = false
-			if key != "esc" { // ESC ESC cancels without action
-				key = "alt+" + key
-			}
-		} else if key == "esc" {
-			m.metaPrefix = true
-			return m, nil
-		}
-
-		// Paste mode intercepts Enter and Space before normal processing.
-		if m.pasteMode {
-			switch key {
-			case "enter", "ctrl+m", "ctrl+j":
-				if m.pasteEatFlag {
-					// Consecutive newline while eating → swallow it entirely
-					return m, nil
-				}
-				// First newline → insert a space and start eating whitespace
-				m.pasteEatFlag = true
-				m.pasteEatBuf = false
-				m = m.insertString(" ")
-				m = m.adjustInputScroll()
-				return m, nil
-			case " ":
-				if m.pasteEatFlag {
-					// Eating post-newline whitespace → swallow
-					return m, nil
-				}
-				if m.pasteEatBuf {
-					// Second consecutive space → switch to eating mode and swallow
-					m.pasteEatFlag = true
-					return m, nil
-				}
-				// First space in a run: buffer it and insert normally
-				m.pasteEatBuf = true
-				m = m.insertString(" ")
-				m = m.adjustInputScroll()
-				return m, nil
-			default:
-				// Any other key resets eat state and falls through to normal handling
-				m.pasteEatFlag = false
-				m.pasteEatBuf = false
-			}
-		}
-
-		wasKill := m.lastKill
-		m.lastKill = false
-
-		switch key {
-		case "ctrl+c":
-			return m, tea.Quit
-
-		case "ctrl+d":
-			if m.input == "" {
-				return m, tea.Quit
-			}
-			m = m.deleteForward()
-
-		case "enter", "ctrl+m", "ctrl+j":
-			line := m.input
-			if line == "" {
-				if m.prompt != "" {
-					// Responding to an active server prompt with a blank line.
-					// Echo an empty output entry so the user has visible
-					// confirmation that Enter was received — the server may
-					// immediately issue another %prompt, which would otherwise
-					// make it look as if nothing happened.
-				} else {
-					// No active prompt — treat as a pager advance.
-					m.pagerTop += m.height - 3
-					m.advanceLastSeenID()
-				}
-			} else {
-				m = m.addHistoryEntry(line)
-			}
-			// Always echo the sent line (including blank) so there is a visible
-			// output entry matching what was sent.
-			m.output = append(m.output, OutputItem{Type: "input", Data: line})
-			m.historyPos = -1
-			m.historySave = ""
-			m.input = ""
-			m.cursor = 0
-			m.inputScroll = 0
-			m.prompt = "" // cleared until the server sends the next %prompt
-
-			// Log outgoing command to debug (formatted)
-			cmdMsg := api.WSClientMsg{Type: "command", Text: line}
-			if jsonBytes, err := json.MarshalIndent(cmdMsg, "", "  "); err == nil {
-				lines := strings.Split(string(jsonBytes), "\n")
-				m.debugMsgs = append(m.debugMsgs, "SEND:")
-				m.debugMsgs = append(m.debugMsgs, lines...)
-			}
-			m.debugScrollOffset = 0
-
-			// %set debug keys toggles key-event logging to the debug window.
-			if strings.EqualFold(strings.TrimSpace(line), "%set debug keys") {
-				m.debugKeys = !m.debugKeys
-				state := "off"
-				if m.debugKeys {
-					state = "on"
-				}
-				m.output = append(m.output, OutputItem{Type: "command", Data: []string{"Key debug logging: " + state}})
-				return m, nil
-			}
-
-			localOutput, handled, asyncCmd := m.handleLocalCommand(line)
-			if localOutput != nil {
-				m.output = append(m.output, OutputItem{Type: "command", Data: localOutput})
-			}
-			if asyncCmd != nil {
-				return m, asyncCmd
-			}
-			if !handled {
-				m = m.trackOutgoingSend(line)
-				if err := m.client.Send(line); err != nil {
-					m.output = append(m.output, OutputItem{Type: "error", Data: err.Error()})
-				}
-			}
-
-		case "ctrl+a":
-			m.cursor = 0
-		case "ctrl+e":
-			m.cursor = len(m.input)
-		case "ctrl+b", "left":
-			m = m.moveCursorBack()
-		case "ctrl+f", "right":
-			m = m.moveCursorForward()
-		case "alt+b":
-			m.cursor = wordStartBefore(m.input, m.cursor)
-		case "alt+f":
-			m.cursor = wordEndAfter(m.input, m.cursor)
-
-		case "backspace", "ctrl+h":
-			m = m.deleteBack()
-		case "delete":
-			// delete key = backward-delete per tigerlily bindings
-			m = m.deleteBack()
-
-		case "ctrl+k":
-			killed := m.input[m.cursor:]
-			if wasKill {
-				m.killRing += killed
-			} else {
-				m.killRing = killed
-			}
-			m.input = m.input[:m.cursor]
-			m.lastKill = true
-
-		case "ctrl+u":
-			killed := m.input[:m.cursor]
-			if wasKill {
-				m.killRing = killed + m.killRing
-			} else {
-				m.killRing = killed
-			}
-			m.input = m.input[m.cursor:]
-			m.cursor = 0
-			m.lastKill = true
-
-		case "ctrl+w", "alt+backspace":
-			newPos := wordStartBefore(m.input, m.cursor)
-			killed := m.input[newPos:m.cursor]
-			if wasKill {
-				m.killRing = killed + m.killRing
-			} else {
-				m.killRing = killed
-			}
-			m.input = m.input[:newPos] + m.input[m.cursor:]
-			m.cursor = newPos
-			m.lastKill = true
-
-		case "alt+d":
-			newPos := wordEndAfter(m.input, m.cursor)
-			killed := m.input[m.cursor:newPos]
-			if wasKill {
-				m.killRing += killed
-			} else {
-				m.killRing = killed
-			}
-			m.input = m.input[:m.cursor] + m.input[newPos:]
-			m.lastKill = true
-
-		case "ctrl+y":
-			m = m.insertString(m.killRing)
-
-		case "ctrl+t":
-			m = m.transposeChars()
-		case "alt+t":
-			m = m.transposeWords()
-		case "alt+c":
-			m = m.capitalizeWord()
-		case "alt+u":
-			m = m.upcaseWord()
-		case "alt+l":
-			m = m.downcaseWord()
-
-		case "ctrl+p", "up":
-			m = m.historyPrev()
-		case "ctrl+n", "down":
-			m = m.historyNext()
-
-		case "tab", "ctrl+i":
-			m = m.tabComplete()
-
-		case "alt+p":
-			m.pasteMode = !m.pasteMode
-			m.pasteEatFlag = false
-			m.pasteEatBuf = false
-
-		case "ctrl+r":
-			m = m.enterSearch(true)
-		case "ctrl+s":
-			m = m.enterSearch(false)
-
-		case "alt+g":
-			m.debugMode = !m.debugMode
-			m.debugScrollOffset = 0
-
-		case "ctrl+l":
-			// redraw — Bubble Tea redraws automatically
-
-		case "pgup", "alt+v":
-			if m.debugMode {
-				m.debugScrollOffset += m.height - 3
-			} else {
-				m.pagerTop -= m.height - 3
-				if m.pagerTop < 0 {
-					m.pagerTop = 0
-				}
-			}
-
-		case "pgdn", "ctrl+v":
-			if m.debugMode {
-				m.debugScrollOffset -= m.height - 3
-				if m.debugScrollOffset < 0 {
-					m.debugScrollOffset = 0
-				}
-			} else {
-				m.pagerTop += m.height - 3
-				m.advanceLastSeenID()
-			}
-
-		case "alt+,":
-			if !m.debugMode {
-				m.pagerTop--
-				if m.pagerTop < 0 {
-					m.pagerTop = 0
-				}
-			}
-		case "alt+.":
-			if !m.debugMode {
-				m.pagerTop++
-				m.advanceLastSeenID()
-			}
-		case "alt+<":
-			if !m.debugMode {
-				m.pagerTop = 0
-			}
-		case "alt+>":
-			if !m.debugMode {
-				m.pagerTop = 1 << 30 // clamped to maxTop in view
-				m.advanceLastSeenID()
-			}
-
-		default:
-			if msg.Type == tea.KeyRunes {
-				// A lone \r or \n arrives here from splitPastedRunes; treat it
-				// like Enter in paste mode (space + eat-whitespace if active).
-				if len(msg.Runes) == 1 && (msg.Runes[0] == '\r' || msg.Runes[0] == '\n') {
-					if m.pasteMode {
-						if m.pasteEatFlag {
-							return m, nil
-						}
-						m.pasteEatFlag = true
-						m.pasteEatBuf = false
-					}
-					m = m.insertString(" ")
-					m = m.adjustInputScroll()
-					return m, nil
-				}
-				s := string(msg.Runes)
-				switch s {
-				case ";", ":", ",", "=":
-					m = m.handleExpandKey(s)
-				default:
-					m = m.insertString(s)
-				}
-			} else if msg.String() == " " {
-				m = m.insertString(" ")
-			}
-		}
-
-		m = m.adjustInputScroll()
-
-	case pastedRuneMsg:
-		// Re-enter the key pipeline for a single rune, then queue the rest.
-		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{msg.r}})
-		m = updated.(Model)
-		var cmds []tea.Cmd
-		if cmd != nil {
-			cmds = append(cmds, cmd)
-		}
-		if len(msg.tail) > 0 {
-			cmds = append(cmds, splitPastedRunes(msg.tail))
-		}
-		if len(cmds) == 0 {
-			return m, nil
-		}
-		return m, tea.Batch(cmds...)
+		return m.handleNormalKey(msg)
 
 	case serverEventMsg:
 		if msg.msg == nil {
-			// WebSocket closed — the proxy session is gone.
 			m.reconnectPrompt = true
-			return m, nil // don't restart listenCmd
+			return m, nil
 		}
 
-		// Log incoming message to debug (pretty-printed and wrapped)
 		if jsonBytes, err := json.MarshalIndent(msg.msg, "", "  "); err == nil {
-			lines := strings.Split(string(jsonBytes), "\n")
 			m.debugMsgs = append(m.debugMsgs, "RECV:")
-			m.debugMsgs = append(m.debugMsgs, lines...)
+			m.debugMsgs = append(m.debugMsgs, strings.Split(string(jsonBytes), "\n")...)
 		}
 
 		m = m.handleProxy(msg.msg)
 		m.advanceLastSeenID()
+		m = m.syncViewportContent()
 
 		if m.reconnectPrompt {
-			return m, nil // proxy sent "lily connection closed"; don't restart
+			return m, nil
 		}
 		return m, listenCmd(m.client)
 
@@ -677,6 +398,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.debugMsgs = append(m.debugMsgs, msg.text)
 		} else {
 			m.output = append(m.output, OutputItem{Type: "log", Data: msg})
+			m = m.syncViewportContent()
 		}
 		return m, listenLogCmd(m.logChan)
 
@@ -686,7 +408,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reconnectResultMsg:
 		if msg.err != nil {
 			m.output = append(m.output, OutputItem{Type: "error", Data: "reconnect failed: " + msg.err.Error()})
-			m.reconnectPrompt = true // offer to try again
+			m.reconnectPrompt = true
+			m = m.syncViewportContent()
 			return m, nil
 		}
 		m.client = msg.newClient
@@ -695,15 +418,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.handleProxy(&msg.events[i])
 		}
 		m.output = append(m.output, OutputItem{Type: "text", Data: "(reconnected)"})
+		m = m.syncViewportContent()
 		return m, listenCmd(m.client)
 
 	case initialStateMsg:
 		if msg.err != nil {
 			m.output = append(m.output, OutputItem{Type: "error", Data: "state: " + msg.err.Error()})
+			m = m.syncViewportContent()
 			return m, nil
 		}
 		m.state = msg.state
-		// Show the connection line now that we know who we are.
 		if m.state != nil {
 			displayName := m.state.Whoami
 			for _, e := range m.state.Entities {
@@ -717,25 +441,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.output = append(m.output, OutputItem{Type: "text", Data: connLine})
 			m.output = append(m.output, OutputItem{Type: "text", Data: ""})
 		}
-		// Replay history events.
 		if len(msg.events) > 0 {
 			slog.Info(fmt.Sprintf("loaded %d events from history (proxy buffer: %d)", len(msg.events), m.state.EventBufSize))
-		} else {
-			slog.Info(fmt.Sprintf("no history events loaded (proxy buffer: %d)", m.state.EventBufSize))
 		}
 		for i := range msg.events {
 			m = m.handleProxy(&msg.events[i])
 		}
-		// Restore scroll position.
 		m.storedLastSeenID = m.state.LastSeenID
 		if m.storedLastSeenID > 0 {
 			m.needsPositionRestore = true
 		}
+		m = m.syncViewportContent()
 		return m, reportSeenNow(m.client, m.lastSeenID)
 
 	case editorFetchResultMsg:
 		content := strings.Join(msg.lines, "\n")
-		// err means no existing content — open a blank editor anyway
 		m.editMeta = msg.meta
 		m.editor = newEditorModel(m.width, m.height-2, content)
 		m.editMode = true
@@ -755,10 +475,191 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.output = append(m.output, OutputItem{Type: "text", Data: saved})
 		}
+		m = m.syncViewportContent()
 		return m, nil
 	}
 
-	return m, nil
+	return m, tea.Batch(cmds...)
+}
+
+// updateViewportSize recalculates viewport dimensions based on window size.
+func (m Model) updateViewportSize() Model {
+	inputHeight := m.calculateInputHeight()
+	viewportHeight := m.height - 1 - inputHeight // -1 for status bar
+	if viewportHeight < 1 {
+		viewportHeight = 1
+	}
+
+	viewportWidth := m.width
+	if m.debugMode {
+		viewportWidth = m.width / 2
+	}
+
+	// Preserve scroll state
+	wasAtBottom := m.viewport.AtBottom()
+	oldYOffset := m.viewport.YOffset
+
+	m.viewport = viewport.New(viewportWidth, viewportHeight)
+	m.viewport.Style = lipgloss.NewStyle()
+
+	if m.debugMode {
+		debugWasAtBottom := m.debugViewport.AtBottom()
+		debugOldYOffset := m.debugViewport.YOffset
+		m.debugViewport = viewport.New(m.width-viewportWidth-1, viewportHeight)
+		m.debugViewport.Style = lipgloss.NewStyle()
+		// Sync debug content and restore position
+		m.debugViewport.SetContent(strings.Join(m.debugMsgs, "\n"))
+		if debugWasAtBottom {
+			m.debugViewport.GotoBottom()
+		} else {
+			m.debugViewport.SetYOffset(debugOldYOffset)
+		}
+	}
+
+	m.input.SetWidth(m.width)
+	m.input.SetHeight(inputHeight)
+
+	m = m.syncViewportContent()
+
+	// Restore scroll position after content sync.
+	switch {
+	case wasAtBottom:
+		m.viewport.GotoBottom()
+	case m.scrollAnchor >= 0:
+		// Width changed: re-anchor on the item that was at the top, recomputed at
+		// the new width so the same message stays in view instead of jumping.
+		off := m.itemStartLine(m.scrollAnchor)
+		if max := m.viewport.TotalLineCount() - m.viewport.Height; off > max {
+			off = max
+		}
+		if off < 0 {
+			off = 0
+		}
+		m.viewport.SetYOffset(off)
+	default:
+		m.viewport.SetYOffset(oldYOffset)
+	}
+	m.scrollAnchor = -1
+
+	return m
+}
+
+// topVisibleItemIndex returns the index of the output item occupying the top
+// visible line of the viewport (viewport.YOffset), measured at the current width.
+// Returns 0 when there is no output.
+func (m Model) topVisibleItemIndex() int {
+	target := m.viewport.YOffset
+	lineCount := 0
+	for i, item := range m.output {
+		lineCount += len(m.renderOutputItem(item))
+		if lineCount > target {
+			return i
+		}
+	}
+	if len(m.output) == 0 {
+		return 0
+	}
+	return len(m.output) - 1
+}
+
+// itemStartLine returns the number of rendered lines before output item idx,
+// measured at the current width.
+func (m Model) itemStartLine(idx int) int {
+	lineCount := 0
+	for i := 0; i < idx && i < len(m.output); i++ {
+		lineCount += len(m.renderOutputItem(m.output[i]))
+	}
+	return lineCount
+}
+
+// calculateInputHeight returns the number of lines needed for input area.
+func (m Model) calculateInputHeight() int {
+	maxInputLines := m.height / 2
+	if maxInputLines < 1 {
+		maxInputLines = 1
+	}
+
+	lines := m.inputTotalLines()
+	if lines > maxInputLines {
+		lines = maxInputLines
+	}
+	if lines < 1 {
+		lines = 1
+	}
+	return lines
+}
+
+// inputPromptDisplayWidth returns the display width of the prompt.
+func (m Model) inputPromptDisplayWidth() int {
+	promptText := m.inputPromptText()
+	if promptText == "" {
+		return 0
+	}
+	return len(promptText) + 1 // +1 for space after prompt
+}
+
+// inputFirstLineWidth returns columns available for input on line 0 (after prompt).
+func (m Model) inputFirstLineWidth() int {
+	w := m.width - m.inputPromptDisplayWidth()
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
+// inputTotalLines returns total display lines needed for input, including cursor.
+func (m Model) inputTotalLines() int {
+	if m.width <= 0 {
+		return 1
+	}
+	firstWidth := m.inputFirstLineWidth()
+	n := len(m.inputValue) + 1 // +1 reserves cell for cursor
+	if n <= firstWidth {
+		return 1
+	}
+	rw := m.width
+	if rw < 1 {
+		rw = 1
+	}
+	return 1 + (n-firstWidth+rw-1)/rw
+}
+
+// syncViewportContent updates viewport with rendered output.
+func (m Model) syncViewportContent() Model {
+	var lines []string
+	for _, item := range m.output {
+		lines = append(lines, m.renderOutputItem(item)...)
+	}
+	m.viewport.SetContent(strings.Join(lines, "\n"))
+
+	totalLines := m.viewport.TotalLineCount()
+
+	// Auto-paging: after user sends input, scroll to show up to one page of new output
+	if m.autoPageAnchor >= 0 {
+		newLines := totalLines - m.autoPageAnchor
+		if newLines <= m.viewport.Height {
+			// New output fits in one page - show it all
+			m.viewport.GotoBottom()
+		} else {
+			// More than one page of new output - show one page past anchor, then stop
+			targetOffset := m.autoPageAnchor
+			if targetOffset > totalLines-m.viewport.Height {
+				targetOffset = totalLines - m.viewport.Height
+			}
+			m.viewport.SetYOffset(targetOffset)
+			m.autoPageAnchor = -1 // disable further auto-paging until next user input
+		}
+	} else if m.viewport.AtBottom() || totalLines <= m.viewport.Height {
+		// Normal auto-scroll to bottom if we were already there
+		m.viewport.GotoBottom()
+	}
+
+	if m.debugMode {
+		m.debugViewport.SetContent(strings.Join(m.debugMsgs, "\n"))
+		m.debugViewport.GotoBottom()
+	}
+
+	return m
 }
 
 // handleProxy incorporates a proxy message into the model.
@@ -790,40 +691,32 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 			source, _ := d["source"].(string)
 			notify, _ := d["notify"].(bool)
 
-			// Only display events the server flagged with NOTIFY=1,
-			// and suppress unidle for the current user regardless.
 			if notify && (event != "unidle" || m.state == nil || source != m.state.Whoami) {
 				m.output = append(m.output, OutputItem{Type: "event", Data: d, ID: msg.ID})
 			}
 
-			// Update intelligent-expand state for incoming privates and emotes.
 			if event == "private" || event == "emote" {
 				m = m.trackIncomingPrivate(d)
 			}
 
-			// Update local state for events that affect the current user
-			if m.state != nil {
-				// Only update if this event is about the current user
-				if source == m.state.Whoami {
-					// Find and update the user's entity in state
-					for i := range m.state.Entities {
-						if m.state.Entities[i].Handle == m.state.Whoami && m.state.Entities[i].Kind == "user" {
-							switch event {
-							case "rename":
-								if value, ok := d["value"].(string); ok {
-									m.state.Entities[i].Name = value
-								}
-							case "blurb":
-								if value, ok := d["value"].(string); ok {
-									m.state.Entities[i].Blurb = value
-								}
-							case "here":
-								m.state.Entities[i].State = "here"
-							case "away":
-								m.state.Entities[i].State = "away"
+			if m.state != nil && source == m.state.Whoami {
+				for i := range m.state.Entities {
+					if m.state.Entities[i].Handle == m.state.Whoami && m.state.Entities[i].Kind == "user" {
+						switch event {
+						case "rename":
+							if value, ok := d["value"].(string); ok {
+								m.state.Entities[i].Name = value
 							}
-							break
+						case "blurb":
+							if value, ok := d["value"].(string); ok {
+								m.state.Entities[i].Blurb = value
+							}
+						case "here":
+							m.state.Entities[i].State = "here"
+						case "away":
+							m.state.Entities[i].State = "away"
 						}
+						break
 					}
 				}
 			}
@@ -845,18 +738,20 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 	return m
 }
 
-// computeLastSeenID returns the highest ID among OutputItems whose rendered lines
-// fall entirely within [0, pagerTop+outputLines). This is the event stream position
-// of the last item the user has actually seen on screen.
+// computeLastSeenID returns the highest ID among visible OutputItems.
 func (m Model) computeLastSeenID() int64 {
 	if m.height == 0 {
 		return m.lastSeenID
 	}
-	visibleEnd := m.pagerTop + (m.height - 2)
+
+	// With viewport, we track what's visible
+	visibleEnd := m.viewport.YOffset + m.viewport.Height
 	lineCount := 0
 	var maxID int64
+
 	for _, item := range m.output {
-		lineCount += len(m.renderOutputItem(item))
+		itemLines := len(m.renderOutputItem(item))
+		lineCount += itemLines
 		if lineCount > visibleEnd {
 			break
 		}
@@ -867,21 +762,19 @@ func (m Model) computeLastSeenID() int64 {
 	return maxID
 }
 
-// advanceLastSeenID updates lastSeenID from the current pager position,
-// enforcing the invariant that it never decreases.
+// advanceLastSeenID updates lastSeenID from the current viewport position.
 func (m *Model) advanceLastSeenID() {
 	if id := m.computeLastSeenID(); id > m.lastSeenID {
 		m.lastSeenID = id
 	}
 }
 
-// restorePosition sets pagerTop so that the storedLastSeenID item is at the
-// bottom of the visible area, replicating the scroll position from the last session.
+// restorePosition sets viewport scroll position from stored lastSeenID.
 func (m *Model) restorePosition() {
-	outputLines := m.height - 2
-	if outputLines <= 0 {
+	if m.viewport.Height <= 0 {
 		return
 	}
+
 	lineCount := 0
 	for _, item := range m.output {
 		lineCount += len(m.renderOutputItem(item))
@@ -889,34 +782,14 @@ func (m *Model) restorePosition() {
 			break
 		}
 	}
-	pagerTop := lineCount - outputLines
-	if pagerTop < 0 {
-		pagerTop = 0
+
+	offset := lineCount - m.viewport.Height
+	if offset < 0 {
+		offset = 0
 	}
-	m.pagerTop = pagerTop
+	m.viewport.SetYOffset(offset)
 	m.lastSeenID = m.storedLastSeenID
 	m.needsPositionRestore = false
-}
-
-// seenTickMsg is sent after a periodic ReportSeen call completes.
-type seenTickMsg struct{}
-
-// reportSeenNow reports lastSeenID to the proxy immediately (no sleep),
-// then returns seenTickMsg to kick off the 30-second periodic cycle.
-func reportSeenNow(c *client.Client, lastSeenID int64) tea.Cmd {
-	return func() tea.Msg {
-		_ = c.ReportSeen(lastSeenID)
-		return seenTickMsg{}
-	}
-}
-
-// reportSeenCmd waits 5 seconds, reports lastSeenID (no-op if unchanged), then re-schedules.
-func reportSeenCmd(c *client.Client, lastSeenID int64) tea.Cmd {
-	return func() tea.Msg {
-		time.Sleep(5 * time.Second)
-		_ = c.ReportSeen(lastSeenID)
-		return seenTickMsg{}
-	}
 }
 
 // View renders the full TUI.
@@ -927,106 +800,98 @@ func (m Model) View() string {
 	if m.editMode {
 		return m.viewEditor()
 	}
-
 	if m.debugMode {
 		return m.viewWithDebug()
 	}
 	return m.viewNormal()
 }
 
-// renderOutputItem formats an OutputItem into display lines based on current width.
-func (m Model) renderOutputItem(item OutputItem) []string {
-	width := m.width
-	if m.debugMode {
-		width = m.width / 2 // left panel in debug mode
+// viewNormal renders the standard UI (output + status + input).
+func (m Model) viewNormal() string {
+	var sb strings.Builder
+
+	// Output viewport (potentially with completion popup overlay)
+	if m.completionActive {
+		sb.WriteString(m.renderViewportWithPopup())
+	} else {
+		sb.WriteString(m.viewport.View())
 	}
+	sb.WriteByte('\n')
 
-	switch item.Type {
-	case "text":
-		if text, ok := item.Data.(string); ok {
-			// Split on newlines to handle multiline text responses
-			return strings.Split(text, "\n")
-		}
+	// Status bar
+	sb.WriteString(m.formatStatusBar())
+	sb.WriteByte('\n')
 
-	case "command":
-		if lines, ok := item.Data.([]string); ok {
-			wrapWidth := width - 2 // leave a 2-col margin to avoid boundary clipping
-			if wrapWidth < 1 {
-				wrapWidth = 1
-			}
-			var out []string
-			for _, line := range lines {
-				wrapped := strings.Split(wordwrap.String(line, wrapWidth), "\n")
-				out = append(out, wrapped...)
-			}
-			return out
-		}
+	// Input area with prompt
+	sb.WriteString(m.renderInputArea())
 
-	case "event":
-		if d, ok := item.Data.(map[string]interface{}); ok {
-			whoami := ""
-			if m.state != nil {
-				whoami = m.state.Whoami
-			}
-			formatted := formatEvent(d, width, whoami)
-			return strings.Split(formatted, "\n")
-		}
-
-	case "error":
-		if e, ok := item.Data.(string); ok {
-			return []string{errorStyle.Render("*** " + e + " ***")}
-		}
-
-	case "input":
-		if line, ok := item.Data.(string); ok {
-			w := width
-			if w < 1 {
-				w = 1
-			}
-			wrapped := wordwrap.String(line, w)
-			lines := strings.Split(wrapped, "\n")
-			for i := range lines {
-				lines[i] = inputStyle.Render(lines[i])
-			}
-			return lines
-		}
-
-	case "commandresult":
-		if lines, ok := item.Data.([]string); ok {
-			// Apply command result styling to each line
-			styled := make([]string, len(lines))
-			for i, line := range lines {
-				styled[i] = commandResultStyle.Render(line)
-			}
-			return styled
-		}
-
-	case "log":
-		if entry, ok := item.Data.(logMsg); ok {
-			var labelStyle lipgloss.Style
-			switch entry.level {
-			case "ERROR":
-				labelStyle = logErrorSeverityStyle
-			case "WARN":
-				labelStyle = logInfoSeverityStyle
-			default:
-				labelStyle = logPrefixStyle
-			}
-			label := labelStyle.Render("[" + entry.level + "]")
-			return []string{label + " " + entry.text}
-		}
-	}
-
-	return []string{"[unknown output type]"}
+	return sb.String()
 }
 
-// formatStatusBar creates a tigerlily-style status bar with user info on the left
-// and server/status/time on the right.
-func (m Model) formatStatusBar(extraInfo string) string {
-	// Left side: user name [blurb]
+// renderViewportWithPopup renders the viewport with the completion popup at the bottom.
+func (m Model) renderViewportWithPopup() string {
+	viewportLines := strings.Split(m.viewport.View(), "\n")
+	popup := m.renderCompletionPopup()
+	popupLines := strings.Split(popup, "\n")
+
+	popupHeight := len(popupLines)
+
+	// Keep viewport lines that aren't covered by popup
+	keepLines := len(viewportLines) - popupHeight
+	if keepLines < 0 {
+		keepLines = 0
+	}
+
+	var result []string
+	result = append(result, viewportLines[:keepLines]...)
+	result = append(result, popupLines...)
+
+	// Ensure we have the right number of lines
+	for len(result) < m.viewport.Height {
+		result = append(result, "")
+	}
+
+	return strings.Join(result[:m.viewport.Height], "\n")
+}
+
+// viewWithDebug renders split view: left=output, right=debug JSON.
+func (m Model) viewWithDebug() string {
+	leftWidth := m.width / 2
+	rightWidth := m.width - leftWidth - 1
+
+	leftLines := strings.Split(m.viewport.View(), "\n")
+	rightLines := strings.Split(m.debugViewport.View(), "\n")
+
+	var sb strings.Builder
+	for i := 0; i < m.viewport.Height; i++ {
+		left := ""
+		if i < len(leftLines) {
+			left = leftLines[i]
+		}
+		left = truncateAndPad(left, leftWidth)
+		sb.WriteString(left)
+		sb.WriteString("│")
+
+		right := ""
+		if i < len(rightLines) {
+			right = rightLines[i]
+		}
+		right = truncateAndPad(right, rightWidth)
+		sb.WriteString(right)
+		sb.WriteByte('\n')
+	}
+
+	sb.WriteString(m.formatStatusBar())
+	sb.WriteByte('\n')
+	sb.WriteString(m.renderInputArea())
+
+	return sb.String()
+}
+
+// formatStatusBar creates the status bar.
+func (m Model) formatStatusBar() string {
 	left := ""
 	if m.state != nil && m.state.Whoami != "" {
-		// Find the current user's entity info
 		for _, e := range m.state.Entities {
 			if e.Handle == m.state.Whoami && e.Kind == "user" {
 				left = e.Name
@@ -1041,7 +906,6 @@ func (m Model) formatStatusBar(extraInfo string) string {
 		}
 	}
 
-	// Right side: server | state | time
 	right := ""
 	if m.state != nil {
 		server := m.state.Server
@@ -1049,7 +913,6 @@ func (m Model) formatStatusBar(extraInfo string) string {
 			server = "unknown"
 		}
 
-		// Get user state (here/away)
 		userState := ""
 		for _, e := range m.state.Entities {
 			if e.Handle == m.state.Whoami && e.Kind == "user" {
@@ -1061,19 +924,12 @@ func (m Model) formatStatusBar(extraInfo string) string {
 			userState = "here"
 		}
 
-		// Current local time
 		now := time.Now()
 		timeStr := fmt.Sprintf("%02d:%02d", now.Hour(), now.Minute())
 
 		right = server + " | " + userState + " | " + timeStr
 	}
 
-	// Add extra info if provided (e.g., scroll info, debug mode indicator)
-	if extraInfo != "" {
-		right += " " + extraInfo
-	}
-
-	// Last-seen event ID always on the far right
 	idStr := fmt.Sprintf("#%d", m.lastSeenID)
 	if right == "" {
 		right = idStr
@@ -1081,256 +937,166 @@ func (m Model) formatStatusBar(extraInfo string) string {
 		right += " | " + idStr
 	}
 
+	// MORE indicator centered when not at bottom
+	center := ""
+	if !m.viewport.AtBottom() && m.viewport.TotalLineCount() > m.viewport.Height {
+		moreCount := m.viewport.TotalLineCount() - m.viewport.YOffset - m.viewport.Height
+		if moreCount > 0 {
+			center = fmt.Sprintf("-- MORE (%d) --", moreCount)
+		}
+	}
+
+	// Build status bar with left, center, right
+	leftLen := len(left)
+	centerLen := len(center)
+	rightLen := len(right)
+
 	// Calculate padding
-	totalLen := len(left) + len(right)
-	padding := ""
-	if totalLen < m.width {
-		padding = strings.Repeat(" ", m.width-totalLen)
+	totalContent := leftLen + centerLen + rightLen
+	if totalContent >= m.width {
+		// Not enough space - just do left + right
+		padding := ""
+		if leftLen+rightLen < m.width {
+			padding = strings.Repeat(" ", m.width-leftLen-rightLen)
+		}
+		return statusBarStyle.Width(m.width).Render(left + padding + right)
 	}
 
-	content := left + padding + right
+	// Center the center text (overall in the status bar, not between left/right)
+	overallCenter := (m.width - centerLen) / 2
+	leftPad := overallCenter - leftLen
+	if leftPad < 0 {
+		leftPad = 0
+	}
+	rightPad := m.width - leftLen - centerLen - leftPad
+	if rightPad < 0 {
+		rightPad = 0
+	}
+
+	content := left + strings.Repeat(" ", leftPad) + center + strings.Repeat(" ", rightPad) + right
 	return statusBarStyle.Width(m.width).Render(content)
 }
 
-// formatMoreBar renders the pager "-- MORE (N) --" status bar with the last-seen
-// event ID on the far right and the MORE text centered in the remaining space.
-func (m Model) formatMoreBar(moreCount int) string {
-	idStr := fmt.Sprintf("#%d", m.lastSeenID)
-	moreText := fmt.Sprintf("-- MORE (%d) --", moreCount)
+// renderInputArea renders the prompt and input with spell checking highlights.
+func (m Model) renderInputArea() string {
+	promptText := m.inputPromptText()
+	promptRendered := ""
+	if promptText != "" {
+		promptRendered = promptStyle.Render(promptText) + " "
+	}
 
-	// Center moreText in the space to the left of idStr
-	innerWidth := m.width - len(idStr)
-	if innerWidth < 0 {
-		innerWidth = 0
+	// Build a per-byte misspelled lookup for O(1) access in the render loop.
+	misspelledAt := make([]bool, len(m.inputValue)+1)
+	for _, w := range m.spellChecker.ParseWords(m.inputValue) {
+		if w.Misspelled {
+			for i := w.Start; i < w.End; i++ {
+				misspelledAt[i] = true
+			}
+		}
 	}
-	padding := (innerWidth - len(moreText)) / 2
-	if padding < 0 {
-		padding = 0
+
+	firstWidth := m.inputFirstLineWidth()
+	rw := m.width
+	if rw < 1 {
+		rw = 1
 	}
-	content := strings.Repeat(" ", padding) + moreText
-	// Pad to fill up to where idStr starts, then append idStr
-	gap := innerWidth - len(content)
-	if gap > 0 {
-		content += strings.Repeat(" ", gap)
+
+	cursor := m.inputCursor
+	inputLen := len(m.inputValue)
+
+	// Calculate how many lines we'll render
+	visibleLines := m.calculateInputHeight()
+
+	// lineStart returns byte offset where line k begins
+	lineStart := func(k int) int {
+		if k == 0 {
+			return 0
+		}
+		return firstWidth + (k-1)*rw
 	}
-	content += idStr
-	return statusBarStyle.Width(m.width).Render(content)
+
+	// lineEnd returns byte offset where line k ends (exclusive)
+	lineEnd := func(k int) int {
+		var end int
+		if k == 0 {
+			end = firstWidth
+		} else {
+			end = firstWidth + k*rw
+		}
+		if end > inputLen {
+			end = inputLen
+		}
+		return end
+	}
+
+	var lines []string
+	for lineIdx := 0; lineIdx < visibleLines; lineIdx++ {
+		var sb strings.Builder
+
+		if lineIdx == 0 {
+			sb.WriteString(promptRendered)
+		}
+
+		start := lineStart(lineIdx)
+		end := lineEnd(lineIdx)
+
+		for j := start; j < end; {
+			_, size := utf8.DecodeRuneInString(m.inputValue[j:])
+			ch := m.inputValue[j : j+size]
+			switch {
+			case j == cursor:
+				sb.WriteString(cursorStyle.Render(ch))
+			case misspelledAt[j]:
+				sb.WriteString(misspelledStyle.Render(ch))
+			default:
+				sb.WriteString(ch)
+			}
+			j += size
+		}
+
+		// Cursor at end of this line or past end of input
+		cursorOnThisLine := false
+		if lineIdx == 0 {
+			cursorOnThisLine = cursor >= start && cursor < firstWidth
+		} else {
+			lineEndPos := firstWidth + lineIdx*rw
+			cursorOnThisLine = cursor >= start && cursor < lineEndPos
+		}
+		if cursor >= inputLen && lineIdx == visibleLines-1 {
+			cursorOnThisLine = true
+		}
+		if cursor == end && cursorOnThisLine {
+			sb.WriteString(cursorStyle.Render(" "))
+		}
+
+		lines = append(lines, sb.String())
+	}
+
+	return strings.Join(lines, "\n")
 }
 
-// viewNormal renders the standard UI (output + status + input).
-func (m Model) viewNormal() string {
-	// Dynamic input area: grows up to half the window height.
-	totalInputLines := m.inputTotalLines()
-	maxInputLines := m.height / 2
-	if maxInputLines < 1 {
-		maxInputLines = 1
+// inputPromptText returns the text to display as the input prompt.
+func (m Model) inputPromptText() string {
+	if m.reconnectPrompt {
+		return "Reconnect? (Y/n)"
 	}
-	visibleInputLines := totalInputLines
-	if visibleInputLines > maxInputLines {
-		visibleInputLines = maxInputLines
+	if m.searchMode {
+		dir := "i-search"
+		if m.searchBack {
+			dir = "reverse-i-search"
+		}
+		return fmt.Sprintf("(%s)`%s':", dir, m.searchBuf)
 	}
-	if visibleInputLines < 1 {
-		visibleInputLines = 1
+	if m.pasteMode {
+		return "Paste:"
 	}
-
-	// Render all output items into lines
-	var allLines []string
-	for _, item := range m.output {
-		allLines = append(allLines, m.renderOutputItem(item)...)
-	}
-
-	// Output area height: status bar (1) + dynamic input area
-	outputLines := m.height - 1 - visibleInputLines
-	if outputLines < 0 {
-		outputLines = 0
-	}
-
-	// Clamp pagerTop to valid range
-	maxTop := len(allLines) - outputLines
-	if maxTop < 0 {
-		maxTop = 0
-	}
-	if m.pagerTop > maxTop {
-		m.pagerTop = maxTop
-	}
-
-	// Visible slice
-	start := m.pagerTop
-	end := start + outputLines
-	if end > len(allLines) {
-		end = len(allLines)
-	}
-	visible := allLines[start:end]
-
-	var sb strings.Builder
-	for _, line := range visible {
-		sb.WriteString(line)
-		sb.WriteByte('\n')
-	}
-	// Pad to fill the output area
-	for i := len(visible); i < outputLines; i++ {
-		sb.WriteByte('\n')
-	}
-
-	// Status line: show MORE bar when content is waiting below, otherwise normal
-	moreCount := len(allLines) - (m.pagerTop + outputLines)
-	if moreCount > 0 {
-		sb.WriteString(m.formatMoreBar(moreCount))
-	} else {
-		sb.WriteString(m.formatStatusBar(""))
-	}
-	sb.WriteByte('\n')
-
-	// Multi-line input area
-	sb.WriteString(strings.Join(m.renderInputArea(visibleInputLines), "\n"))
-
-	return sb.String()
+	return m.prompt
 }
 
-// viewWithDebug renders a split view: left=output, right=debug JSON.
-func (m Model) viewWithDebug() string {
-	leftWidth := m.width / 2
-	rightWidth := m.width - leftWidth - 1 // -1 for separator
-
-	// Dynamic input area height (same logic as viewNormal)
-	totalInputLines := m.inputTotalLines()
-	maxInputLines := m.height / 2
-	if maxInputLines < 1 {
-		maxInputLines = 1
-	}
-	visibleInputLines := totalInputLines
-	if visibleInputLines > maxInputLines {
-		visibleInputLines = maxInputLines
-	}
-	if visibleInputLines < 1 {
-		visibleInputLines = 1
-	}
-
-	outputLines := m.height - 1 - visibleInputLines
-	if outputLines < 0 {
-		outputLines = 0
-	}
-
-	// Render all output items into lines
-	var allOutputLines []string
-	for _, item := range m.output {
-		allOutputLines = append(allOutputLines, m.renderOutputItem(item)...)
-	}
-
-	// Clamp pagerTop for output panel
-	maxTop := len(allOutputLines) - outputLines
-	if maxTop < 0 {
-		maxTop = 0
-	}
-	if m.pagerTop > maxTop {
-		m.pagerTop = maxTop
-	}
-
-	// Apply pagerTop to output
-	startOutput := m.pagerTop
-	endOutput := startOutput + outputLines
-	if endOutput > len(allOutputLines) {
-		endOutput = len(allOutputLines)
-	}
-	visibleOutput := allOutputLines[startOutput:endOutput]
-
-	// Wrap debug lines to fit right panel
-	wrappedDebug := wrapLines(m.debugMsgs, rightWidth)
-
-	// Clamp debug scroll offset
-	maxScrollDebug := len(wrappedDebug) - outputLines
-	if maxScrollDebug < 0 {
-		maxScrollDebug = 0
-	}
-	if m.debugScrollOffset > maxScrollDebug {
-		m.debugScrollOffset = maxScrollDebug
-	}
-
-	// Apply scroll offset to debug
-	endDebug := len(wrappedDebug) - m.debugScrollOffset
-	startDebug := endDebug - outputLines
-	if startDebug < 0 {
-		startDebug = 0
-	}
-	if endDebug > len(wrappedDebug) {
-		endDebug = len(wrappedDebug)
-	}
-	visibleDebug := wrappedDebug[startDebug:endDebug]
-
-	var sb strings.Builder
-	for i := 0; i < outputLines; i++ {
-		// Left pane (output)
-		left := ""
-		if i < len(visibleOutput) {
-			left = visibleOutput[i]
-		}
-		// Truncate and pad considering ANSI codes
-		left = truncateAndPad(left, leftWidth)
-		sb.WriteString(left)
-
-		// Separator
-		sb.WriteString("|")
-
-		// Right pane (debug)
-		right := ""
-		if i < len(visibleDebug) {
-			right = visibleDebug[i]
-		}
-		right = truncateAndPad(right, rightWidth)
-		sb.WriteString(right)
-		sb.WriteByte('\n')
-	}
-
-	// Status line
-	moreCount := len(allOutputLines) - (m.pagerTop + outputLines)
-	var status string
-	if moreCount > 0 {
-		status = m.formatMoreBar(moreCount)
-	} else {
-		extraInfo := ""
-		if m.debugScrollOffset > 0 {
-			extraInfo = fmt.Sprintf("[dbg:-%d]", m.debugScrollOffset)
-		}
-		status = m.formatStatusBar(extraInfo)
-	}
-	sb.WriteString(status)
-	sb.WriteByte('\n')
-
-	// Multi-line input area (full width, below both panels)
-	sb.WriteString(strings.Join(m.renderInputArea(visibleInputLines), "\n"))
-
-	return sb.String()
-}
-
-// truncateAndPad truncates a string to maxWidth (considering ANSI codes)
-// and pads it to exactly maxWidth with spaces.
+// truncateAndPad truncates a string to maxWidth and pads with spaces.
 func truncateAndPad(s string, maxWidth int) string {
 	if maxWidth <= 0 {
 		return ""
 	}
-	// Use lipgloss to handle ANSI-aware width setting
 	return lipgloss.NewStyle().Width(maxWidth).Render(s)
-}
-
-// wrapLines wraps each line in the input to fit within maxWidth.
-func wrapLines(lines []string, maxWidth int) []string {
-	if maxWidth <= 0 {
-		return lines
-	}
-	var wrapped []string
-	for _, line := range lines {
-		if len(line) <= maxWidth {
-			wrapped = append(wrapped, line)
-		} else {
-			// Break into chunks of maxWidth
-			for len(line) > maxWidth {
-				wrapped = append(wrapped, line[:maxWidth])
-				line = line[maxWidth:]
-			}
-			if len(line) > 0 {
-				wrapped = append(wrapped, line)
-			}
-		}
-	}
-	return wrapped
 }

@@ -10,7 +10,7 @@ import (
 //go:embed logo.txt
 var logoArt string
 
-const version = "0.2.0-tui2"
+const version = "0.1.0"
 
 // formatLogo creates the logo display with version banner as text lines.
 func formatLogo() []string {
@@ -29,7 +29,7 @@ func formatLogo() []string {
 	banner := []string{
 		"",
 		bannerStyle.Render("ZephyrLily") + " v" + version,
-		"Lily Chat Client (tui2)",
+		"Lily Chat Client",
 		"",
 	}
 

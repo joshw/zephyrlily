@@ -27,7 +27,6 @@ import (
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 	"github.com/joshw/zephyrlily/internal/tui/ui"
-	ui2 "github.com/joshw/zephyrlily/internal/tui2/ui"
 	"github.com/joshw/zephyrlily/internal/version"
 )
 
@@ -99,7 +98,6 @@ func cmdClient(args []string) {
 	proxy := fs.String("proxy", "localhost:7888", "proxy address")
 	user := fs.String("user", "", "Lily username")
 	pass := fs.String("pass", "", "Lily password (prompted if omitted)")
-	tui1Flag := fs.Bool("tui1", false, "use legacy TUI interface")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: zlily client [flags]")
 		fs.PrintDefaults()
@@ -107,7 +105,7 @@ func cmdClient(args []string) {
 	_ = fs.Parse(args)
 
 	username, password := resolveCredentials(*user, *pass)
-	runTUI(*proxy, username, password, !*tui1Flag)
+	runTUI(*proxy, username, password)
 }
 
 func cmdCombined(args []string) {
@@ -123,7 +121,6 @@ func cmdCombined(args []string) {
 	webCert := fs.String("web-cert", "", "TLS certificate PEM for web UI (default: self-signed)")
 	webKey := fs.String("web-key", "", "TLS private key PEM for web UI (default: self-signed)")
 	logLevel := fs.String("log-level", "info", "minimum log level to display (debug, info, warn, error)")
-	tui1Flag := fs.Bool("tui1", false, "use legacy TUI interface")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: zlily [combined] [flags]")
 		fs.PrintDefaults()
@@ -172,7 +169,7 @@ func cmdCombined(args []string) {
 	if *webUI {
 		startupMsgs = append(startupMsgs, "Web UI: "+webURL(proxyAddr, *webTLS))
 	}
-	runTUI(proxyAddr, username, password, !*tui1Flag, startupMsgs...)
+	runTUI(proxyAddr, username, password, startupMsgs...)
 	cancel()
 	<-proxyDone
 }
@@ -181,7 +178,7 @@ func cmdCombined(args []string) {
 
 // runTUI connects to the proxy and starts the Bubble Tea event loop.
 // startupMsgs are displayed below the logo on first render.
-func runTUI(proxyAddr, username, password string, useTUI2 bool, startupMsgs ...string) {
+func runTUI(proxyAddr, username, password string, startupMsgs ...string) {
 	c := client.New(proxyAddr)
 
 	if err := c.Auth(username, password); err != nil {
@@ -192,24 +189,13 @@ func runTUI(proxyAddr, username, password string, useTUI2 bool, startupMsgs ...s
 	}
 	defer c.Close()
 
-	if useTUI2 {
-		logChan, logger := ui2.NewLogger()
-		slog.SetDefault(logger)
+	logChan, logger := ui.NewLogger()
+	slog.SetDefault(logger)
 
-		m := ui2.New(c, logChan, startupMsgs...)
-		p := tea.NewProgram(m, tea.WithAltScreen())
-		if _, err := p.Run(); err != nil {
-			log.Fatalf("tui: %v", err)
-		}
-	} else {
-		logChan, logger := ui.NewLogger()
-		slog.SetDefault(logger)
-
-		m := ui.New(c, logChan, startupMsgs...)
-		p := tea.NewProgram(m, tea.WithAltScreen())
-		if _, err := p.Run(); err != nil {
-			log.Fatalf("tui: %v", err)
-		}
+	m := ui.New(c, logChan, startupMsgs...)
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		log.Fatalf("tui: %v", err)
 	}
 }
 

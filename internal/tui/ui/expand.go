@@ -3,6 +3,8 @@ package ui
 import (
 	"log/slog"
 	"strings"
+
+	"github.com/joshw/zephyrlily/internal/proxy/api"
 )
 
 const pastSendsMax = 5
@@ -59,15 +61,7 @@ func (m Model) pushPastSend(dest string) Model {
 }
 
 // expandName calls the proxy to resolve a partial name.
-//
-// A leading '-' on partial signals a disc-only search (matching the Lily
-// convention for discussion destinations); it is stripped before querying.
-// Underscores are treated as spaces when querying.
-//
-// Returned names for discussions are prefixed with '-' (e.g. "-emacs").
-// Returns "" when there is no unique match.
-// Always uses valid_dest_only mode, so discussions the user is not a member of
-// are excluded.
+// Returns empty string if no match or ambiguous (for ambiguous, use expandNameMatches).
 func (m Model) expandName(partial string) string {
 	if m.client == nil || partial == "" {
 		return ""
@@ -100,19 +94,29 @@ func (m Model) expandName(partial string) string {
 	return name
 }
 
-// handleExpandKey handles the intelligent-expand keys (',', ':', ';', '='),
-// mirroring tigerlily's exp_expand:
-//
-//   - At cursor position 0: recalls the last sender (':', expandSender),
-//     last recipients (';', expandRecips), or last send-group ('=', expandSendgroup).
-//   - At cursor position > 0 and still in the destination portion of the line:
-//     attempts name expansion on each comma-separated token before the cursor.
+// expandNameMatches returns all matches for a partial name.
+func (m Model) expandNameMatches(partial string) []api.EntityJSON {
+	if m.client == nil || partial == "" {
+		return nil
+	}
+	q := strings.TrimPrefix(partial, "-")
+	q = strings.ReplaceAll(q, "_", " ")
+	matches, err := m.client.Expand(q, true)
+	if err != nil {
+		return nil
+	}
+	return matches
+}
+
+// handleExpandKey handles the intelligent-expand keys (',', ':', ';', '=').
 func (m Model) handleExpandKey(key string) Model {
 	if m.pasteMode {
 		return m.insertString(key)
 	}
 
-	if m.cursor == 0 {
+	cursor := m.inputCursor
+
+	if cursor == 0 {
 		var recall string
 		switch key {
 		case ":":
@@ -122,27 +126,24 @@ func (m Model) handleExpandKey(key string) Model {
 		case "=":
 			recall = m.expandSendgroup
 			if recall != "" {
-				key = ";" // '=' recall acts as ';'
+				key = ";"
 			}
 		}
 		if recall != "" {
 			insert := recall + key
-			m.input = insert + m.input
-			m.cursor = len(insert)
-			m = m.adjustInputScroll()
+			m.inputValue = insert + m.inputValue
+			m.inputCursor = len(insert)
 			return m
 		}
 		return m.insertString(key)
 	}
 
-	// '=' only expands at position 0; elsewhere insert it literally.
 	if key == "=" {
 		return m.insertString(key)
 	}
 
-	fore := m.input[:m.cursor]
+	fore := m.inputValue[:cursor]
 
-	// Don't expand when already past the destination portion or inside a command.
 	if strings.ContainsAny(fore, ":;/") {
 		return m.insertString(key)
 	}
@@ -153,7 +154,6 @@ func (m Model) handleExpandKey(key string) Model {
 		return m.insertString(key)
 	}
 
-	// Try to expand each comma-separated token; leave unexpandable ones as-is.
 	dests := strings.Split(fore, ",")
 	for i, d := range dests {
 		token := strings.TrimSpace(d)
@@ -162,39 +162,34 @@ func (m Model) handleExpandKey(key string) Model {
 		}
 	}
 	newFore := strings.Join(dests, ",")
-	aft := m.input[m.cursor:]
-	m.input = newFore + key + aft
-	m.cursor = len(newFore) + len(key)
-	m = m.adjustInputScroll()
+	aft := m.inputValue[cursor:]
+	m.inputValue = newFore + key + aft
+	m.inputCursor = len(newFore) + len(key)
 	return m
 }
 
-// tabComplete implements Tab / Ctrl-I completion, mirroring tigerlily's exp_complete:
-//
-//   - Position 0: fill in the most recent past-send destination.
-//   - Partial with no special chars before cursor: prefix-expand the last name token.
-//   - All-but-last char has no special chars (e.g. "josh;"): cycle the past-send ring.
-//   - Otherwise: try expanding the name argument of certain slash commands.
+// tabComplete implements Tab / Ctrl-I completion.
 func (m Model) tabComplete() Model {
 	if m.pasteMode {
 		return m
 	}
 
-	if m.cursor == 0 {
+	cursor := m.inputCursor
+
+	if cursor == 0 {
 		if len(m.pastSends) == 0 {
 			return m
 		}
 		dest := m.pastSends[0] + ";"
-		m.input = dest + m.input
-		m.cursor = len(dest)
-		m = m.adjustInputScroll()
+		m.inputValue = dest + m.inputValue
+		m.inputCursor = len(dest)
 		return m
 	}
 
-	partial := m.input[:m.cursor]
+	partial := m.inputValue[:cursor]
 	const specialChars = "[];:=\"?\t "
 
-	// Branch 1: no special chars anywhere before cursor — name completion.
+	// Branch 1: no special chars — name completion
 	if !strings.ContainsAny(partial, specialChars) {
 		lastComma := strings.LastIndex(partial, ",")
 		var fore, token string
@@ -202,18 +197,30 @@ func (m Model) tabComplete() Model {
 			fore = partial[:lastComma+1]
 			token = partial[lastComma+1:]
 		} else {
+			fore = ""
 			token = partial
 		}
-		if expanded := m.expandName(token); expanded != "" {
-			newPartial := fore + expanded
-			m.input = newPartial + m.input[m.cursor:]
-			m.cursor = len(newPartial)
-			m = m.adjustInputScroll()
+
+		matches := m.expandNameMatches(token)
+		if len(matches) == 0 {
+			return m
 		}
-		return m
+		if len(matches) == 1 {
+			// Single match - expand directly
+			name := strings.ReplaceAll(matches[0].Name, " ", "_")
+			if matches[0].Kind == "disc" {
+				name = "-" + name
+			}
+			newPartial := fore + name
+			m.inputValue = newPartial + m.inputValue[cursor:]
+			m.inputCursor = len(newPartial)
+			return m
+		}
+		// Multiple matches - show popup
+		return m.showCompletionPopup(matches, token, fore)
 	}
 
-	// Branch 2: everything except the last char has no special chars — cycle past-send ring.
+	// Branch 2: everything except last char has no special chars — cycle past-send ring
 	if len(partial) > 1 && !strings.ContainsAny(partial[:len(partial)-1], specialChars) {
 		base := partial[:len(partial)-1]
 		if len(m.pastSends) == 0 {
@@ -227,14 +234,13 @@ func (m Model) tabComplete() Model {
 			}
 		}
 		full := next + ";"
-		m.input = full + m.input[m.cursor:]
-		m.cursor = len(full)
-		m = m.adjustInputScroll()
+		m.inputValue = full + m.inputValue[cursor:]
+		m.inputCursor = len(full)
 		return m
 	}
 
-	// Branch 3: slash command with a name argument at the end of the line.
-	if m.cursor == len(m.input) {
+	// Branch 3: slash command with a name argument
+	if cursor == len(m.inputValue) {
 		m = m.tabCompleteCommand()
 	}
 	return m
@@ -242,7 +248,7 @@ func (m Model) tabComplete() Model {
 
 // tabCompleteCommand handles Tab completion for "/command partial_name" patterns.
 func (m Model) tabCompleteCommand() Model {
-	line := m.input
+	line := m.inputValue
 	if len(line) == 0 || line[0] != '/' {
 		return m
 	}
@@ -259,19 +265,29 @@ func (m Model) tabCompleteCommand() Model {
 	}
 	rest := strings.TrimLeft(line[spaceIdx:], " ")
 	if strings.ContainsAny(rest, " \t") {
-		return m // more than one word after the command
+		return m
 	}
-	if expanded := m.expandName(rest); expanded != "" {
-		newLine := line[:spaceIdx+1] + expanded
-		m.input = newLine
-		m.cursor = len(newLine)
-		m = m.adjustInputScroll()
+
+	matches := m.expandNameMatches(rest)
+	if len(matches) == 0 {
+		return m
 	}
-	return m
+	if len(matches) == 1 {
+		name := strings.ReplaceAll(matches[0].Name, " ", "_")
+		if matches[0].Kind == "disc" {
+			name = "-" + name
+		}
+		newLine := line[:spaceIdx+1] + name
+		m.inputValue = newLine
+		m.inputCursor = len(newLine)
+		return m
+	}
+	// Multiple matches - show popup
+	fore := line[:spaceIdx+1]
+	return m.showCompletionPopup(matches, rest, fore)
 }
 
-// trackIncomingPrivate updates expand state when a private or emote arrives
-// from someone other than the current user.
+// trackIncomingPrivate updates expand state when a private or emote arrives.
 func (m Model) trackIncomingPrivate(d map[string]interface{}) Model {
 	if m.state == nil {
 		return m
@@ -288,7 +304,6 @@ func (m Model) trackIncomingPrivate(d map[string]interface{}) Model {
 	m.expandSender = senderDest
 	m = m.pushPastSend(senderDest)
 
-	// Build sendgroup when the private has multiple recipients.
 	recips, _ := d["recips"].([]interface{})
 	if len(recips) > 1 {
 		group := []string{senderDest}

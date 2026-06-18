@@ -6,32 +6,21 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/reflow/wordwrap"
 )
 
 // wrapText wraps text onto lines of at most maxWidth chars.
+// Word boundaries are preferred; long tokens (e.g. URLs) are hard-broken as a
+// last resort.
+//
+// curLine is the line currently being built (may already contain a prefix).
+// wordPrefix is the prefix prepended on word-boundary continuation lines.
+// initialSep is the separator placed before the very first word (typically ""
+// when the prefix already ends at a word boundary, or " " when the caller
+// wants a space between an existing header and the message body).
+//
+// Hard-break continuation lines intentionally carry NO prefix so that a split
+// URL is not visually interrupted by a repeated prefix marker.
 func wrapText(curLine, wordPrefix, text string, maxWidth int, initialSep string) []string {
-	return wrapTextCore(curLine, wordPrefix, text, maxWidth, initialSep, false)
-}
-
-// wrapTextLinkify behaves like wrapText but renders any URLs as OSC8
-// hyperlinks. A URL that is hard-broken across lines emits each fragment as a
-// hyperlink to the full URL, all sharing one id so supporting terminals treat
-// them as a single clickable link. Width is measured on the visible text, so
-// the invisible escape bytes never affect wrapping.
-func wrapTextLinkify(curLine, wordPrefix, text string, maxWidth int, initialSep string) []string {
-	return wrapTextCore(curLine, wordPrefix, text, maxWidth, initialSep, true)
-}
-
-// wrapTextCore implements word wrapping. curLine and wordPrefix are assumed to
-// be plain (no escape sequences); when linkify is true, URL words are rendered
-// with OSC8 escapes while wrapping arithmetic continues to use visible length.
-func wrapTextCore(curLine, wordPrefix, text string, maxWidth int, initialSep string, linkify bool) []string {
-	// Guard against a non-positive width: with maxWidth <= 0 the available space
-	// is always <= 0 and the consume loop can never advance, spinning forever.
-	if maxWidth < 1 {
-		maxWidth = 1
-	}
 	words := strings.Fields(text)
 	if len(words) == 0 {
 		return []string{curLine}
@@ -41,172 +30,75 @@ func wrapTextCore(curLine, wordPrefix, text string, maxWidth int, initialSep str
 	sep := initialSep
 	lineHasContent := false
 	continuingWord := false
-	curVis := len(curLine) // visible length of curLine (may differ when linkify adds escapes)
 
 	for _, word := range words {
-		// Resolve the URL span (if any) once against the original word so it
-		// stays valid as the word is consumed across hard-broken lines.
-		urlStart, urlEnd, clean := -1, -1, ""
-		var id int64
-		if linkify {
-			if urlStart, urlEnd, clean = urlSpanInWord(word); urlStart >= 0 {
-				id = linkID.Add(1)
-			}
-		}
-		// render returns word[a:b], wrapping any portion within the URL span in
-		// an OSC8 hyperlink to the full URL.
-		render := func(a, b int) string {
-			if urlStart < 0 || b <= urlStart || a >= urlEnd {
-				return word[a:b]
-			}
-			lo, hi := max(a, urlStart), min(b, urlEnd)
-			return word[a:lo] + osc8Link(clean, word[lo:hi], id) + word[hi:b]
-		}
-
-		consumed := 0
-		for consumed < len(word) {
-			remaining := len(word) - consumed
-			avail := maxWidth - curVis - len(sep)
+		for len(word) > 0 {
+			avail := maxWidth - len(curLine) - len(sep)
 
 			if avail <= 0 {
+				// Current line is full — emit it and start a new one.
 				lines = append(lines, curLine)
 				if continuingWord {
-					curLine = ""
+					curLine = "" // hard-break continuation: no prefix
 				} else {
 					curLine = wordPrefix
 				}
-				curVis = len(curLine)
 				lineHasContent = false
 				sep = ""
 				continue
 			}
 
-			if remaining <= avail {
-				curLine += sep + render(consumed, len(word))
-				curVis += len(sep) + remaining
-				consumed = len(word)
+			if len(word) <= avail {
+				// Word fits on the current line.
+				curLine += sep + word
 				sep = " "
+				word = ""
 				lineHasContent = true
 				continuingWord = false
 			} else if !lineHasContent {
-				curLine += sep + render(consumed, consumed+avail)
-				consumed += avail
+				// Nothing else on this line yet — hard-break the token.
+				curLine += sep + word[:avail]
+				word = word[avail:]
 				lines = append(lines, curLine)
 				curLine = ""
-				curVis = 0
 				lineHasContent = false
 				sep = ""
 				continuingWord = true
 			} else {
+				// Word doesn't fit and there's other content — word-boundary wrap.
 				lines = append(lines, curLine)
 				curLine = wordPrefix
-				curVis = len(wordPrefix)
 				lineHasContent = false
 				sep = ""
 				continuingWord = false
 			}
 		}
-		continuingWord = false
+		continuingWord = false // completed this word
 	}
 
 	lines = append(lines, curLine)
 	return lines
 }
 
-// renderOutputItem formats an OutputItem into display lines based on current width.
-func (m Model) renderOutputItem(item OutputItem) []string {
-	width := m.width
-	if m.debugMode {
-		width = m.width / 2
-	}
-
-	switch item.Type {
-	case "text":
-		if text, ok := item.Data.(string); ok {
-			// Apply linkification to text
-			text = linkifyText(text)
-			return strings.Split(text, "\n")
-		}
-
-	case "command":
-		if lines, ok := item.Data.([]string); ok {
-			wrapWidth := width - 2
-			if wrapWidth < 1 {
-				wrapWidth = 1
-			}
-			var out []string
-			for _, line := range lines {
-				wrapped := strings.Split(wordwrap.String(line, wrapWidth), "\n")
-				// Apply linkification after wrapping to avoid breaking URLs
-				for i := range wrapped {
-					wrapped[i] = linkifyText(wrapped[i])
-				}
-				out = append(out, wrapped...)
-			}
-			return out
-		}
-
-	case "event":
-		if d, ok := item.Data.(map[string]interface{}); ok {
-			whoami := ""
-			if m.state != nil {
-				whoami = m.state.Whoami
-			}
-			formatted := formatEvent(d, width, whoami)
-			return strings.Split(formatted, "\n")
-		}
-
-	case "error":
-		if e, ok := item.Data.(string); ok {
-			return []string{errorStyle.Render("*** " + e + " ***")}
-		}
-
-	case "input":
-		if line, ok := item.Data.(string); ok {
-			w := width
-			if w < 1 {
-				w = 1
-			}
-			wrapped := wordwrap.String(line, w)
-			lines := strings.Split(wrapped, "\n")
-			for i := range lines {
-				lines[i] = inputStyle.Render(lines[i])
-			}
-			return lines
-		}
-
-	case "log":
-		if entry, ok := item.Data.(logMsg); ok {
-			var labelStyle lipgloss.Style
-			switch entry.level {
-			case "ERROR":
-				labelStyle = logErrorSeverityStyle
-			case "WARN":
-				labelStyle = logInfoSeverityStyle
-			default:
-				labelStyle = logPrefixStyle
-			}
-			label := labelStyle.Render("[" + entry.level + "]")
-			return []string{label + " " + entry.text}
-		}
-	}
-
-	return []string{"[unknown output type]"}
-}
-
 // formatEvent produces a human-readable line for a notify event.
+// Formatting is based on tigerlily's slcp_output.pl message templates.
+// width is the maximum line width for wrapping messages.
+// whoami is the current user's handle; when source == whoami the message
+// uses second-person language ("you have/are") instead of third-person.
 func formatEvent(d map[string]interface{}, width int, whoami string) string {
 	event, _ := d["event"].(string)
 	source, _ := d["source"].(string)
 	value, _ := d["value"].(string)
 
-	// Use the proxy's pre-formatted text for all events except styled ones
+	// Use the proxy's pre-formatted text for all events except the ones we
+	// render with rich TUI styling (public, private, emote, pa).
 	if text, ok := d["text"].(string); ok && text != "" {
 		switch event {
 		case "public", "private", "emote", "pa":
 			// fall through to rich formatting below
 		default:
-			lines := wrapTextLinkify("", "", text, max(width-2, 1), "")
+			// Word-wrap the text to fit the terminal width, then style each line.
+			lines := wrapText("", "", text, max(width-2, 1), "")
 			for i := range lines {
 				lines[i] = slcpBodyStyle.Render(lines[i])
 			}
@@ -214,6 +106,7 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		}
 	}
 
+	// Extract timestamp — only shown when STAMP=1 was present in the %NOTIFY message
 	var timestamp string
 	stamp, _ := d["stamp"].(bool)
 	if stamp {
@@ -223,6 +116,7 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		}
 	}
 
+	// Extract entity data
 	entities := make(map[string]map[string]interface{})
 	if entitiesRaw, ok := d["entities"].(map[string]interface{}); ok {
 		for k, v := range entitiesRaw {
@@ -232,6 +126,7 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		}
 	}
 
+	// Helper to format a user/entity reference with name and optional blurb
 	formatUser := func(handle string, senderStyle, blurbSty lipgloss.Style) string {
 		if entity, ok := entities[handle]; ok {
 			name, _ := entity["name"].(string)
@@ -246,6 +141,8 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		return senderStyle.Render(handle)
 	}
 
+	// Plain name lookup with no styling — use inside an outer Render() call
+	// to avoid inner resets breaking a uniform color across the whole line.
 	lookupName := func(handle string) string {
 		if entity, ok := entities[handle]; ok {
 			if name, ok := entity["name"].(string); ok && name != "" {
@@ -265,6 +162,7 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		return strings.Join(names, ", ")
 	}
 
+	// Helper to format a list of recipient handles as a comma-separated string of names
 	formatRecips := func(recips []interface{}, sty lipgloss.Style) string {
 		names := make([]string, 0, len(recips))
 		for _, r := range recips {
@@ -283,14 +181,16 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		return strings.Join(names, ", ")
 	}
 
+	// Helper to wrap message text with prefix on each line.
+	// Hard-break continuation lines (e.g. split URLs) carry no prefix.
 	wrapMessage := func(prefix, msg string, width int) string {
 		if msg == "" {
 			return ""
 		}
-		lines := wrapTextLinkify(prefix, prefix, strings.TrimSpace(msg), width, "")
-		return strings.Join(lines, "\n")
+		return strings.Join(wrapText(prefix, prefix, strings.TrimSpace(msg), width, ""), "\n")
 	}
 
+	// Extract targets and sub-event fields used by permission events.
 	var targetsRaw []interface{}
 	if t, ok := d["targets"].([]interface{}); ok {
 		targetsRaw = t
@@ -307,6 +207,7 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		return strings.Join(names, ", ")
 	}
 
+	// lookupDiscTitle returns the title of a discussion entity by handle.
 	lookupDiscTitle := func(handle string) string {
 		if entity, ok := entities[handle]; ok {
 			if title, ok := entity["title"].(string); ok {
@@ -316,6 +217,7 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		return ""
 	}
 
+	// sourceWithBlurb returns "Name [blurb]" or just "Name" — matches %U in the reference.
 	sourceWithBlurb := func() string {
 		name := lookupName(source)
 		if entity, ok := entities[source]; ok {
@@ -326,6 +228,8 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		return name
 	}
 
+	// blurbSuffix returns " with the blurb [x]" when the source has a blurb, else "".
+	// Used in self here/away confirmations (%B in the reference).
 	blurbSuffix := func() string {
 		if entity, ok := entities[source]; ok {
 			if blurb, ok := entity["blurb"].(string); ok && blurb != "" {
@@ -335,6 +239,7 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		return ""
 	}
 
+	// meInTargets is true when the current user appears in the targets list (M flag).
 	meInTargets := false
 	if whoami != "" {
 		for _, t := range targetsRaw {
@@ -347,6 +252,9 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 
 	isSelf := whoami != "" && source == whoami
 
+	// quiet wraps a message in parentheses — used for self-originated confirmations.
+	// banner wraps a message in *** *** — used for third-party observations.
+	// Both word-wrap their content to fit the terminal width.
 	renderLines := func(lines []string) string {
 		for i := range lines {
 			lines[i] = slcpBodyStyle.Render(lines[i])
@@ -406,10 +314,13 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		if value == "" {
 			return emoteBodyStyle.Render(headerStr)
 		}
-		lines := wrapTextLinkify(headerStr, "> ", strings.TrimSpace(value), width, " ")
+		lines := wrapText(headerStr, "> ", strings.TrimSpace(value), width, " ")
 		return emoteBodyStyle.Render(strings.Join(lines, "\n"))
 
+	// ── Presence events ──────────────────────────────────────────────────────
+
 	case "connect":
+		// Third-person always: "%U has entered lily"
 		return banner(sourceWithBlurb() + " has entered lily")
 
 	case "disconnect":
@@ -435,6 +346,7 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 
 	case "away":
 		if value != "" {
+			// value defined = idled away automatically, not an explicit /away
 			return banner(lookupName(source) + " has idled \"away\"")
 		}
 		if isSelf {
@@ -444,6 +356,8 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 
 	case "unidle":
 		return banner(lookupName(source) + " is now unidle")
+
+	// ── Identity events ───────────────────────────────────────────────────────
 
 	case "rename":
 		if isSelf {
@@ -494,6 +408,8 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		}
 		return banner(lookupName(source) + " has changed their info")
 
+	// ── Discussion membership ─────────────────────────────────────────────────
+
 	case "create":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
 			discName := lookupRecips(recips)
@@ -524,7 +440,7 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		if isSelf {
 			return quiet("you have destroyed a discussion")
 		}
-		return banner(lookupName(source) + " has destroyed a discussion")
+		return banner(lookupName(source) + " has destroyed a discussion (server didn't say which)")
 
 	case "join":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
@@ -566,10 +482,13 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		return banner(lookupName(source) + " has changed a discussion title to \"" + value + "\"")
 
 	case "drename":
+		// Disc names are prefixed with '-' per Lily convention.
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
 			return banner("Discussion -" + lookupRecips(recips) + " is now named -" + value)
 		}
 		return banner("A discussion is now named -" + value)
+
+	// ── Permission events (permit / depermit) ─────────────────────────────────
 
 	case "permit":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
@@ -630,6 +549,8 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 			}
 		}
 		return banner(lookupName(source) + " has changed permissions")
+
+	// ── Role appointment events (appoint / unappoint) ─────────────────────────
 
 	case "appoint":
 		disc := ""
@@ -693,7 +614,10 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		}
 		return banner(lookupName(source) + " changed an appointment for discussion " + disc)
 
+	// ── Ignore events ─────────────────────────────────────────────────────────
+
 	case "ignore":
+		// 'tcE' = no targets, no subevt, value empty → no longer ignoring
 		if value == "" && len(targetsRaw) == 0 && subEvt == "" {
 			return banner(lookupName(source) + " is no longer ignoring you")
 		}
@@ -705,18 +629,22 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 	case "unignore":
 		return banner(lookupName(source) + " is no longer ignoring you")
 
+	// ── Review ────────────────────────────────────────────────────────────────
+
 	case "review":
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
 			return banner(lookupName(source) + " has cleared the review for discussion " + lookupRecips(recips))
 		}
 		return banner(lookupName(source) + " has cleared a review")
 
+	// ── System ────────────────────────────────────────────────────────────────
+
 	case "sysmsg":
-		return slcpBodyStyle.Render("*** " + linkifyText(value) + " ***")
+		return slcpBodyStyle.Render("*** " + value + " ***")
 
 	case "pa":
 		return slcpBodyStyle.Render("** Public address message from " +
-			formatUser(source, publicSenderStyle, publicBlurbStyle) + ": " + linkifyText(value) + " **")
+			formatUser(source, publicSenderStyle, publicBlurbStyle) + ": " + value + " **")
 
 	default:
 		return fmt.Sprintf("[%s] %s %s", event, source, value)

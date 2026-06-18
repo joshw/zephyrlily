@@ -81,14 +81,4 @@ var (
 
 	logPrefixStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("8")) // gray
-
-	// Misspelled word style
-	misspelledStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("1")).
-			Underline(true)
-
-	// Cursor style
-	cursorStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("7")).
-			Foreground(lipgloss.Color("0"))
 )

@@ -14,21 +14,7 @@ type editMeta struct {
 	name        string // memo name; empty for info
 }
 
-// editorFetchResultMsg is delivered when the async content fetch completes.
-type editorFetchResultMsg struct {
-	meta  editMeta
-	lines []string
-	err   error
-}
-
-// editorSaveResultMsg is delivered when the async save completes.
-type editorSaveResultMsg struct {
-	meta editMeta
-	err  error
-}
-
-// fetchContentCmd returns a Cmd that fetches existing content and then enters
-// edit mode. If the fetch fails (e.g. no existing content) it opens a blank editor.
+// fetchContentCmd returns a Cmd that fetches existing content and then enters edit mode.
 func (m Model) fetchContentCmd(meta editMeta) tea.Cmd {
 	return func() tea.Msg {
 		lines, err := m.client.FetchContent(meta.contentType, meta.target, meta.name)
@@ -54,7 +40,6 @@ func newEditorModel(width, height int, content string) textarea.Model {
 	ta.Focus()
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
-	ta.Cursor.Blink = false
 	return ta
 }
 
@@ -84,26 +69,16 @@ func (m Model) viewEditor() string {
 }
 
 // handleEditorMsg routes messages while in editor mode.
-// Returns (updatedModel, cmd, handled). When handled is false the caller
-// should process the message normally (e.g. server events still update state).
-func (m Model) handleEditorMsg(msg tea.Msg) (Model, tea.Cmd, bool) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+s":
-			return m, m.saveContentCmd(m.editMeta, m.editor.Value()), true
-		case "esc":
-			m.editMode = false
-			return m, nil, true
-		default:
-			var cmd tea.Cmd
-			m.editor, cmd = m.editor.Update(msg)
-			return m, cmd, true
-		}
-	case tea.WindowSizeMsg:
-		m.editor.SetWidth(msg.Width)
-		m.editor.SetHeight(msg.Height - 2)
-		return m, nil, true
+func (m Model) handleEditorMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+s":
+		return m, m.saveContentCmd(m.editMeta, m.editor.Value())
+	case "esc":
+		m.editMode = false
+		return m, nil
+	default:
+		var cmd tea.Cmd
+		m.editor, cmd = m.editor.Update(msg)
+		return m, cmd
 	}
-	return m, nil, false
 }

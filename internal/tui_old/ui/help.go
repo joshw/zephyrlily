@@ -1,14 +1,17 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 // tuiHelp holds help topics that are specific to the TUI client.
+// Entries here are served by the TUI itself and never forwarded to the proxy.
+// Add new topics by inserting into this map.
 var tuiHelp = map[string][]string{
-	"debugkeys": {
+	"keys": {
 		"Toggle keypress debugging",
 		"",
 		"Usage: %set debug keys",
@@ -52,23 +55,17 @@ var tuiHelp = map[string][]string{
 		"While in debug mode, PgUp / PgDn scroll the right panel independently.",
 		"Press ESC G again to return to the normal view.",
 	},
-	"tui2": {
-		"TUI2 - New Bubbletea-based interface",
-		"",
-		"This version uses more standard bubbletea components:",
-		"  - bubbles/viewport for scrolling",
-		"  - bubbles/textarea for input",
-		"  - bubbles/key for key bindings",
-		"",
-		"New features:",
-		"  - Clickable URLs (OSC8 hyperlinks)",
-		"  - Improved viewport scrolling",
-		"",
-		"Use '%help keys' for key binding reference.",
-	},
 }
 
-// handleLocalCommand inspects line and returns local output if applicable.
+// handleLocalCommand inspects line and returns:
+//
+//   - localOutput: lines to inject into the output window immediately (nil = nothing)
+//   - handled: if true the command was fully handled locally and must NOT be
+//     forwarded to the proxy; if false the proxy should still receive the command.
+//   - cmd: an optional async Bubble Tea command (e.g. fetch content) to run.
+//
+// This lets bare "%help" both inject TUI topics and forward to the proxy, while
+// "%help debug", "%info edit", and "%memo edit" are handled entirely by the TUI.
 func (m Model) handleLocalCommand(line string) (localOutput []string, handled bool, cmd tea.Cmd) {
 	if len(line) == 0 {
 		return nil, false, nil
@@ -81,7 +78,8 @@ func (m Model) handleLocalCommand(line string) (localOutput []string, handled bo
 	command := parts[0]
 	args := parts[1:]
 
-	// Intercept Lily /info set and /memo set
+	// Intercept Lily /info set and /memo set before they reach the server.
+	// These must be checked before the '%'-only guard below.
 	if command == "/info" && len(args) > 0 && args[0] == "set" {
 		return []string{"Use %info edit [target] to edit your info."}, true, nil
 	}
@@ -96,20 +94,18 @@ func (m Model) handleLocalCommand(line string) (localOutput []string, handled bo
 	switch command {
 	case "%help":
 		if len(args) == 0 {
+			// Bare "%help" — inject TUI section and forward to proxy.
 			return tuiHelpSummary(), false, nil
 		}
 		topic := args[0]
-		if topic == "keys" {
-			return m.keys.KeyBindingHelp(), true, nil
-		}
 		if lines, ok := tuiHelp[topic]; ok {
 			return lines, true, nil
 		}
-		return nil, false, nil
+		return nil, false, nil // proxy handles unknown topics
 
 	case "%info":
 		if len(args) == 0 || args[0] != "edit" {
-			return nil, false, nil
+			return nil, false, nil // forward unknown %info subcommands to proxy
 		}
 		target := "me"
 		if len(args) >= 2 {
@@ -141,10 +137,7 @@ func (m Model) handleLocalCommand(line string) (localOutput []string, handled bo
 
 // tuiHelpSummary builds the short listing injected above the proxy's %help output.
 func tuiHelpSummary() []string {
-	lines := []string{
-		"TUI2-specific commands (use '%help <topic>' for details):",
-		"  keys - Key binding reference",
-	}
+	lines := []string{"TUI-specific commands (use '%help <topic>' for details):"}
 	for topic, text := range tuiHelp {
 		desc := ""
 		for _, l := range text {
@@ -157,4 +150,28 @@ func tuiHelpSummary() []string {
 	}
 	lines = append(lines, "")
 	return lines
+}
+
+// escapeKeyString replaces control characters in a key string with printable
+// representations so that debug log lines containing newlines or other
+// non-printable bytes don't break the single-line debug window rendering.
+func escapeKeyString(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\x%02x`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
 }

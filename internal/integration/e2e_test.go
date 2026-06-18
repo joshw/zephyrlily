@@ -12,7 +12,7 @@ import (
 	"github.com/joshw/zephyrlily/internal/lilytest"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
-	"github.com/joshw/zephyrlily/internal/tui2/ui"
+	"github.com/joshw/zephyrlily/internal/tui/ui"
 	"github.com/stretchr/testify/require"
 )
 
@@ -47,7 +47,7 @@ func startStack(t *testing.T) (*client.Client, *lilytest.Server) {
 	return c, fake
 }
 
-// startUI builds the real tui2 model wired to c and runs it under teatest.
+// startUI builds the real tui model wired to c and runs it under teatest.
 func startUI(t *testing.T, c *client.Client) *teatest.TestModel {
 	t.Helper()
 	logChan, _ := ui.NewLogger()
