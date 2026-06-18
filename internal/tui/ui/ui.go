@@ -792,7 +792,7 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 
 			// Only display events the server flagged with NOTIFY=1,
 			// and suppress unidle for the current user regardless.
-			if notify && !(event == "unidle" && m.state != nil && source == m.state.Whoami) {
+			if notify && (event != "unidle" || m.state == nil || source != m.state.Whoami) {
 				m.output = append(m.output, OutputItem{Type: "event", Data: d, ID: msg.ID})
 			}
 

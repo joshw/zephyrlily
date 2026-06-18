@@ -167,7 +167,7 @@ func escapeKeyString(s string) string {
 			b.WriteString(`\t`)
 		default:
 			if r < 0x20 || r == 0x7f {
-				b.WriteString(fmt.Sprintf(`\x%02x`, r))
+				fmt.Fprintf(&b, `\x%02x`, r)
 			} else {
 				b.WriteRune(r)
 			}

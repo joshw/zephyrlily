@@ -56,7 +56,7 @@ func (d completionDelegate) Render(w io.Writer, m list.Model, index int, item li
 		str = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Render(str)
 	}
 
-	fmt.Fprint(w, str)
+	_, _ = fmt.Fprint(w, str)
 }
 
 // newCompletionList creates a new list.Model for completion popup.

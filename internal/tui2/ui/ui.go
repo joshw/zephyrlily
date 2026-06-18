@@ -691,7 +691,7 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 			source, _ := d["source"].(string)
 			notify, _ := d["notify"].(bool)
 
-			if notify && !(event == "unidle" && m.state != nil && source == m.state.Whoami) {
+			if notify && (event != "unidle" || m.state == nil || source != m.state.Whoami) {
 				m.output = append(m.output, OutputItem{Type: "event", Data: d, ID: msg.ID})
 			}
 

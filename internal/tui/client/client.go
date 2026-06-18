@@ -80,7 +80,7 @@ func (c *Client) FetchState() (*api.StateResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("state request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var sr api.StateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
 		return nil, fmt.Errorf("state decode: %w", err)
@@ -97,7 +97,7 @@ func (c *Client) FetchEvents(afterID int64, limit int) ([]api.WSServerMsg, bool,
 	if err != nil {
 		return nil, false, fmt.Errorf("events request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, false, fmt.Errorf("events: HTTP %s", resp.Status)
 	}
@@ -122,7 +122,7 @@ func (c *Client) ReportSeen(lastSeenID int64) error {
 	if err != nil {
 		return fmt.Errorf("seen request: %w", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	c.lastReportedSeenID.Store(lastSeenID)
 	return nil
 }
@@ -226,7 +226,7 @@ func (c *Client) Send(text string) error {
 func (c *Client) Close() {
 	c.cancel()
 	if c.ws != nil {
-		c.ws.Close(websocket.StatusNormalClosure, "")
+		_ = c.ws.Close(websocket.StatusNormalClosure, "")
 	}
 }
 
