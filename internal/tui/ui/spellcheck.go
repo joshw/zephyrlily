@@ -2,11 +2,9 @@ package ui
 
 import (
 	"bytes"
-	"container/list"
 	"embed"
 	"log"
 	"strings"
-	"sync"
 	"unicode"
 
 	"github.com/client9/gospell"
@@ -19,17 +17,6 @@ var hunspellFS embed.FS
 type SpellChecker struct {
 	enabled bool
 	checker *gospell.Checker
-
-	// LRU cache for spell check results
-	cacheMu    sync.RWMutex
-	cache      map[string]bool // word -> isCorrect
-	cacheOrder *list.List      // LRU order
-	cacheSize  int
-	maxCache   int
-}
-
-type cacheEntry struct {
-	word string
 }
 
 // NewSpellChecker creates a new spell checker using gospell.
@@ -41,47 +28,29 @@ func NewSpellChecker() *SpellChecker {
 	affData, err := hunspellFS.ReadFile("hunspell-en_US/en_US.aff")
 	if err != nil {
 		log.Println("Spell checking disabled (hunspell dictionary not found)")
-		return &SpellChecker{
-			enabled:    false,
-			cache:      make(map[string]bool),
-			cacheOrder: list.New(),
-			maxCache:   1000,
-		}
+		return &SpellChecker{enabled: false}
 	}
 
 	dicData, err := hunspellFS.ReadFile("hunspell-en_US/en_US.dic")
 	if err != nil {
 		log.Println("Spell checking disabled (hunspell dictionary not found)")
-		return &SpellChecker{
-			enabled:    false,
-			cache:      make(map[string]bool),
-			cacheOrder: list.New(),
-			maxCache:   1000,
-		}
+		return &SpellChecker{enabled: false}
 	}
 
 	// Create GoSpell from embedded dictionary data
 	gs, err := gospell.NewGoSpellReader(bytes.NewReader(affData), bytes.NewReader(dicData))
 	if err != nil {
 		log.Println("Spell checking disabled (failed to initialize gospell):", err)
-		return &SpellChecker{
-			enabled:    false,
-			cache:      make(map[string]bool),
-			cacheOrder: list.New(),
-			maxCache:   1000,
-		}
+		return &SpellChecker{enabled: false}
 	}
 
-	// Create checker (gospell uses a Checker wrapper)
+	// Create checker
 	checker := gospell.NewChecker(gs)
 
 	log.Println("Spell checking enabled (using gospell with Hunspell dictionary)")
 	return &SpellChecker{
-		enabled:    true,
-		checker:    checker,
-		cache:      make(map[string]bool),
-		cacheOrder: list.New(),
-		maxCache:   1000, // Cache up to 1000 words
+		enabled: true,
+		checker: checker,
 	}
 }
 
@@ -90,40 +59,7 @@ func (s *SpellChecker) CheckWord(word string) bool {
 	if !s.enabled || word == "" {
 		return true
 	}
-
-	// Check cache first
-	s.cacheMu.RLock()
-	if result, ok := s.cache[word]; ok {
-		s.cacheMu.RUnlock()
-		return result
-	}
-	s.cacheMu.RUnlock()
-
-	// Not in cache, check with gospell
-	// gospell.Spell returns true if correct, false if incorrect
-	result := s.checker.Spell(word)
-
-	// Store in cache
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-
-	// Evict oldest entry if cache is full
-	if s.cacheSize >= s.maxCache {
-		oldest := s.cacheOrder.Back()
-		if oldest != nil {
-			entry := oldest.Value.(*cacheEntry)
-			delete(s.cache, entry.word)
-			s.cacheOrder.Remove(oldest)
-			s.cacheSize--
-		}
-	}
-
-	// Add to cache
-	s.cache[word] = result
-	s.cacheOrder.PushFront(&cacheEntry{word: word})
-	s.cacheSize++
-
-	return result
+	return s.checker.Spell(word)
 }
 
 // Word represents a word in the input with its position and spelling status.
