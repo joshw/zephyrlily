@@ -35,6 +35,9 @@ type Client struct {
 
 	// closeOnce ensures the Events channel is only closed once.
 	closeOnce sync.Once
+
+	// closed tracks whether this client has been closed to prevent operations on old clients.
+	closed atomic.Bool
 }
 
 // New creates a Client pointing at the given proxy address.
@@ -223,11 +226,15 @@ func (c *Client) Connect() error {
 
 // Send sends a command to the proxy (which forwards it to Lily).
 func (c *Client) Send(text string) error {
+	if c.closed.Load() {
+		return fmt.Errorf("client is closed")
+	}
 	return wsjson.Write(c.ctx, c.ws, api.WSClientMsg{Type: "command", Text: text})
 }
 
 // Close shuts down the WebSocket connection.
 func (c *Client) Close() {
+	c.closed.Store(true)
 	c.cancel()
 	if c.ws != nil {
 		_ = c.ws.Close(websocket.StatusNormalClosure, "")

@@ -100,6 +100,10 @@ type Model struct {
 	// Reconnect prompt: shown when the Lily connection drops.
 	reconnectPrompt bool
 
+	// lastMessageWasRedirect: true if the last received message was a redirect.
+	// Used to suppress reconnect prompt on expected connection close.
+	lastMessageWasRedirect bool
+
 	// Authentication dialog
 	authMode       bool
 	authError      string
