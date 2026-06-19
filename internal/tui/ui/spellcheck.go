@@ -3,17 +3,22 @@ package ui
 import (
 	"bytes"
 	"container/list"
+	"embed"
 	"log"
-	"os/exec"
 	"strings"
 	"sync"
 	"unicode"
+
+	"github.com/client9/gospell"
 )
 
-// SpellChecker provides spell checking functionality.
+//go:embed hunspell-en_US/*
+var hunspellFS embed.FS
+
+// SpellChecker provides spell checking functionality using gospell.
 type SpellChecker struct {
 	enabled bool
-	command string // "aspell" or "ispell"
+	checker *gospell.Checker
 
 	// LRU cache for spell check results
 	cacheMu    sync.RWMutex
@@ -27,48 +32,62 @@ type cacheEntry struct {
 	word string
 }
 
-// NewSpellChecker creates a new spell checker.
-// It checks if aspell or ispell is available and disables itself if neither is found.
-// Logs status messages using the standard logger.
+// NewSpellChecker creates a new spell checker using gospell.
+// It loads the embedded English Hunspell dictionary.
+// If loading fails, spell checking is disabled but the checker continues to work
+// (returning all words as correct).
 func NewSpellChecker() *SpellChecker {
-	// Try aspell first
-	if cmd := exec.Command("aspell", "--version"); cmd.Run() == nil {
-		log.Println("Spell checking enabled (using aspell)")
+	// Load embedded Hunspell dictionary
+	affData, err := hunspellFS.ReadFile("hunspell-en_US/en_US.aff")
+	if err != nil {
+		log.Println("Spell checking disabled (hunspell dictionary not found)")
 		return &SpellChecker{
-			enabled:    true,
-			command:    "aspell",
-			cache:      make(map[string]bool),
-			cacheOrder: list.New(),
-			maxCache:   1000, // Cache up to 1000 words
-		}
-	}
-
-	// Fall back to ispell
-	if cmd := exec.Command("ispell", "-v"); cmd.Run() == nil {
-		log.Println("Spell checking enabled (using ispell)")
-		return &SpellChecker{
-			enabled:    true,
-			command:    "ispell",
+			enabled:    false,
 			cache:      make(map[string]bool),
 			cacheOrder: list.New(),
 			maxCache:   1000,
 		}
 	}
 
-	// Neither available, disable
-	log.Println("Spell checking disabled (aspell or ispell not found)")
-	log.Println("Install aspell or ispell for spell checking support")
-	return &SpellChecker{enabled: false}
+	dicData, err := hunspellFS.ReadFile("hunspell-en_US/en_US.dic")
+	if err != nil {
+		log.Println("Spell checking disabled (hunspell dictionary not found)")
+		return &SpellChecker{
+			enabled:    false,
+			cache:      make(map[string]bool),
+			cacheOrder: list.New(),
+			maxCache:   1000,
+		}
+	}
+
+	// Create GoSpell from embedded dictionary data
+	gs, err := gospell.NewGoSpellReader(bytes.NewReader(affData), bytes.NewReader(dicData))
+	if err != nil {
+		log.Println("Spell checking disabled (failed to initialize gospell):", err)
+		return &SpellChecker{
+			enabled:    false,
+			cache:      make(map[string]bool),
+			cacheOrder: list.New(),
+			maxCache:   1000,
+		}
+	}
+
+	// Create checker (gospell uses a Checker wrapper)
+	checker := gospell.NewChecker(gs)
+
+	log.Println("Spell checking enabled (using gospell with Hunspell dictionary)")
+	return &SpellChecker{
+		enabled:    true,
+		checker:    checker,
+		cache:      make(map[string]bool),
+		cacheOrder: list.New(),
+		maxCache:   1000, // Cache up to 1000 words
+	}
 }
 
 // CheckWord checks if a single word is spelled correctly.
 func (s *SpellChecker) CheckWord(word string) bool {
 	if !s.enabled || word == "" {
-		return true
-	}
-
-	// Skip words that are all numbers or contain special characters
-	if !isAlphabetic(word) {
 		return true
 	}
 
@@ -80,8 +99,9 @@ func (s *SpellChecker) CheckWord(word string) bool {
 	}
 	s.cacheMu.RUnlock()
 
-	// Not in cache, check with spell checker
-	result := s.checkWordExternal(word)
+	// Not in cache, check with gospell
+	// gospell.Spell returns true if correct, false if incorrect
+	result := s.checker.Spell(word)
 
 	// Store in cache
 	s.cacheMu.Lock()
@@ -104,59 +124,6 @@ func (s *SpellChecker) CheckWord(word string) bool {
 	s.cacheSize++
 
 	return result
-}
-
-// checkWordExternal performs the actual spell check using the external command.
-func (s *SpellChecker) checkWordExternal(word string) bool {
-	// Use spell checker in pipe mode for a single word check
-	cmd := exec.Command(s.command, "-a") // -a for pipe mode (works for both aspell and ispell)
-	cmd.Stdin = strings.NewReader(word)
-
-	var out bytes.Buffer
-	cmd.Stdout = &out
-
-	if err := cmd.Run(); err != nil {
-		// If spell checker fails, assume word is correct
-		return true
-	}
-
-	// Both aspell and ispell pipe output format:
-	// First line is version info starting with @
-	// Second line: "*" for correct, "&" or "#" for incorrect
-	lines := strings.Split(out.String(), "\n")
-	if len(lines) < 2 {
-		return true
-	}
-
-	// Check the result line (skip version line)
-	for _, line := range lines[1:] {
-		if line == "" {
-			continue
-		}
-		// "*" means correctly spelled
-		if strings.HasPrefix(line, "*") {
-			return true
-		}
-		// "&" or "#" means misspelled
-		if strings.HasPrefix(line, "&") || strings.HasPrefix(line, "#") {
-			return false
-		}
-	}
-
-	return true
-}
-
-// isAlphabetic checks if a word contains only letters (and possibly apostrophes/hyphens)
-func isAlphabetic(word string) bool {
-	hasLetter := false
-	for _, r := range word {
-		if unicode.IsLetter(r) {
-			hasLetter = true
-		} else if r != '\'' && r != '-' {
-			return false
-		}
-	}
-	return hasLetter
 }
 
 // Word represents a word in the input with its position and spelling status.
