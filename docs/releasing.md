@@ -17,5 +17,6 @@ Releasing for real:
 ```
 git tag v<version>
 git push --tags
-goreleaser release --clean
 ```
+
+Goreleaser will be run automatically as a github action and will create the release and
