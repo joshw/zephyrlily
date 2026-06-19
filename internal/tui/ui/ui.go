@@ -1146,7 +1146,7 @@ func (m Model) renderInputArea() string {
 	promptText := m.inputPromptText()
 	promptRendered := ""
 	if promptText != "" {
-		promptRendered = promptStyle.Render(promptText) + " "
+		promptRendered = promptStyle.Render(promptText)
 	}
 
 	// Build a per-byte misspelled lookup for O(1) access in the render loop.
