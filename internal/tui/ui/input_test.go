@@ -191,7 +191,7 @@ func TestPasteModeWithEnterKey(t *testing.T) {
 					}
 				} else {
 					// Simulate regular runes
-					for _, r := range []rune(action) {
+					for _, r := range action {
 						if r == ' ' {
 							if m.pasteEatFlag {
 								continue
