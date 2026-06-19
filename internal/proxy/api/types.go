@@ -14,12 +14,12 @@ type AuthResponse struct {
 
 // StateResponse is returned by GET /state.
 type StateResponse struct {
-	Whoami      string       `json:"whoami"`
-	Version     string       `json:"version"`
-	Server      string       `json:"server"`
-	Entities    []EntityJSON `json:"entities"`
-	LastSeenID  int64        `json:"last_seen_id"`
-	EventBufSize int         `json:"event_buf_size"`
+	Whoami       string       `json:"whoami"`
+	Version      string       `json:"version"`
+	Server       string       `json:"server"`
+	Entities     []EntityJSON `json:"entities"`
+	LastSeenID   int64        `json:"last_seen_id"`
+	EventBufSize int          `json:"event_buf_size"`
 }
 
 // EventsResponse is returned by GET /events.

@@ -207,20 +207,20 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 	passwordField.SetHeight(1)
 
 	return Model{
-		client:        c,
-		output:        output,
-		input:         ti,
-		keys:          NewKeyMap(),
-		spellChecker:  NewSpellChecker(),
-		logChan:       logChan,
-		historyPos:    -1,
-		searchIdx:     -1,
+		client:         c,
+		output:         output,
+		input:          ti,
+		keys:           NewKeyMap(),
+		spellChecker:   NewSpellChecker(),
+		logChan:        logChan,
+		historyPos:     -1,
+		searchIdx:      -1,
 		autoPageAnchor: -1,
-		scrollAnchor:  -1,
-		authMode:      true,
-		authField:     0,
-		usernameInput: usernameField,
-		passwordInput: passwordField,
+		scrollAnchor:   -1,
+		authMode:       true,
+		authField:      0,
+		usernameInput:  usernameField,
+		passwordInput:  passwordField,
 	}
 }
 

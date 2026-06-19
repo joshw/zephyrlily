@@ -15,11 +15,11 @@ func TestParseDestination(t *testing.T) {
 		{"alice, bob: hey", "alice, bob"},
 		{"  cafe ; trimmed  ", "cafe"},
 		{"no separator here", ""},
-		{"/who", ""},        // command prefix
-		{"$review", ""},     // command prefix
-		{"?help", ""},       // command prefix
-		{"%options", ""},    // command prefix
-		{"#123", ""},        // command prefix
+		{"/who", ""},         // command prefix
+		{"$review", ""},      // command prefix
+		{"?help", ""},        // command prefix
+		{"%options", ""},     // command prefix
+		{"#123", ""},         // command prefix
 		{";leading sep", ""}, // idx <= 0
 		{"", ""},
 	}
@@ -33,8 +33,8 @@ func TestParseDestination(t *testing.T) {
 func TestNameFromEntities(t *testing.T) {
 	entities := map[string]interface{}{
 		"#1": map[string]interface{}{"name": "Alice"},
-		"#2": map[string]interface{}{"name": ""},        // empty name → fall back
-		"#3": map[string]interface{}{"other": "field"},  // no name key → fall back
+		"#2": map[string]interface{}{"name": ""},       // empty name → fall back
+		"#3": map[string]interface{}{"other": "field"}, // no name key → fall back
 	}
 
 	assert.Equal(t, "Alice", nameFromEntities(entities, "#1"))
