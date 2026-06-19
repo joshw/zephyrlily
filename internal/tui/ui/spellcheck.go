@@ -1,3 +1,12 @@
+// Package ui implements the terminal user interface for ZephyrLily.
+// The contents of this file are subject to the Mozilla Public License
+// Version 1.1 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// http://www.mozilla.org/MPL/
+//
+// This file includes the Hunspell English dictionary (en_US), which is
+// licensed under GPL 2.0 / LGPL 2.1 / MPL 1.1. This file is distributed
+// under the terms of the Mozilla Public License, Version 1.1.
 package ui
 
 import (
