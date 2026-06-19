@@ -56,7 +56,6 @@ func NewSpellChecker() *SpellChecker {
 	// Create checker
 	checker := gospell.NewChecker(gs)
 
-	log.Println("Spell checking enabled (using gospell with Hunspell dictionary)")
 	return &SpellChecker{
 		enabled: true,
 		checker: checker,
