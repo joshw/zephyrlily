@@ -452,6 +452,9 @@ func (m Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchBuf = m.searchBuf[:len(m.searchBuf)-1]
 			m = m.searchRefresh()
 		}
+	case " ":
+		m.searchBuf += " "
+		m = m.searchRefresh()
 	default:
 		if msg.Type == tea.KeyRunes {
 			m.searchBuf += string(msg.Runes)
@@ -483,22 +486,49 @@ func (m Model) searchRefresh() Model {
 		return m
 	}
 
-	startIdx := len(m.history) - 1
-	if m.searchIdx >= 0 {
-		startIdx = m.searchIdx
-	}
+	searchLower := strings.ToLower(m.searchBuf)
 
-	for i := startIdx; i >= 0 && i < len(m.history); {
-		if strings.Contains(strings.ToLower(m.history[i]), strings.ToLower(m.searchBuf)) {
-			m.searchIdx = i
-			m.inputValue = m.history[i]
-			m.inputCursor = len(m.inputValue)
+	// Search backward: check current line first, then history backward
+	if m.searchBack {
+		// Check current line first
+		if strings.Contains(strings.ToLower(m.searchSave), searchLower) {
+			m.inputValue = m.searchSave
+			pos := findSubstringPos(m.searchSave, searchLower)
+			m.inputCursor = pos
+			m.searchIdx = -1 // Mark as using current line, not history
 			return m
 		}
-		if m.searchBack {
-			i--
-		} else {
-			i++
+
+		// Then search history backward
+		for i := len(m.history) - 1; i >= 0; i-- {
+			if strings.Contains(strings.ToLower(m.history[i]), searchLower) {
+				m.searchIdx = i
+				m.inputValue = m.history[i]
+				pos := findSubstringPos(m.history[i], searchLower)
+				m.inputCursor = pos
+				return m
+			}
+		}
+	} else {
+		// Search forward: check current line first, then history forward
+		// Check current line first
+		if strings.Contains(strings.ToLower(m.searchSave), searchLower) {
+			m.inputValue = m.searchSave
+			pos := findSubstringPos(m.searchSave, searchLower)
+			m.inputCursor = pos
+			m.searchIdx = -1 // Mark as using current line, not history
+			return m
+		}
+
+		// Then search history forward
+		for i := 0; i < len(m.history); i++ {
+			if strings.Contains(strings.ToLower(m.history[i]), searchLower) {
+				m.searchIdx = i
+				m.inputValue = m.history[i]
+				pos := findSubstringPos(m.history[i], searchLower)
+				m.inputCursor = pos
+				return m
+			}
 		}
 	}
 
@@ -509,21 +539,72 @@ func (m Model) searchRefresh() Model {
 
 func (m Model) searchStep(direction int) Model {
 	if m.searchIdx < 0 {
-		return m.searchRefresh()
+		// Currently on saved line; search from history
+		searchLower := strings.ToLower(m.searchBuf)
+
+		if m.searchBack {
+			// Search history backward
+			for i := len(m.history) - 1; i >= 0; i-- {
+				if strings.Contains(strings.ToLower(m.history[i]), searchLower) {
+					m.searchIdx = i
+					m.inputValue = m.history[i]
+					pos := findSubstringPos(m.history[i], searchLower)
+					m.inputCursor = pos
+					return m
+				}
+			}
+		} else {
+			// Search history forward
+			for i := 0; i < len(m.history); i++ {
+				if strings.Contains(strings.ToLower(m.history[i]), searchLower) {
+					m.searchIdx = i
+					m.inputValue = m.history[i]
+					pos := findSubstringPos(m.history[i], searchLower)
+					m.inputCursor = pos
+					return m
+				}
+			}
+		}
+		return m
 	}
 
+	// Currently on a history item; move to next/previous
+	searchLower := strings.ToLower(m.searchBuf)
 	start := m.searchIdx + direction
-	for i := start; i >= 0 && i < len(m.history); {
-		if strings.Contains(strings.ToLower(m.history[i]), strings.ToLower(m.searchBuf)) {
-			m.searchIdx = i
-			m.inputValue = m.history[i]
-			m.inputCursor = len(m.inputValue)
-			return m
+
+	if m.searchBack {
+		for i := start; i >= 0; i-- {
+			if strings.Contains(strings.ToLower(m.history[i]), searchLower) {
+				m.searchIdx = i
+				m.inputValue = m.history[i]
+				pos := findSubstringPos(m.history[i], searchLower)
+				m.inputCursor = pos
+				return m
+			}
 		}
-		i += direction
+	} else {
+		for i := start; i < len(m.history); i++ {
+			if strings.Contains(strings.ToLower(m.history[i]), searchLower) {
+				m.searchIdx = i
+				m.inputValue = m.history[i]
+				pos := findSubstringPos(m.history[i], searchLower)
+				m.inputCursor = pos
+				return m
+			}
+		}
 	}
 
 	return m
+}
+
+// findSubstringPos finds the byte position of the search string in text (case-insensitive)
+func findSubstringPos(text, searchLower string) int {
+	textLower := strings.ToLower(text)
+	idx := strings.Index(textLower, searchLower)
+	if idx < 0 {
+		return 0
+	}
+	return idx
 }
 
 // History helpers
