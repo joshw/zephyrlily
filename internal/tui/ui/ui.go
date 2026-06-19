@@ -213,7 +213,7 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		searchIdx:      -1,
 		autoPageAnchor: -1,
 		scrollAnchor:   -1,
-		authMode:       true,
+		authMode:       !c.HasToken(),
 		authField:      0,
 		usernameInput:  usernameField,
 		passwordInput:  passwordField,

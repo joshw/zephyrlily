@@ -51,6 +51,11 @@ func New(proxyAddr string) *Client {
 	}
 }
 
+// HasToken returns true if the client has been authenticated and has a token.
+func (c *Client) HasToken() bool {
+	return c.token != ""
+}
+
 // Auth authenticates against the proxy and stores the session token.
 func (c *Client) Auth(username, password string) error {
 	body, _ := json.Marshal(api.AuthRequest{Username: username, Password: password})
