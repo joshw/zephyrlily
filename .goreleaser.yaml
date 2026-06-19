@@ -7,7 +7,7 @@ version: 2
 
 before:
   hooks:
-    - cmd: sh -c 'cd web && npm ci && npm run build'
+    - shell: sh -c 'cd web && npm ci && npm run build'
 
 builds:
   - binary: zlily
