@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/joshw/zephyrlily/internal/tui/ascify"
 )
 
 // syncTextarea updates the textarea to match inputValue and inputCursor.
@@ -765,8 +766,10 @@ func (m Model) downcaseWord() Model {
 	return m
 }
 
-// insertString inserts s at the cursor position.
+// insertString inserts s at the cursor position, converting Unicode to ASCII.
 func (m Model) insertString(s string) Model {
+	// Convert Unicode characters to ASCII approximations
+	s = ascify.String(s)
 	m.inputValue = m.inputValue[:m.inputCursor] + s + m.inputValue[m.inputCursor:]
 	m.inputCursor += len(s)
 	return m
