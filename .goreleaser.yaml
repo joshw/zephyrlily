@@ -40,6 +40,32 @@ archives:
       - goos: windows
         formats: [zip]
 
+homebrew_casks:
+  - name: zlily
+    repository:
+      owner: joshw
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/joshw/zephyrlily"
+    description: "Terminal UI client for the Lily chat server"
+    # Unsigned binaries are quarantined by macOS Gatekeeper; strip the xattr on
+    # install so `zlily` runs without a manual right-click "Open" override.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/zlily"]
+          end
+
+scoops:
+  - repository:
+      owner: joshw
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/joshw/zephyrlily"
+    description: "Terminal UI client for the Lily chat server"
+    license: MPL-1.1
+
 changelog:
   sort: asc
   filters:

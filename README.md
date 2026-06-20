@@ -25,6 +25,34 @@ The primary client is a feature-rich terminal interface built with [Bubble Tea](
 
 An experimental browser-based client is available in the `web/` directory. Built with Svelte and Vite, it provides a Discord-like interface for basic chat and presence tracking. See [Web UI Documentation](docs/webui.md) for details on building and running it.
 
+## Install
+
+Pre-built binaries for macOS, Linux, and Windows are published on the
+[releases page](https://github.com/joshw/zephyrlily/releases). Pick whichever
+method you prefer:
+
+**curl (macOS / Linux)** — downloads the correct binary for your OS/arch into
+`~/.local/bin` (override with `-b <dir>`), verifying checksums:
+
+```bash
+curl -sSL https://github.com/joshw/zephyrlily/releases/latest/download/install.sh | sh
+```
+
+**Homebrew (macOS / Linux):**
+
+```bash
+brew install joshw/tap/zlily
+```
+
+**Scoop (Windows):**
+
+```powershell
+scoop bucket add joshw https://github.com/joshw/scoop-bucket
+scoop install zlily
+```
+
+To build from source instead, see [Getting Started](#getting-started) below.
+
 ## Getting Started
 
 ### Prerequisites

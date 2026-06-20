@@ -36,3 +36,17 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+
+      # Generate the curl-pipe installer from .config/binstaller.yml, pinning the
+      # checksums GoReleaser just published, and attach it to the release. Runs
+      # after GoReleaser so the release (binaries + checksums.txt) already exists.
+      - name: Build and upload install.sh
+        run: |
+          go install github.com/binary-install/binstaller/cmd/binst@latest
+          binst embed-checksums --config .config/binstaller.yml \
+            --version "${GITHUB_REF_NAME}" --mode download
+          binst gen --config .config/binstaller.yml -o install.sh
+          gh release upload "${GITHUB_REF_NAME}" install.sh --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
