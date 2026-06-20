@@ -85,7 +85,8 @@ type Model struct {
 	lastSeenID int64 // highest WSServerMsg.ID whose output has been visible; never decreases
 
 	// Auto-paging: after user sends input, auto-scroll up to one page of new output
-	autoPageAnchor int // line count when user sent command; -1 = disabled
+	autoPageAnchor int  // line count when user sent command; -1 = disabled
+	pagerEnabled   bool // false = never pause; scroll straight to bottom (%page off)
 
 	// scrollAnchor is the output-item index to keep at the top of the viewport
 	// across a width-changing resize (which rewraps and invalidates raw line
@@ -212,6 +213,7 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		historyPos:     -1,
 		searchIdx:      -1,
 		autoPageAnchor: -1,
+		pagerEnabled:   true,
 		scrollAnchor:   -1,
 		authMode:       !c.HasToken(),
 		authField:      0,
@@ -254,6 +256,24 @@ type editorFetchResultMsg struct {
 type editorSaveResultMsg struct {
 	meta editMeta
 	err  error
+}
+
+// startupMemoName is the memo fetched from "me" after login whose lines are
+// replayed as commands.
+const startupMemoName = "zlilyStartup"
+
+type startupMemoMsg struct {
+	lines []string
+	err   error
+}
+
+// fetchStartupMemoCmd fetches the zlilyStartup memo so its commands can be
+// replayed once the connection is established.
+func fetchStartupMemoCmd(c *client.Client) tea.Cmd {
+	return func() tea.Msg {
+		lines, err := c.FetchContent("memo", "me", startupMemoName)
+		return startupMemoMsg{lines: lines, err: err}
+	}
 }
 
 // fetchInitialStateCmd fetches state (blocking until the SLCP sync is done).
@@ -526,7 +546,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.needsPositionRestore = true
 		}
 		m = m.syncViewportContent()
-		return m, reportSeenNow(m.client, m.lastSeenID)
+		return m, tea.Batch(
+			reportSeenNow(m.client, m.lastSeenID),
+			fetchStartupMemoCmd(m.client),
+		)
+
+	case startupMemoMsg:
+		if msg.err != nil {
+			// No zlilyStartup memo (or fetch failed) — nothing to replay.
+			slog.Debug("startup memo: " + msg.err.Error())
+			return m, nil
+		}
+		// Collect the executable (non-comment, non-blank) lines first so we only
+		// announce the memo when it actually has commands to run.
+		var toRun []string
+		for _, raw := range msg.lines {
+			line := strings.TrimSpace(raw)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue // skip blank lines and comments
+			}
+			toRun = append(toRun, line)
+		}
+		if len(toRun) == 0 {
+			return m, nil
+		}
+		m.output = append(m.output, OutputItem{Type: "text",
+			Data: "(found " + startupMemoName + " memo, running its commands)"})
+		var cmds []tea.Cmd
+		for _, line := range toRun {
+			m = m.addHistoryEntry(line)
+			var cmd tea.Cmd
+			m, cmd = m.submitLine(line)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		m = m.syncViewportContent()
+		return m, tea.Batch(cmds...)
 
 	case editorFetchResultMsg:
 		content := strings.Join(msg.lines, "\n")
@@ -711,8 +767,8 @@ func (m Model) syncViewportContent() Model {
 	// Auto-paging: after user sends input, scroll to show up to one page of new output
 	if m.autoPageAnchor >= 0 {
 		newLines := totalLines - m.autoPageAnchor
-		if newLines <= m.viewport.Height {
-			// New output fits in one page - show it all
+		if !m.pagerEnabled || newLines <= m.viewport.Height {
+			// Pager off, or new output fits in one page - show it all
 			m.viewport.GotoBottom()
 		} else {
 			// More than one page of new output - show one page past anchor, then stop

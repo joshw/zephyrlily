@@ -141,6 +141,12 @@ Terminal UI platform support:
 
 - **Windows cmd.exe** — Limited key binding support due to terminal emulator limitations; Windows Terminal or similar recommended
 - **macOS/Linux** — Full key binding support in standard terminals
+- **tmux** — tmux doesn't forward `COLORTERM` into the session and reports a conservative `TERM`, which can make colors degrade. `zlily` automatically enables truecolor when it detects it's running inside tmux (unless you've set `COLORTERM` yourself). For the most correct behavior across all programs, you can also add to your `~/.tmux.conf`:
+
+  ```
+  set -g default-terminal "tmux-256color"
+  set -ga terminal-overrides ",*:Tc"
+  ```
 
 ## Project Status
 

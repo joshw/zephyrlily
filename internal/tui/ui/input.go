@@ -350,6 +350,13 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 		m = m.addHistoryEntry(line)
 	}
 
+	return m.submitLine(line)
+}
+
+// submitLine echoes, dispatches, and sends a single input line exactly as if the
+// user had typed it and pressed Enter. It is the shared core of handleSubmit and
+// is also used to replay commands from the zlilyStartup memo.
+func (m Model) submitLine(line string) (Model, tea.Cmd) {
 	// Set auto-page anchor to current line count so we auto-scroll response
 	m.autoPageAnchor = m.viewport.TotalLineCount()
 
@@ -390,6 +397,30 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 			state = "on"
 		}
 		m.output = append(m.output, OutputItem{Type: "command", Data: []string{"Key debug logging: " + state}})
+		m = m.syncViewportContent()
+		return m, nil
+	}
+
+	// Handle %page toggle for the viewport pager
+	if fields := strings.Fields(line); len(fields) > 0 && fields[0] == "%page" {
+		var msg string
+		switch {
+		case len(fields) == 2 && strings.EqualFold(fields[1], "off"):
+			m.pagerEnabled = false
+			msg = "Viewport pager: off"
+		case len(fields) == 2 && strings.EqualFold(fields[1], "on"):
+			m.pagerEnabled = true
+			msg = "Viewport pager: on"
+		case len(fields) == 1:
+			state := "on"
+			if !m.pagerEnabled {
+				state = "off"
+			}
+			msg = "Viewport pager: " + state
+		default:
+			msg = "Usage: %page on|off"
+		}
+		m.output = append(m.output, OutputItem{Type: "command", Data: []string{msg}})
 		m = m.syncViewportContent()
 		return m, nil
 	}

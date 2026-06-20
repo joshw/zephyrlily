@@ -55,6 +55,18 @@ func main() {
 
 // ── subcommands ───────────────────────────────────────────────────────────────
 
+// ensureTmuxColor works around tmux not forwarding COLORTERM and reporting a
+// conservative TERM, which makes termenv downgrade the color profile so color
+// renders poorly. tmux passes truecolor escapes through and downsamples to the
+// host terminal's real capability, so forcing it here is safe. We only set it
+// when unset, never overriding a value the user already exported.
+// See https://github.com/charmbracelet/bubbletea/issues/825
+func ensureTmuxColor() {
+	if os.Getenv("TMUX") != "" && os.Getenv("COLORTERM") == "" {
+		os.Setenv("COLORTERM", "truecolor")
+	}
+}
+
 func isCmdExe() bool {
 	if runtime.GOOS != "windows" {
 		return false
@@ -189,6 +201,8 @@ func cmdCombined(args []string) {
 // The TUI handles authentication interactively via modal dialog.
 // startupMsgs are displayed below the logo on first render.
 func runTUI(proxyAddr string, startupMsgs ...string) {
+	ensureTmuxColor()
+
 	c := client.New(proxyAddr)
 	defer c.Close()
 
