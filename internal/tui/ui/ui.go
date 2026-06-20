@@ -1094,13 +1094,6 @@ func (m Model) formatStatusBar() string {
 		right = server + " | " + userState + " | " + timeStr
 	}
 
-	idStr := fmt.Sprintf("#%d", m.lastSeenID)
-	if right == "" {
-		right = idStr
-	} else {
-		right += " | " + idStr
-	}
-
 	// MORE indicator centered when not at bottom
 	center := ""
 	if !m.viewport.AtBottom() && m.viewport.TotalLineCount() > m.viewport.Height {

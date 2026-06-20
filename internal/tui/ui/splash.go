@@ -5,12 +5,11 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/joshw/zephyrlily/internal/version"
 )
 
 //go:embed logo.txt
 var logoArt string
-
-const version = "0.2.0"
 
 // formatLogo creates the logo display with version banner as text lines.
 func formatLogo() []string {
@@ -28,7 +27,7 @@ func formatLogo() []string {
 
 	banner := []string{
 		"",
-		bannerStyle.Render("ZephyrLily") + " v" + version,
+		bannerStyle.Render("ZephyrLily") + " v" + version.Version,
 		"Lily Chat Client (TUI)",
 		"",
 	}
