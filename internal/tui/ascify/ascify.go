@@ -3,6 +3,14 @@
 // to their nearest ASCII representations.
 package ascify
 
+import (
+	"fmt"
+	"strings"
+	"unicode"
+
+	"golang.org/x/text/unicode/runenames"
+)
+
 // Map stores both strip (accents removed) and no-strip (accents preserved) versions
 type Map struct {
 	Strip   string
@@ -117,6 +125,126 @@ var CharMap = map[rune]interface{}{
 	'\u00FC': &Map{"u", "u:"}, // small u umlaut ü
 	'\u00FD': &Map{"y", "y'"}, // small y acute ý
 	'\u00FF': &Map{"y", "y:"}, // small y umlaut ÿ
+
+	// Emoji smileys → noseless ASCII emoticons
+	// Smiling / happy
+	'\U0001F642': ":)",   // slightly smiling
+	'\U0001F60A': ":)",   // smiling, smiling eyes
+	'☺':          ":)",   // white smiling face
+	'\U0001F60C': ":)",   // relieved
+	'\U0001F600': ":D",   // grinning
+	'\U0001F603': ":D",   // grinning big eyes
+	'\U0001F604': ":D",   // grinning smiling eyes
+	'\U0001F601': ":D",   // beaming
+	'\U0001F606': "XD",   // grinning squinting
+	'\U0001F605': ":D",   // grinning sweat
+	'\U0001F602': ":'D",  // tears of joy
+	'\U0001F923': ":'D",  // rolling on the floor
+	'\U0001F607': "O:)",  // halo
+	'\U0001F917': ">:D<", // hugging
+	'\U0001F643': "(:",   // upside-down
+
+	// Wink / playful / tongue
+	'\U0001F609': ";)", // winking
+	'\U0001F61C': ";P", // winking tongue
+	'\U0001F61B': ":P", // tongue out
+	'\U0001F61D': "XP", // squinting tongue
+	'\U0001F60B': ":P", // savoring food
+	'\U0001F92A': "%)", // zany
+	'\U0001F60F': ":>", // smirking
+
+	// Cool / nerd / love / kiss
+	'\U0001F60E': "B)", // sunglasses
+	'\U0001F913': "8)", // nerd
+	'\U0001F9D0': ":?", // monocle
+	'\U0001F60D': "<3", // heart eyes
+	'\U0001F970': "<3", // smiling with hearts
+	'\U0001F618': ":*", // blowing a kiss
+	'\U0001F617': ":*", // kissing
+	'\U0001F619': ":*", // kissing smiling eyes
+	'\U0001F61A': ":*", // kissing closed eyes
+
+	// Neutral / thinking / skeptical
+	'\U0001F610': ":|",  // neutral
+	'\U0001F611': ":|",  // expressionless
+	'\U0001F636': ":x",  // no mouth
+	'\U0001F910': ":x",  // zipper mouth
+	'\U0001F914': ":?",  // thinking
+	'\U0001F644': "9_9", // rolling eyes
+	'\U0001F612': ":/",  // unamused
+	'\U0001F615': ":/",  // confused
+
+	// Sleepy / sick / woozy
+	'\U0001F634': "|)", // sleeping
+	'\U0001F62A': "|)", // sleepy
+	'\U0001F974': ";}", // woozy
+	'\U0001F635': "%)", // dizzy
+	'\U0001F922': ":&", // nauseated
+	'\U0001F92E': ":&", // vomiting
+	'\U0001F912': ":(", // thermometer
+	'\U0001F915': ":(", // head bandage
+	'\U0001F637': ":x", // medical mask
+
+	// Sad / crying / worried
+	'\U0001F641': ":(",  // slightly frowning
+	'☹':          ":(",  // white frowning face
+	'\U0001F61E': ":(",  // disappointed
+	'\U0001F614': ":(",  // pensive
+	'\U0001F61F': ":(",  // worried
+	'\U0001F97A': ":(",  // pleading
+	'\U0001F622': ":'(", // crying
+	'\U0001F62D': ":'(", // loudly crying
+	'\U0001F625': ":'(", // sad but relieved
+	'\U0001F613': ":'(", // downcast sweat
+	'\U0001F623': ">_<", // persevering
+	'\U0001F616': ">_<", // confounded
+
+	// Fear / shock / surprise
+	'\U0001F62E': ":O", // open mouth
+	'\U0001F62F': ":O", // hushed
+	'\U0001F632': ":O", // astonished
+	'\U0001F92F': ":O", // mind blown
+	'\U0001F633': ":O", // flushed
+	'\U0001F628': "D:", // fearful
+	'\U0001F627': "D:", // anguished
+	'\U0001F626': "D:", // frowning open mouth
+	'\U0001F629': "D:", // weary
+	'\U0001F62B': "D:", // tired
+	'\U0001F631': "D:", // screaming in fear
+
+	// Angry / devil
+	'\U0001F620': ">:(", // angry
+	'\U0001F621': ">:(", // pouting
+	'\U0001F92C': ">:(", // cursing
+	'\U0001F624': ">:(", // steam from nose
+	'\U0001F608': ">:)", // smiling with horns
+	'\U0001F47F': ">:(", // imp / angry with horns
+
+	// Grimace
+	'\U0001F62C': ":E", // grimacing
+
+	// Cat faces
+	'\U0001F63A': ":3",  // smiling cat
+	'\U0001F638': ":3",  // grinning cat
+	'\U0001F639': ":'3", // cat tears of joy
+	'\U0001F63B': ":3",  // heart-eyes cat
+	'\U0001F63C': ":3",  // wry cat
+	'\U0001F63D': ":3",  // kissing cat
+
+	// Hearts / extras
+	'❤':          "<3",   // red heart
+	'\U0001F495': "<3",   // two hearts
+	'\U0001F496': "<3",   // sparkling heart
+	'\U0001F497': "<3",   // growing heart
+	'\U0001F9E1': "<3",   // orange heart
+	'\U0001F49B': "<3",   // yellow heart
+	'\U0001F49A': "<3",   // green heart
+	'\U0001F499': "<3",   // blue heart
+	'\U0001F49C': "<3",   // purple heart
+	'\U0001F494': "</3",  // broken heart
+	'\U0001F44D': "(y)",  // thumbs up
+	'\U0001F44E': "(n)",  // thumbs down
+	'\U0001F973': "\\o/", // partying face
 }
 
 // Config for ascify behavior
@@ -153,18 +281,27 @@ func Ascify(r rune) (string, bool) {
 	return "", false
 }
 
-// String converts a full string to ASCII, replacing unmappable characters
-// with placeholders or stripping them based on StrictMode.
+// String converts a full string to ASCII. Mapped characters use their ASCII
+// equivalent; anything else falls back so the result is always pure ASCII:
+// invisible formatting (zero-width joiners, combining marks, variation
+// selectors) is dropped, and any remaining non-ASCII character is rendered as
+// its Unicode name in brackets (e.g. "[SNOWMAN]"), or "[U+XXXX]" if unnamed.
 func String(s string) string {
-	var result []rune
+	var b strings.Builder
 	for _, r := range s {
 		if ascii, ok := Ascify(r); ok {
-			result = append(result, []rune(ascii)...)
+			b.WriteString(ascii)
+			continue
+		}
+		// Drop invisible joiners / combining marks / variation selectors.
+		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Cf, r) {
+			continue
+		}
+		if name := runenames.Name(r); name != "" {
+			b.WriteString("[" + name + "]")
 		} else {
-			// Character can't be converted; for now, keep it as-is and let
-			// the server reject it if it's truly unsupported
-			result = append(result, r)
+			b.WriteString(fmt.Sprintf("[U+%04X]", r))
 		}
 	}
-	return string(result)
+	return b.String()
 }
