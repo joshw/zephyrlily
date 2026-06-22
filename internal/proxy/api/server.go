@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -205,6 +206,10 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 
 	conn := lily.NewConn(s.cfg.LilyAddr, req.Username, req.Password, s.cfg.LilyTLS, s.cfg.LilyTLSInsecure)
 	if err := conn.Connect(); err != nil {
+		if errors.Is(err, lily.ErrAuthFailed) {
+			http.Error(w, lily.ErrAuthFailed.Error(), http.StatusUnauthorized)
+			return
+		}
 		http.Error(w, "lily connect failed: "+err.Error(), http.StatusUnauthorized)
 		return
 	}

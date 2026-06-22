@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -16,6 +17,15 @@ import (
 
 	"github.com/joshw/zephyrlily/internal/slcp"
 )
+
+// ErrAuthFailed indicates the Lily server rejected the supplied credentials
+// (it re-prompted for login instead of confirming with %options).
+var ErrAuthFailed = errors.New("invalid username or password")
+
+// handshakeTimeout bounds how long the login/sync sequence may take before we
+// give up. It guards against a server that accepts the connection but then goes
+// silent (sending neither %options nor a re-prompt).
+const handshakeTimeout = 30 * time.Second
 
 // ConnPhase tracks where in the login/handshake sequence we are.
 type ConnPhase int
@@ -46,6 +56,12 @@ type Conn struct {
 	// on this channel before reading entity data.
 	syncComplete chan struct{}
 
+	// loginResult reports the outcome of the login from readLoop back to
+	// Connect: nil once %connected confirms a successful login, or an error
+	// (e.g. ErrAuthFailed) if the server rejected the credentials. It is
+	// buffered and written at most once.
+	loginResult chan error
+
 	// Events is the channel on which parsed messages are delivered to the
 	// proxy layer. The proxy reads from this and fans out to WebSocket clients.
 	Events chan *slcp.Message
@@ -69,6 +85,7 @@ func NewConn(addr, username, password string, tlsEnabled, tlsInsecure bool) *Con
 		ctx:          ctx,
 		cancel:       cancel,
 		syncComplete: make(chan struct{}),
+		loginResult:  make(chan error, 1),
 	}
 }
 
@@ -106,9 +123,26 @@ func (c *Conn) Connect() error {
 		return err
 	}
 
-	slog.Debug("lily: login confirmed, starting readLoop")
+	// runHandshake only gets us through options negotiation (%options). Whether
+	// the credentials were actually accepted is not known until the server
+	// either starts the sync block leading to %connected (success) or
+	// re-prompts for login (failure). readLoop reads those lines and reports the
+	// outcome on loginResult.
+	slog.Debug("lily: options negotiated, starting readLoop")
 	go c.readLoop()
-	return nil
+
+	select {
+	case err := <-c.loginResult:
+		if err != nil {
+			c.Close()
+			return err
+		}
+		slog.Debug("lily: login confirmed")
+		return nil
+	case <-time.After(handshakeTimeout):
+		c.Close()
+		return fmt.Errorf("login timed out")
+	}
 }
 
 // Close shuts down the connection.
@@ -138,7 +172,11 @@ func (c *Conn) Send(line string) error {
 // runHandshake drives the login/options/sync sequence synchronously.
 // Returns once %connected is received.
 func (c *Conn) runHandshake() error {
+	deadline := time.Now().Add(handshakeTimeout)
 	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("login timed out")
+		}
 		line, err := c.readLine()
 		if err != nil {
 			return fmt.Errorf("handshake read: %w", err)
@@ -182,20 +220,27 @@ func (c *Conn) runHandshake() error {
 				}
 
 			case slcp.MsgOptions:
-				// %options confirms the server accepted our credentials.
-				// Return immediately so readLoop can handle everything that
-				// follows (raw text, interactive prompts, entity data,
-				// %connected) and forward it to the TUI for the user to see
-				// and respond to.
+				// %options is only the server's reply to our "#$# options"
+				// negotiation. It is sent regardless of whether the credentials
+				// were valid, so it does NOT confirm login. Validate the advertised
+				// options and hand off to readLoop, which watches for the real
+				// outcome: %connected (success) or a login re-prompt (failure).
 				if err := c.validateOptions(msg.Text); err != nil {
 					return err
 				}
-				slog.Debug("lily: login confirmed")
+				slog.Debug("lily: options negotiated")
 				c.phase = PhaseReady
 				return nil
 
+			case slcp.MsgLoginPrompt, slcp.MsgPassPrompt:
+				// The server re-prompted before even acknowledging our options,
+				// which means the credentials were rejected outright. (Normally
+				// %options arrives first; this is the defensive early-reject path.)
+				slog.Debug("lily: credentials rejected before options")
+				return ErrAuthFailed
+
 			default:
-				// Unexpected message before %options (rare); skip it.
+				// Other pre-options lines (blank lines, banner text); skip.
 				slog.Debug("lily: pre-options message", "type", msg.Type, "text", msg.Text)
 			}
 		}
@@ -235,6 +280,22 @@ func (c *Conn) validateOptions(optionsText string) error {
 func (c *Conn) readLoop() {
 	defer close(c.Events)
 
+	// loginSignalled guards loginResult so we report the login outcome to
+	// Connect exactly once. Until %connected confirms success, a login/password
+	// re-prompt (or the loop exiting) means the credentials were rejected.
+	loginSignalled := false
+	signalLogin := func(err error) {
+		if !loginSignalled {
+			loginSignalled = true
+			c.loginResult <- err
+		}
+	}
+	defer func() {
+		// If we exit before login was confirmed, the connection dropped during
+		// login; unblock Connect with an error rather than letting it wait.
+		signalLogin(fmt.Errorf("connection closed during login"))
+	}()
+
 	// inSync is true while we are processing the initial %SLCP-SYNC block.
 	// Messages are applied with fromSync=true so disc membership is seeded.
 	inSync := true
@@ -263,6 +324,25 @@ func (c *Conn) readLoop() {
 			continue
 		}
 
+		// Before login is confirmed, decide the outcome:
+		//   - "*** Connected ***" is printed as soon as the credentials are
+		//     accepted — well before the SLCP sync block and %connected — so we
+		//     treat it as the success signal and let Connect return promptly.
+		//   - A fresh login/password prompt means the server rejected the
+		//     credentials ("Login in the wrong."); report the failure and stop so
+		//     Connect surfaces ErrAuthFailed and the user can retry.
+		if !loginSignalled {
+			switch {
+			case msg.Type == slcp.MsgRaw && strings.Contains(msg.Text, "*** Connected ***"):
+				slog.Debug("lily: login confirmed (*** Connected ***)")
+				signalLogin(nil)
+			case msg.Type == slcp.MsgLoginPrompt || msg.Type == slcp.MsgPassPrompt:
+				slog.Debug("lily: credentials rejected, server re-prompted")
+				signalLogin(ErrAuthFailed)
+				return
+			}
+		}
+
 		// Apply to state (sync mode until %connected so disc membership is set).
 		if inSync {
 			_ = c.applySync(msg)
@@ -272,6 +352,11 @@ func (c *Conn) readLoop() {
 
 		// %connected marks the end of the initial sync.
 		if msg.Type == slcp.MsgConnected {
+			// Fallback login confirmation: normally "*** Connected ***" already
+			// signalled success earlier, but if a server omits that banner,
+			// %connected still confirms it (guarded, so this is a no-op when
+			// already signalled).
+			signalLogin(nil)
 			inSync = false
 			slog.Debug("lily: sync complete")
 			if err := c.Send(fmt.Sprintf("#$# client zlily %s", version.Version)); err != nil {

@@ -36,6 +36,7 @@ type Options struct {
 	Setup          []string            // %USER/%DISC/%GROUP/%DATA lines sent inside the sync block
 	WhereResponse  string              // e.g. "You are a member of cafe, lobby." (seeds disc membership)
 	OmitOptions    []string            // options to drop from the advertised %options line (failure tests)
+	RejectLogin    bool                // re-prompt with "login:" instead of %options, simulating bad credentials
 	CommandReplies map[string][]string // client command line -> reply lines (sent between %begin/%end)
 }
 
@@ -202,7 +203,24 @@ func (s *Server) handshake(r *bufio.Reader) error {
 	}
 
 	s.write("%server version=1.0 name=TestServer")
+
+	// %options is the server's reply to the client's "#$# options" negotiation
+	// and is sent regardless of whether the credentials are valid.
 	s.write("%options " + s.optionsLine())
+
+	if s.opt.RejectLogin {
+		// Simulate rejected credentials: a real Lily server prints an error and
+		// re-prompts for login (the prompt itself is not newline-terminated).
+		s.write("")
+		s.write("Login in the wrong.")
+		s.write("")
+		s.write("login:")
+		return nil
+	}
+
+	// "*** Connected ***" is printed as soon as login succeeds, before the sync
+	// block — the client uses it as the login-success signal.
+	s.write("*** Connected ***")
 
 	s.write("%SLCP-SYNC beginning")
 	s.write("%DATA NAME=whoami VALUE=" + s.opt.Whoami)

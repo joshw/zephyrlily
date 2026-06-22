@@ -1,6 +1,7 @@
 package lily
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -149,6 +150,26 @@ func TestConn_OptionsValidationFailure(t *testing.T) {
 	err := conn.Connect()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not support required options")
+}
+
+func TestConn_LoginRejected(t *testing.T) {
+	opt := lilytest.DefaultWorld()
+	opt.RejectLogin = true
+	fake := lilytest.Start(t, opt)
+
+	conn := NewConn(fake.Addr(), "alice", "wrongpass", false, false)
+	t.Cleanup(conn.Close)
+
+	done := make(chan error, 1)
+	go func() { done <- conn.Connect() }()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrAuthFailed), "expected ErrAuthFailed, got %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Connect() hung on rejected login instead of returning an error")
+	}
 }
 
 func TestConn_CloseClosesEvents(t *testing.T) {
