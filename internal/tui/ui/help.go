@@ -45,6 +45,25 @@ var tuiHelp = map[string][]string{
 		"When off, output scrolls straight to the bottom without pausing.",
 		"Run '%page' with no argument to show the current setting.",
 	},
+	"style": {
+		"Show and change color/style configuration",
+		"",
+		"Usage: %style [list]                table of all styles + whether each is default",
+		"       %style <name>                show one style",
+		"       %style <name> fg <color>     set foreground",
+		"       %style <name> bg <color>     set background",
+		"       %style <name> bold on|off",
+		"       %style <name> underline on|off",
+		"       %style <name> default        restore one style to its default",
+		"       %style <name> none           make one style unstyled but visible",
+		"       %style all default           restore every style to its default",
+		"",
+		"Colors: 0-255, names (red, cyan, brightyellow, ...), or #rrggbb.",
+		"\"default\" restores the built-in value; \"none\" clears styling.",
+		"Changes apply immediately and last for this session only.",
+		"",
+		"Tip: use zlilyStartup memo to make style changes permanent (see %help startup).",
+	},
 	"startup": {
 		"Run commands automatically on connect",
 		"",
@@ -145,6 +164,9 @@ func (m Model) handleLocalCommand(line string) (localOutput []string, handled bo
 		}
 		meta := editMeta{contentType: "memo", target: target, name: name}
 		return nil, true, m.fetchContentCmd(meta)
+
+	case "%style":
+		return handleStyleCommand(args), true, nil
 	}
 
 	return nil, false, nil
