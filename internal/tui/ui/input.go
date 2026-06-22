@@ -338,9 +338,7 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 		if m.prompt != "" {
 			// Empty response to server prompt - will echo below
 		} else {
-			// No prompt - echo blank line and advance pager
-			m.output = append(m.output, OutputItem{Type: "input", Data: ""})
-			m = m.syncViewportContent()
+			// No prompt - just advance the pager (don't echo a blank line)
 			m.viewport.PageDown()
 			m.advanceLastSeenID()
 			m.autoPageAnchor = -1 // clear auto-paging on manual pager advance

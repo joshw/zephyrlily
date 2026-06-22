@@ -760,6 +760,11 @@ func (m Model) syncViewportContent() Model {
 	for _, item := range m.output {
 		lines = append(lines, m.renderOutputItem(item)...)
 	}
+	// Capture follow state before SetContent: adding lines leaves YOffset
+	// unchanged, so AtBottom() would read false afterwards even if we were
+	// following the bottom a moment ago.
+	wasAtBottom := m.viewport.AtBottom()
+	prevLines := m.viewport.TotalLineCount()
 	m.viewport.SetContent(strings.Join(lines, "\n"))
 
 	totalLines := m.viewport.TotalLineCount()
@@ -779,9 +784,20 @@ func (m Model) syncViewportContent() Model {
 			m.viewport.SetYOffset(targetOffset)
 			m.autoPageAnchor = -1 // disable further auto-paging until next user input
 		}
-	} else if m.viewport.AtBottom() || totalLines <= m.viewport.Height {
-		// Normal auto-scroll to bottom if we were already there
-		m.viewport.GotoBottom()
+	} else if wasAtBottom || totalLines <= m.viewport.Height {
+		// We were following the bottom. Keep following for incremental output, but
+		// if a whole page or more arrives at once, show one page from where we were
+		// and pause the pager so the new output isn't scrolled past unseen.
+		newLines := totalLines - prevLines
+		if !m.pagerEnabled || newLines <= m.viewport.Height || m.viewport.Height <= 0 {
+			m.viewport.GotoBottom()
+		} else {
+			targetOffset := prevLines
+			if targetOffset > totalLines-m.viewport.Height {
+				targetOffset = totalLines - m.viewport.Height
+			}
+			m.viewport.SetYOffset(targetOffset)
+		}
 	}
 
 	if m.debugMode {
