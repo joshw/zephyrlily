@@ -337,13 +337,15 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 	if line == "" {
 		if m.prompt != "" {
 			// Empty response to server prompt - will echo below
-		} else {
-			// No prompt - just advance the pager (don't echo a blank line)
+		} else if !m.viewport.AtBottom() {
+			// Behind the latest output - use the blank Enter to advance the pager
+			// instead of sending it.
 			m.viewport.PageDown()
 			m.advanceLastSeenID()
 			m.autoPageAnchor = -1 // clear auto-paging on manual pager advance
 			return m, nil
 		}
+		// Otherwise (caught up to the bottom) fall through and send the blank line.
 	} else {
 		m = m.addHistoryEntry(line)
 	}
