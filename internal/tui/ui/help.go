@@ -64,6 +64,23 @@ var tuiHelp = map[string][]string{
 		"",
 		"Tip: use zlilyStartup memo to make style changes permanent (see %help startup).",
 	},
+	"spell": {
+		"Manage the spell checker and its word overlays",
+		"",
+		"Usage: %spell [list]                 show state + allowed/forbidden words",
+		"       %spell on|off                 enable/disable spell checking",
+		"       %spell allow <word>...        accept words the dictionary rejects",
+		"       %spell forbid <word>...       reject words the dictionary accepts",
+		"       %spell remove <word>...       drop words from both overlays",
+		"       %spell reset                  clear overlays back to defaults",
+		"",
+		"The forbid list wins over the allow list, which wins over the",
+		"dictionary. Matching is case-insensitive. \"zlily\" and \"zephyrlily\"",
+		"are allowed by default.",
+		"Changes apply immediately and last for this session only.",
+		"",
+		"Tip: use zlilyStartup memo to make overlays permanent (see %help startup).",
+	},
 	"startup": {
 		"Run commands automatically on connect",
 		"",
@@ -167,6 +184,9 @@ func (m Model) handleLocalCommand(line string) (localOutput []string, handled bo
 
 	case "%style":
 		return handleStyleCommand(args), true, nil
+
+	case "%spell":
+		return m.spellChecker.HandleCommand(args), true, nil
 	}
 
 	return nil, false, nil
