@@ -58,6 +58,11 @@ func DefaultWorld() Options {
 		WhereResponse: "You are a member of cafe, lobby.",
 		CommandReplies: map[string][]string{
 			"/who": {"Users here:", "  alice", "  bob", "  carol"},
+			// The client fetches this memo on startup (zlilyStartup replay). Model
+			// a real server answering it so the proxy's in-flight fetch completes
+			// and clears, rather than staying armed and swallowing the next leafed
+			// command's output (e.g. /who).
+			"/memo me zlilyStartup": {},
 		},
 	}
 }
