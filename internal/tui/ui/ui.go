@@ -542,10 +542,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.handleProxy(&msg.events[i])
 		}
 		m.storedLastSeenID = m.state.LastSeenID
-		if m.storedLastSeenID > 0 {
-			m.needsPositionRestore = true
-		}
 		m = m.syncViewportContent()
+		if m.storedLastSeenID > 0 {
+			// Restore scroll to the stored last-seen position. If we already know
+			// the window size (the usual ordering — bubbletea sends the initial
+			// WindowSizeMsg before auth+state finish), do it now. Otherwise defer
+			// to the first WindowSizeMsg. Restoring here (rather than always
+			// deferring) keeps needsPositionRestore from lingering until the user's
+			// first manual resize, where it would override the resize anchor and
+			// yank the viewport to a stale position.
+			if m.viewport.Height > 0 {
+				m.restorePosition()
+			} else {
+				m.needsPositionRestore = true
+			}
+		}
 		return m, tea.Batch(
 			reportSeenNow(m.client, m.lastSeenID),
 			fetchStartupMemoCmd(m.client),

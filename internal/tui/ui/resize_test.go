@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -175,6 +176,40 @@ func TestResize_WidthChangePreservesAnchor(t *testing.T) {
 	m = sizeTo(t, m, 60, 8)
 	assert.Equal(t, anchor, m.topVisibleItemIndex(),
 		"width change should keep the anchored message at the top, not jump")
+}
+
+// TestStartup_RestoreAppliedInlineWhenSizeKnown locks in the fix for the
+// intermittent "viewport jumps to the top on resize" bug. In the common startup
+// ordering the initial WindowSizeMsg arrives before state loads. If the
+// stored-position restore were deferred to "the next WindowSizeMsg", it would
+// linger until the user's first manual resize and there override the resize
+// anchor, yanking the viewport to a stale startup position. With the size
+// already known, the restore must be consumed at state-load time so no later
+// resize sees needsPositionRestore still set.
+func TestStartup_RestoreAppliedInlineWhenSizeKnown(t *testing.T) {
+	logChan, _ := NewLogger()
+	m := New(client.New(""), logChan)
+	m = sizeTo(t, m, 80, 24) // initial WindowSizeMsg arrives first
+
+	upd, _ := m.Update(initialStateMsg{state: &api.StateResponse{LastSeenID: 5}})
+	m = upd.(Model)
+
+	assert.False(t, m.needsPositionRestore,
+		"restore must be applied inline when size is known, not deferred to a later resize")
+}
+
+// TestStartup_RestoreDeferredWhenSizeUnknown covers the racy ordering where
+// state loads before any WindowSizeMsg. With no size yet, the restore must defer
+// to the first WindowSizeMsg (which carries width 0 → no anchor, so no conflict).
+func TestStartup_RestoreDeferredWhenSizeUnknown(t *testing.T) {
+	logChan, _ := NewLogger()
+	m := New(client.New(""), logChan)
+
+	upd, _ := m.Update(initialStateMsg{state: &api.StateResponse{LastSeenID: 5}})
+	m = upd.(Model)
+
+	assert.True(t, m.needsPositionRestore,
+		"restore must defer to the first WindowSizeMsg when size is unknown")
 }
 
 func TestResize_HeightOnlyPreservesTopItem(t *testing.T) {
