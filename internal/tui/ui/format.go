@@ -113,6 +113,25 @@ func wrapTextCore(curLine, wordPrefix, text string, maxWidth int, initialSep str
 	return lines
 }
 
+// wrapCommandLines word-wraps each line to the available width, then renders any
+// URLs as OSC8 hyperlinks. Linkification is applied after wrapping so wrapping
+// never splits in the middle of an escape sequence.
+func wrapCommandLines(lines []string, width int) []string {
+	wrapWidth := width - 2
+	if wrapWidth < 1 {
+		wrapWidth = 1
+	}
+	var out []string
+	for _, line := range lines {
+		wrapped := strings.Split(wordwrap.String(line, wrapWidth), "\n")
+		for i := range wrapped {
+			wrapped[i] = linkifyText(wrapped[i])
+		}
+		out = append(out, wrapped...)
+	}
+	return out
+}
+
 // renderOutputItem formats an OutputItem into display lines based on current width.
 func (m Model) renderOutputItem(item OutputItem) []string {
 	width := m.width
@@ -123,27 +142,12 @@ func (m Model) renderOutputItem(item OutputItem) []string {
 	switch item.Type {
 	case "text":
 		if text, ok := item.Data.(string); ok {
-			// Apply linkification to text
-			text = linkifyText(text)
-			return strings.Split(text, "\n")
+			return wrapCommandLines(strings.Split(text, "\n"), width)
 		}
 
 	case "command":
 		if lines, ok := item.Data.([]string); ok {
-			wrapWidth := width - 2
-			if wrapWidth < 1 {
-				wrapWidth = 1
-			}
-			var out []string
-			for _, line := range lines {
-				wrapped := strings.Split(wordwrap.String(line, wrapWidth), "\n")
-				// Apply linkification after wrapping to avoid breaking URLs
-				for i := range wrapped {
-					wrapped[i] = linkifyText(wrapped[i])
-				}
-				out = append(out, wrapped...)
-			}
-			return out
+			return wrapCommandLines(lines, width)
 		}
 
 	case "event":
