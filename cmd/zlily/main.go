@@ -63,7 +63,7 @@ func main() {
 // See https://github.com/charmbracelet/bubbletea/issues/825
 func ensureTmuxColor() {
 	if os.Getenv("TMUX") != "" && os.Getenv("COLORTERM") == "" {
-		os.Setenv("COLORTERM", "truecolor")
+		_ = os.Setenv("COLORTERM", "truecolor")
 	}
 }
 

@@ -51,7 +51,7 @@ func TestStringDropsVariationSelector(t *testing.T) {
 }
 
 func TestStringDropsZWJ(t *testing.T) {
-	got := String("a‍b") // zero-width joiner between letters
+	got := String("a\u200db") // zero-width joiner between letters
 	want := "ab"
 	if got != want {
 		t.Errorf("String(a+ZWJ+b) = %q, want %q", got, want)

@@ -300,7 +300,7 @@ func String(s string) string {
 		if name := runenames.Name(r); name != "" {
 			b.WriteString("[" + name + "]")
 		} else {
-			b.WriteString(fmt.Sprintf("[U+%04X]", r))
+			fmt.Fprintf(&b, "[U+%04X]", r)
 		}
 	}
 	return b.String()
