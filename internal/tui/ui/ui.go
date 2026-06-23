@@ -860,9 +860,11 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 								m.state.Entities[i].Name = value
 							}
 						case "blurb":
-							if value, ok := d["value"].(string); ok {
-								m.state.Entities[i].Blurb = value
-							}
+							// value is absent (not just empty) when the blurb is
+							// cleared, since the proxy serializes it with omitempty.
+							// Assign unconditionally so clearing resets it to "".
+							value, _ := d["value"].(string)
+							m.state.Entities[i].Blurb = value
 						case "here":
 							m.state.Entities[i].State = "here"
 						case "away":
