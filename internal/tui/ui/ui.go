@@ -21,6 +21,22 @@ import (
 
 // OutputItem represents a single item in the output buffer.
 // It stores raw data so it can be reformatted when the window size changes.
+// mouseWheelLines is how many output lines one wheel notch scrolls.
+const mouseWheelLines = 3
+
+// mouseWheelWarning is printed when wheel scrolling is enabled. Enabling mouse
+// reporting makes the terminal forward clicks to the app, which pre-empts its
+// native click-drag text selection; each terminal exposes a modifier to bypass
+// reporting and select normally.
+var mouseWheelWarning = []string{
+	"Warning: this captures the mouse, so click-drag text selection no longer",
+	"works normally. To select/copy text, hold a bypass modifier while dragging:",
+	"  - most terminals (xterm, GNOME Terminal, Windows Terminal): Shift",
+	"  - iTerm2: Option (⌥)",
+	"  - macOS Terminal.app: Fn (or Shift)",
+	"Use '%page wheel off' to restore normal selection.",
+}
+
 type OutputItem struct {
 	Type string      // "text", "event", "command", "error", "input", "log"
 	Data interface{} // raw data (string, map[string]interface{}, []string, logMsg)
@@ -88,6 +104,7 @@ type Model struct {
 	// Auto-paging: after user sends input, auto-scroll up to one page of new output
 	autoPageAnchor int  // line count when user sent command; -1 = disabled
 	pagerEnabled   bool // false = never pause; scroll straight to bottom (%page off)
+	mouseWheel     bool // mouse-wheel scrolling of the viewport (%page wheel); off by default
 
 	// scrollAnchor is the output-item index to keep at the top of the viewport
 	// across a width-changing resize (which rewraps and invalidates raw line
@@ -429,6 +446,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m.handleNormalKey(msg)
+
+	case tea.MouseMsg:
+		// Only the output viewport reacts to the wheel; auth/edit modes own the
+		// screen and have no scrollback to page through. mouseWheel gates the
+		// whole feature (off by default; toggled via %page wheel).
+		if !m.mouseWheel || m.authMode || m.editMode {
+			return m, nil
+		}
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.autoPageAnchor = -1
+			if m.debugMode {
+				m.debugViewport.ScrollUp(mouseWheelLines)
+			} else {
+				m.viewport.ScrollUp(mouseWheelLines)
+			}
+		case tea.MouseButtonWheelDown:
+			m.autoPageAnchor = -1
+			if m.debugMode {
+				m.debugViewport.ScrollDown(mouseWheelLines)
+			} else {
+				m.viewport.ScrollDown(mouseWheelLines)
+				m.advanceLastSeenID()
+			}
+		}
+		return m, nil
 
 	case authResultMsg:
 		// A reconnect creates a fresh client; adopt it (success or failure, so a

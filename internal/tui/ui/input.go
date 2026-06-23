@@ -403,6 +403,33 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 
 	// Handle %page toggle for the viewport pager
 	if fields := strings.Fields(line); len(fields) > 0 && fields[0] == "%page" {
+		// %page wheel [on|off] controls mouse-wheel scrolling of the viewport.
+		if len(fields) >= 2 && strings.EqualFold(fields[1], "wheel") {
+			var lines []string
+			var cmd tea.Cmd
+			switch {
+			case len(fields) == 3 && strings.EqualFold(fields[2], "on"):
+				m.mouseWheel = true
+				cmd = tea.EnableMouseCellMotion
+				lines = append([]string{"Mouse-wheel scrolling: on"}, mouseWheelWarning...)
+			case len(fields) == 3 && strings.EqualFold(fields[2], "off"):
+				m.mouseWheel = false
+				cmd = tea.DisableMouse
+				lines = []string{"Mouse-wheel scrolling: off"}
+			case len(fields) == 2:
+				state := "off"
+				if m.mouseWheel {
+					state = "on"
+				}
+				lines = []string{"Mouse-wheel scrolling: " + state}
+			default:
+				lines = []string{"Usage: %page wheel on|off"}
+			}
+			m.output = append(m.output, OutputItem{Type: "command", Data: lines})
+			m = m.syncViewportContent()
+			return m, cmd
+		}
+
 		var msg string
 		switch {
 		case len(fields) == 2 && strings.EqualFold(fields[1], "off"):
@@ -418,7 +445,7 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 			}
 			msg = "Viewport pager: " + state
 		default:
-			msg = "Usage: %page on|off"
+			msg = "Usage: %page on|off|wheel"
 		}
 		m.output = append(m.output, OutputItem{Type: "command", Data: []string{msg}})
 		m = m.syncViewportContent()
