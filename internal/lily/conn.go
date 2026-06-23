@@ -232,7 +232,8 @@ func (c *Conn) logWireLocked(dir, line string) {
 	if c.password != "" {
 		line = strings.ReplaceAll(line, c.password, "***")
 	}
-	fmt.Fprintf(c.wire, "%s %s %q\n", time.Now().Format("15:04:05.000"), dir, line)
+	// Best-effort wire log; ignore write errors.
+	_, _ = fmt.Fprintf(c.wire, "%s %s %q\n", time.Now().Format("15:04:05.000"), dir, line)
 }
 
 // State returns the live state for this connection.
