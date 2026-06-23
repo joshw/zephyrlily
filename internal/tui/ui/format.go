@@ -375,7 +375,7 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		header.WriteString(formatUser(source, publicSenderStyle, publicBlurbStyle))
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
 			header.WriteString(publicHeaderStyle.Render(", to "))
-			header.WriteString(formatRecips(recips, publicSenderStyle))
+			header.WriteString(formatRecips(recips, publicRecipsStyle))
 		}
 		header.WriteString(publicHeaderStyle.Render(":"))
 		body := wrapMessage(" - ", value, width)
@@ -387,31 +387,46 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		header.WriteString(privateTimestampStyle.Render(timestamp))
 		header.WriteString(privateHeaderStyle.Render("Private message from "))
 		header.WriteString(formatUser(source, privateSenderStyle, privateBlurbStyle))
+		// For a group private (more than one recipient), list everyone it went to
+		// — including you — so it's distinguishable from a one-on-one private.
+		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 1 {
+			header.WriteString(privateHeaderStyle.Render(", to "))
+			header.WriteString(formatRecips(recips, privateRecipsStyle))
+		}
 		header.WriteString(privateHeaderStyle.Render(":"))
 		body := wrapMessage(" - ", value, width)
 		return "\n" + header.String() + "\n" + privateBodyStyle.Render(body)
 
 	case "emote":
-		var header strings.Builder
-		header.WriteString("> (")
+		ts := ""
 		if stamp {
 			if timeVal, ok := d["time"].(float64); ok && timeVal > 0 {
 				t := time.Unix(int64(timeVal), 0)
-				fmt.Fprintf(&header, "%02d:%02d, ", t.Hour(), t.Minute())
+				ts = fmt.Sprintf("%02d:%02d, ", t.Hour(), t.Minute())
 			}
 		}
-		header.WriteString("to ")
+		recipStr := ""
 		if recips, ok := d["recips"].([]interface{}); ok && len(recips) > 0 {
-			header.WriteString(lookupRecips(recips))
+			recipStr = lookupRecips(recips)
 		}
-		header.WriteString(") ")
-		header.WriteString(lookupName(source))
-		headerStr := header.String()
+		// Plain header drives the wrap arithmetic (wrapTextLinkify needs an
+		// escape-free prefix); the styled header is substituted back afterward so
+		// the recipient segment can carry its own color.
+		headerStr := "> (" + ts + "to " + recipStr + ") " + lookupName(source)
+		styledHeader := emoteBodyStyle.Render("> ("+ts+"to ") +
+			emoteRecipsStyle.Render(recipStr) +
+			emoteBodyStyle.Render(") "+lookupName(source))
 		if value == "" {
-			return emoteBodyStyle.Render(headerStr)
+			return styledHeader
 		}
 		lines := wrapTextLinkify(headerStr, "> ", strings.TrimSpace(value), width, " ")
-		return emoteBodyStyle.Render(strings.Join(lines, "\n"))
+		// Line 0 begins with the literal headerStr; swap in the styled version and
+		// render the remainder (plus all later lines) with the emote body style.
+		lines[0] = styledHeader + emoteBodyStyle.Render(strings.TrimPrefix(lines[0], headerStr))
+		for i := 1; i < len(lines); i++ {
+			lines[i] = emoteBodyStyle.Render(lines[i])
+		}
+		return strings.Join(lines, "\n")
 
 	case "connect":
 		return banner(sourceWithBlurb() + " has entered lily")

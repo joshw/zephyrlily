@@ -27,6 +27,12 @@ var (
 	publicBodyStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("7")) // white, normal
 
+	// Recipient (destination) of a public message — the discussion it was sent
+	// to. Defaults to match publicSenderStyle so existing displays are unchanged.
+	publicRecipsStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("6")). // cyan
+				Bold(true)
+
 	// Private message styles
 	privateSenderStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("2")). // green
@@ -40,8 +46,19 @@ var (
 	privateBodyStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("7")) // white, normal
 
+	// Recipient (destination) of a private message — the other people it was
+	// addressed to. Defaults to match privateSenderStyle.
+	privateRecipsStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("2")). // green
+				Bold(true)
+
 	// Emote styles
 	emoteBodyStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("6")) // cyan, normal
+
+	// Recipient (destination) of an emote — who it was directed at. Defaults to
+	// match emoteBodyStyle so existing displays are unchanged.
+	emoteRecipsStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("6")) // cyan, normal
 
 	// Blurb styles — context-matched to their message type
