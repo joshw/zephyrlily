@@ -2,19 +2,20 @@ package main
 
 import (
 	"context"
-	"flag"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/spf13/pflag"
+
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 )
 
 func main() {
-	listen := flag.String("listen", ":7888", "proxy listen address")
-	lily := flag.String("lily", "rpi.lily.org:7777", "Lily server address")
-	flag.Parse()
+	listen := pflag.String("listen", ":7888", "proxy listen address")
+	lily := pflag.String("lily", "rpi.lily.org:7777", "Lily server address")
+	pflag.Parse()
 
 	cfg := api.Config{
 		ListenAddr: *listen,

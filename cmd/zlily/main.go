@@ -10,7 +10,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"log/slog"
@@ -22,6 +21,7 @@ import (
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/spf13/pflag"
 
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
@@ -76,7 +76,7 @@ func isCmdExe() bool {
 }
 
 func cmdServer(args []string) {
-	fs := flag.NewFlagSet("server", flag.ExitOnError)
+	fs := pflag.NewFlagSet("server", pflag.ExitOnError)
 	listen := fs.String("listen", ":7888", "proxy API listen address (used by TUI clients)")
 	lily := fs.String("lily", "rpi.lily.org:7777", "Lily server address")
 	tlsFlag := fs.Bool("tls", false, "connect to Lily over TLS")
@@ -113,7 +113,7 @@ func cmdServer(args []string) {
 }
 
 func cmdClient(args []string) {
-	fs := flag.NewFlagSet("client", flag.ExitOnError)
+	fs := pflag.NewFlagSet("client", pflag.ExitOnError)
 	proxy := fs.String("proxy", "localhost:7888", "proxy address")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: zlily client [flags]")
@@ -130,7 +130,7 @@ func cmdClient(args []string) {
 }
 
 func cmdCombined(args []string) {
-	fs := flag.NewFlagSet("combined", flag.ExitOnError)
+	fs := pflag.NewFlagSet("combined", pflag.ExitOnError)
 	lily := fs.String("lily", "rpi.lily.org:7777", "Lily server address")
 	port := fs.Int("port", 0, "embedded proxy port (0 = OS-assigned ephemeral)")
 	tlsFlag := fs.Bool("tls", false, "connect to Lily over TLS")
@@ -261,6 +261,12 @@ func printUsage() {
   zlily combined [flags]        Same as above
   zlily server  [flags]         Proxy only (no TUI) — for headless/server use
   zlily client  [flags]         TUI only (connect to a running proxy)
+  zlily version                 Print the version and exit
+  zlily help                    Show this help and exit
+
+Other flags:
+  --version, -v         Print the version and exit
+  --help, -h            Show this help and exit
 
 Web interface:
   The web UI is disabled by default. Enable it with --web; the proxy and web UI
