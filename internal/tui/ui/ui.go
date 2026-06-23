@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -232,19 +233,16 @@ type initialStateMsg struct {
 
 type serverEventMsg struct{ msg *api.WSServerMsg }
 
-type reconnectResultMsg struct {
-	newClient *client.Client
-	state     *api.StateResponse
-	events    []api.WSServerMsg
-	err       error
-}
-
 type seenTickMsg struct{}
 
 type authResultMsg struct {
 	username string
 	password string
-	err      error
+	// newClient is set when the result came from a reconnect (a fresh client was
+	// created); the model swaps to it. It is nil for the initial login, which
+	// authenticates the model's existing client in place.
+	newClient *client.Client
+	err       error
 }
 
 type editorFetchResultMsg struct {
@@ -333,31 +331,15 @@ func listenLogCmd(logChan <-chan logMsg) tea.Cmd {
 	}
 }
 
-// reconnectCmd closes the current connection and establishes a new one.
-func reconnectCmd(c *client.Client, lastSeenID int64) tea.Cmd {
+// reconnectCmd re-runs the login against the proxy using the stored credentials
+// and yields an authResultMsg, so reconnection follows the exact same path as
+// the initial login (state fetch, history replay, startup memo) — the only
+// difference being that the user is not prompted for credentials unless the
+// stored ones are rejected.
+func reconnectCmd(c *client.Client) tea.Cmd {
 	return func() tea.Msg {
 		nc, err := c.Reconnect()
-		if err != nil {
-			return reconnectResultMsg{err: err}
-		}
-		state, err := nc.FetchState()
-		if err != nil {
-			return reconnectResultMsg{err: err}
-		}
-		var events []api.WSServerMsg
-		afterID := lastSeenID
-		for {
-			batch, more, err := nc.FetchEvents(afterID, 200)
-			if err != nil {
-				break
-			}
-			events = append(events, batch...)
-			if !more || len(batch) == 0 {
-				break
-			}
-			afterID = batch[len(batch)-1].ID
-		}
-		return reconnectResultMsg{newClient: nc, state: state, events: events}
+		return authResultMsg{newClient: nc, err: err}
 	}
 }
 
@@ -449,17 +431,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleNormalKey(msg)
 
 	case authResultMsg:
+		// A reconnect creates a fresh client; adopt it (success or failure, so a
+		// credential re-prompt can retry on it).
+		if msg.newClient != nil {
+			m.client = msg.newClient
+		}
 		if msg.err != nil {
-			m.authError = msg.err.Error()
-			m.authPassword = "" // clear password on error
-			m.passwordInput.SetValue("")
 			m.authInProgress = false
+			// Re-prompt for credentials when they were rejected, or whenever the
+			// initial credential dialog is already showing. A non-auth failure
+			// during a reconnect (proxy unreachable, ws error) instead offers a
+			// plain retry without re-typing credentials.
+			if m.authMode || errors.Is(msg.err, client.ErrAuthFailed) {
+				m.authMode = true
+				m.reconnectPrompt = false
+				m.authError = msg.err.Error()
+				m.authPassword = ""
+				m.passwordInput.SetValue("")
+				m.usernameInput.SetValue(m.authUsername)
+				m.authField = 1
+				m.usernameInput.Blur()
+				m.passwordInput.Focus()
+				return m, nil
+			}
+			m.reconnectPrompt = true
+			m.output = append(m.output, OutputItem{Type: "error", Data: "reconnect failed: " + msg.err.Error()})
+			m = m.syncViewportContent()
 			return m, nil
 		}
 		m.authMode = false
 		m.authenticated = true
 		m.authInProgress = false
-		// Now fetch initial state
+		m.reconnectPrompt = false
+		// Run the identical post-login sequence (state fetch, history replay,
+		// startup memo) for both initial login and reconnect.
 		return m, tea.Batch(
 			listenCmd(m.client),
 			listenLogCmd(m.logChan),
@@ -499,30 +504,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case seenTickMsg:
 		return m, reportSeenCmd(m.client, m.lastSeenID)
 
-	case reconnectResultMsg:
-		if msg.err != nil {
-			m.output = append(m.output, OutputItem{Type: "error", Data: "reconnect failed: " + msg.err.Error()})
-			m.reconnectPrompt = true
-			m = m.syncViewportContent()
-			return m, nil
-		}
-		m.client = msg.newClient
-		m.state = msg.state
-		for i := range msg.events {
-			m = m.handleProxy(&msg.events[i])
-		}
-		m.output = append(m.output, OutputItem{Type: "text", Data: "(reconnected)"})
-		m = m.syncViewportContent()
-		return m, listenCmd(m.client)
-
 	case initialStateMsg:
 		if msg.err != nil {
 			m.output = append(m.output, OutputItem{Type: "error", Data: "state: " + msg.err.Error()})
 			m = m.syncViewportContent()
 			return m, nil
 		}
-		m.state = msg.state
-		if m.state != nil {
+		// Whoami is only populated once the Lily sync completes (which can be
+		// gated behind interactive login prompts). If the state fetch returned
+		// before that (the safety-net timeout), don't overwrite good prior state
+		// or print an empty "Connected to … ()" line.
+		if msg.state != nil && msg.state.Whoami != "" {
+			m.state = msg.state
+		}
+		if m.state != nil && m.state.Whoami != "" {
 			displayName := m.state.Whoami
 			for _, e := range m.state.Entities {
 				if e.Handle == m.state.Whoami && e.Kind == "user" {
@@ -536,12 +531,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.output = append(m.output, OutputItem{Type: "text", Data: ""})
 		}
 		if len(msg.events) > 0 {
-			slog.Info(fmt.Sprintf("loaded %d events from history (proxy buffer: %d)", len(msg.events), m.state.EventBufSize))
+			slog.Info(fmt.Sprintf("loaded %d events from history (proxy buffer: %d)", len(msg.events), msg.state.EventBufSize))
 		}
 		for i := range msg.events {
 			m = m.handleProxy(&msg.events[i])
 		}
-		m.storedLastSeenID = m.state.LastSeenID
+		m.storedLastSeenID = msg.state.LastSeenID
 		m = m.syncViewportContent()
 		if m.storedLastSeenID > 0 {
 			// Restore scroll to the stored last-seen position. If we already know

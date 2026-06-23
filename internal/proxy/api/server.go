@@ -45,19 +45,11 @@ type Config struct {
 
 const maxEventBuf = 5000
 
-// savedState holds the event buffer and last-seen ID across session lifecycle events
-// (e.g. Lily TCP disconnect followed by TUI reconnect).
-type savedState struct {
-	eventBuf   []*WSServerMsg
-	lastSeenID int64
-}
-
 // Server is the proxy HTTP/WebSocket server.
 type Server struct {
-	cfg         Config
-	sessions    sync.Map // token -> *Session
-	userTokens  sync.Map // username -> token (for finding an existing session by username)
-	savedStates sync.Map // username -> savedState (persists across reconnects/token rotation)
+	cfg        Config
+	sessions   sync.Map // token -> *Session
+	userTokens sync.Map // username -> token (for finding an existing session by username)
 }
 
 // Session represents an authenticated proxy session for one Lily user.
@@ -228,13 +220,12 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		cmdBuffer:   make(map[int][]string),
 	}
 
-	// Restore event buffer and last-seen position keyed by username so history
-	// survives reconnects even when the token rotates.
-	if v, ok := s.savedStates.LoadAndDelete(req.Username); ok {
-		saved := v.(savedState)
-		sess.eventBuf = saved.eventBuf
-		sess.lastSeenID.Store(saved.lastSeenID)
-	}
+	// A (re)connect always starts a fresh session: a new Lily login replays the
+	// full login sequence (banner, blurb/review prompts, entity sync), and the
+	// TUI's existing scrollback is preserved client-side. Carrying over the prior
+	// event buffer / last-seen ID here would mismatch the new session's restarted
+	// message-ID counter and suppress the very prompts (e.g. "enter a blurb") the
+	// user must answer to finish logging in — so reconnect is just login again.
 
 	s.sessions.Store(token, sess)
 	s.userTokens.Store(req.Username, token)
@@ -253,8 +244,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Block until the initial SLCP sync completes so the caller receives fully-
-	// populated entity data.  The timeout prevents an indefinite hang if the
-	// Lily server never sends %connected.
+	// populated entity data. Login can include interactive prompts (e.g. "enter a
+	// blurb", "review now?") that gate the sync until the user answers, so the
+	// timeout is generous; it only fires if the server or user never proceeds.
 	select {
 	case <-sess.conn.SyncComplete():
 	case <-time.After(60 * time.Second):
@@ -501,18 +493,14 @@ func (s *Server) fanOut(sess *Session) {
 		}
 	}
 	sess.subsMu.Unlock()
-	// Persist event buffer and last-seen ID so the next session for this user
-	// can restore history even after a Lily TCP disconnect.
-	sess.eventBufMu.RLock()
-	bufCopy := make([]*WSServerMsg, len(sess.eventBuf))
-	copy(bufCopy, sess.eventBuf)
-	sess.eventBufMu.RUnlock()
-	s.savedStates.Store(sess.username, savedState{
-		eventBuf:   bufCopy,
-		lastSeenID: sess.lastSeenID.Load(),
-	})
 	s.sessions.Delete(sess.token)
 	s.userTokens.Delete(sess.username)
+
+	// Fully close our side of the Lily socket. On a natural drop we have only
+	// read EOF (leaving the socket in CLOSE_WAIT); sending our FIN tells the Lily
+	// server the session is gone so it reaps it promptly, which lets a follow-up
+	// reconnect log in without waiting for the old session to time out.
+	sess.conn.Close()
 }
 
 // handleEvents returns buffered event and text messages after a given ID.
@@ -585,15 +573,6 @@ func (s *Server) handleSeen(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if sess.lastSeenID.CompareAndSwap(old, req.LastSeenID) {
-			// Mirror into savedStates so the position survives a session deletion.
-			sess.eventBufMu.RLock()
-			bufCopy := make([]*WSServerMsg, len(sess.eventBuf))
-			copy(bufCopy, sess.eventBuf)
-			sess.eventBufMu.RUnlock()
-			s.savedStates.Store(sess.username, savedState{
-				eventBuf:   bufCopy,
-				lastSeenID: req.LastSeenID,
-			})
 			break
 		}
 	}

@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -15,6 +17,11 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 )
+
+// ErrAuthFailed indicates the proxy/Lily server rejected the supplied
+// credentials (as opposed to a network or connection error). Callers use this
+// to decide whether to re-prompt for credentials.
+var ErrAuthFailed = errors.New("invalid username or password")
 
 // Client is a connection from the TUI to the proxy.
 type Client struct {
@@ -68,11 +75,16 @@ func (c *Client) Auth(username, password string) error {
 		// Read the error body to get the detailed error message
 		var errBody bytes.Buffer
 		_, _ = errBody.ReadFrom(resp.Body)
-		errMsg := errBody.String()
-		if errMsg != "" {
-			return fmt.Errorf("auth failed: %s", errMsg)
+		errMsg := strings.TrimSpace(errBody.String())
+		if errMsg == "" {
+			errMsg = resp.Status
 		}
-		return fmt.Errorf("auth failed: %s", resp.Status)
+		// Distinguish a credential rejection from other failures so callers can
+		// decide whether to re-prompt for credentials.
+		if strings.Contains(errMsg, ErrAuthFailed.Error()) {
+			return fmt.Errorf("%w", ErrAuthFailed)
+		}
+		return fmt.Errorf("auth failed: %s", errMsg)
 	}
 	var ar api.AuthResponse
 	if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil {
@@ -261,16 +273,19 @@ func (c *Client) readLoop() {
 }
 
 // Reconnect closes the current connection and returns a fresh Client using the
-// same proxy address and stored credentials.  The caller should replace its
-// client reference with the returned one.
+// same proxy address and stored credentials — i.e. it re-runs the normal login
+// path without re-prompting the user. The caller should replace its client
+// reference with the returned one. The fresh client is returned even on error so
+// the caller can reuse it for a credential re-prompt retry; the error preserves
+// ErrAuthFailed when the credentials were rejected.
 func (c *Client) Reconnect() (*Client, error) {
 	c.Close()
 	nc := New(c.proxyAddr)
 	if err := nc.Auth(c.username, c.password); err != nil {
-		return nil, fmt.Errorf("reconnect auth: %w", err)
+		return nc, err
 	}
 	if err := nc.Connect(); err != nil {
-		return nil, fmt.Errorf("reconnect ws: %w", err)
+		return nc, err
 	}
 	return nc, nil
 }

@@ -450,9 +450,10 @@ func (m Model) handleReconnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y", "enter", "ctrl+m", "ctrl+j":
 		m.reconnectPrompt = false
+		m.authInProgress = true
 		m.output = append(m.output, OutputItem{Type: "text", Data: "(reconnecting…)"})
 		m = m.syncViewportContent()
-		return m, reconnectCmd(m.client, m.lastSeenID)
+		return m, reconnectCmd(m.client)
 	case "n", "N", "esc", "ctrl+c":
 		return m, tea.Quit
 	}

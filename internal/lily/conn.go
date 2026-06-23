@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/joshw/zephyrlily/internal/version"
@@ -18,14 +20,22 @@ import (
 	"github.com/joshw/zephyrlily/internal/slcp"
 )
 
+// wireLogEnv names an environment variable that, when set to a file path, makes
+// every Conn append a line-oriented transcript of its socket I/O (one entry per
+// line/prompt read and per line sent, with timestamps and a per-connection
+// header). Used to compare the login and reconnect handshakes.
+const wireLogEnv = "ZLILY_WIRELOG"
+
 // ErrAuthFailed indicates the Lily server rejected the supplied credentials
 // (it re-prompted for login instead of confirming with %options).
 var ErrAuthFailed = errors.New("invalid username or password")
 
-// handshakeTimeout bounds how long the login/sync sequence may take before we
-// give up. It guards against a server that accepts the connection but then goes
-// silent (sending neither %options nor a re-prompt).
-const handshakeTimeout = 30 * time.Second
+// handshakeTimeout bounds how long the dial + login sequence may take before we
+// give up. It guards against a server/network that never completes the login
+// (e.g. an unreachable server, or a reconnect where the server is slow to reap
+// the previous session). It is deliberately generous so a legitimately slow
+// reconnect still succeeds rather than being cut off.
+const handshakeTimeout = 60 * time.Second
 
 // ConnPhase tracks where in the login/handshake sequence we are.
 type ConnPhase int
@@ -69,6 +79,10 @@ type Conn struct {
 	// ctx controls the read loop lifetime.
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// wire, when non-nil, receives a transcript of socket I/O (see wireLogEnv).
+	wire   *os.File
+	wireMu sync.Mutex
 }
 
 // NewConn creates a Conn but does not connect yet.
@@ -95,20 +109,23 @@ func (c *Conn) SyncComplete() <-chan struct{} {
 	return c.syncComplete
 }
 
-// Connect dials the Lily server and runs the handshake, blocking until
-// %connected is received or an error occurs.
+// Connect dials the Lily server and runs the handshake, blocking until login is
+// confirmed or an error occurs. The whole operation is bounded by
+// handshakeTimeout so a stalled or unreachable server (e.g. during a reconnect)
+// cannot hang the caller indefinitely.
 func (c *Conn) Connect() error {
 	slog.Debug("lily: dialing", "addr", c.addr, "tls", c.tls)
+	dialer := &net.Dialer{Timeout: handshakeTimeout}
 	var nc net.Conn
 	var err error
 	if c.tls {
 		host, _, _ := net.SplitHostPort(c.addr)
-		nc, err = tls.Dial("tcp", c.addr, &tls.Config{
+		nc, err = tls.DialWithDialer(dialer, "tcp", c.addr, &tls.Config{
 			ServerName:         host,
 			InsecureSkipVerify: c.tlsInsecure, //nolint:gosec
 		})
 	} else {
-		nc, err = net.Dial("tcp", c.addr)
+		nc, err = dialer.Dial("tcp", c.addr)
 	}
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", c.addr, err)
@@ -117,32 +134,51 @@ func (c *Conn) Connect() error {
 	c.conn = nc
 	c.reader = bufio.NewReader(nc)
 	c.phase = PhaseFirstPrompt
+	c.openWireLog()
+
+	// Bound the whole login. readLine blocks until it gets a complete line or a
+	// recognized prompt and only returns early on a socket error, so the only
+	// reliable way to time out a stalled handshake is to close the socket — that
+	// makes the in-flight read fail. The watchdog does that; loginDone disarms it
+	// once login resolves so the long-lived readLoop is not affected.
+	var timedOut atomic.Bool
+	loginDone := make(chan struct{})
+	go func() {
+		select {
+		case <-loginDone:
+		case <-time.After(handshakeTimeout):
+			slog.Debug("lily: login timed out, closing connection")
+			timedOut.Store(true)
+			_ = nc.Close()
+		}
+	}()
+	defer close(loginDone)
 
 	if err := c.runHandshake(); err != nil {
 		_ = nc.Close()
+		if timedOut.Load() {
+			return fmt.Errorf("login timed out")
+		}
 		return err
 	}
 
 	// runHandshake only gets us through options negotiation (%options). Whether
 	// the credentials were actually accepted is not known until the server
-	// either starts the sync block leading to %connected (success) or
-	// re-prompts for login (failure). readLoop reads those lines and reports the
-	// outcome on loginResult.
+	// either prints "*** Connected ***" / %connected (success) or re-prompts for
+	// login (failure). readLoop reads those lines and reports the outcome on
+	// loginResult.
 	slog.Debug("lily: options negotiated, starting readLoop")
 	go c.readLoop()
 
-	select {
-	case err := <-c.loginResult:
-		if err != nil {
-			c.Close()
-			return err
-		}
-		slog.Debug("lily: login confirmed")
-		return nil
-	case <-time.After(handshakeTimeout):
+	if err := <-c.loginResult; err != nil {
 		c.Close()
-		return fmt.Errorf("login timed out")
+		if timedOut.Load() {
+			return fmt.Errorf("login timed out")
+		}
+		return err
 	}
+	slog.Debug("lily: login confirmed")
+	return nil
 }
 
 // Close shuts down the connection.
@@ -151,6 +187,52 @@ func (c *Conn) Close() {
 	if c.conn != nil {
 		_ = c.conn.Close()
 	}
+	c.wireMu.Lock()
+	if c.wire != nil {
+		c.logWireLocked("==", "close")
+		_ = c.wire.Close()
+		c.wire = nil
+	}
+	c.wireMu.Unlock()
+}
+
+// openWireLog opens the socket transcript file named by ZLILY_WIRELOG (if set)
+// and writes a header so the login and reconnect handshakes can be told apart in
+// a shared file. Failures are non-fatal — capture is a best-effort debug aid.
+func (c *Conn) openWireLog() {
+	path := os.Getenv(wireLogEnv)
+	if path == "" {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		slog.Debug("lily: wire log open failed", "path", path, "err", err)
+		return
+	}
+	c.wireMu.Lock()
+	c.wire = f
+	c.logWireLocked("==", fmt.Sprintf("connect user=%s addr=%s tls=%v", c.username, c.addr, c.tls))
+	c.wireMu.Unlock()
+}
+
+// logWire appends one directional transcript entry. dir is "<<" (received from
+// server), ">>" (sent to server), or "==" (annotation).
+func (c *Conn) logWire(dir, line string) {
+	c.wireMu.Lock()
+	c.logWireLocked(dir, line)
+	c.wireMu.Unlock()
+}
+
+// logWireLocked is logWire with c.wireMu already held.
+func (c *Conn) logWireLocked(dir, line string) {
+	if c.wire == nil {
+		return
+	}
+	// Never write the plaintext password (it appears in the credentials line).
+	if c.password != "" {
+		line = strings.ReplaceAll(line, c.password, "***")
+	}
+	fmt.Fprintf(c.wire, "%s %s %q\n", time.Now().Format("15:04:05.000"), dir, line)
 }
 
 // State returns the live state for this connection.
@@ -163,6 +245,7 @@ func (c *Conn) Send(line string) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	slog.Debug("lily: send", "line", line)
+	c.logWire(">>", line)
 	_, err := fmt.Fprintf(c.conn, "%s\n", line)
 	return err
 }
@@ -300,10 +383,32 @@ func (c *Conn) readLoop() {
 	// Messages are applied with fromSync=true so disc membership is seeded.
 	inSync := true
 
-	// waitingForWhere becomes true after we send /where me on %connected, and
-	// reverts to false once the response is fully received and processed.
+	// waitingForWhere becomes true after we send /where me, and reverts to false
+	// once the response is fully received and processed.
 	var whereCmdID int
 	waitingForWhere := false
+
+	// startWhere sends the client name and "/where me" to seed disc membership,
+	// then arranges for syncComplete to close once the response arrives. It runs
+	// at most once, triggered by %connected (which marks the end of the login
+	// sequence and entity sync).
+	whereStarted := false
+	startWhere := func() {
+		if whereStarted {
+			return
+		}
+		whereStarted = true
+		if err := c.Send(fmt.Sprintf("#$# client zlily %s", version.Version)); err != nil {
+			slog.Debug("lily: client name send error", "err", err)
+		}
+		if err := c.Send("/where me"); err != nil {
+			slog.Debug("lily: where me send error", "err", err)
+			// If the send fails, unblock callers waiting on full state anyway.
+			close(c.syncComplete)
+		} else {
+			waitingForWhere = true
+		}
+	}
 
 	for {
 		select {
@@ -350,7 +455,8 @@ func (c *Conn) readLoop() {
 			c.applyLive(msg)
 		}
 
-		// %connected marks the end of the initial sync.
+		// %connected marks login fully complete (after any interactive login
+		// prompts such as "enter a blurb" and the entity sync).
 		if msg.Type == slcp.MsgConnected {
 			// Fallback login confirmation: normally "*** Connected ***" already
 			// signalled success earlier, but if a server omits that banner,
@@ -358,20 +464,8 @@ func (c *Conn) readLoop() {
 			// already signalled).
 			signalLogin(nil)
 			inSync = false
-			slog.Debug("lily: sync complete")
-			if err := c.Send(fmt.Sprintf("#$# client zlily %s", version.Version)); err != nil {
-				slog.Debug("lily: client name send error", "err", err)
-			}
-			// Ask for disc membership before signalling sync complete so that
-			// handleState sees the populated discMembership map.
-			// syncComplete is closed once the /where me response arrives.
-			if err := c.Send("/where me"); err != nil {
-				slog.Debug("lily: where me send error", "err", err)
-				// If the send fails, unblock callers anyway.
-				close(c.syncComplete)
-			} else {
-				waitingForWhere = true
-			}
+			slog.Debug("lily: connected")
+			startWhere()
 			continue // %connected itself is not forwarded to clients
 		}
 
@@ -428,7 +522,9 @@ func (c *Conn) readLine() (string, error) {
 		if err == nil {
 			if b == '\n' {
 				// Got a complete line
-				return strings.TrimRight(string(buf), "\r"), nil
+				line := strings.TrimRight(string(buf), "\r")
+				c.logWire("<<", line)
+				return line, nil
 			}
 			buf = append(buf, b)
 			continue
@@ -439,9 +535,11 @@ func (c *Conn) readLine() (string, error) {
 			// No newline arrived; check if what we have is a prompt
 			s := strings.TrimRight(string(buf), " \r")
 			if strings.HasPrefix(s, "login:") || s == "login:" {
+				c.logWire("<<", s)
 				return s, nil
 			}
 			if strings.HasPrefix(s, "password:") || s == "password:" {
+				c.logWire("<<", s)
 				return s, nil
 			}
 			// Keep waiting for more data
