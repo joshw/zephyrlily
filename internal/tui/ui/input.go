@@ -380,19 +380,45 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 		}
 	}
 
-	// Handle debug key toggle
+	// Handle client-side commands (%page, %set debug keys, %style, %spell, …).
+	m, localOutput, localCmd, recognized := m.applyLocalCommand(line)
+	if localOutput != nil {
+		m.output = append(m.output, OutputItem{Type: "command", Data: localOutput})
+	}
+	if localCmd != nil {
+		m = m.syncViewportContent()
+		return m, localCmd
+	}
+	if !recognized {
+		m = m.trackOutgoingSend(line)
+		if err := m.client.Send(line); err != nil {
+			m.output = append(m.output, OutputItem{Type: "error", Data: err.Error()})
+		}
+	}
+
+	m = m.syncViewportContent()
+	return m, nil
+}
+
+// applyLocalCommand handles a command line the client interprets itself (one the
+// proxy does not own): %set debug keys, %page and its variants, and the commands
+// dispatched by handleLocalCommand (%style, %spell, %help, %info/%memo edit). It
+// returns the updated model, output lines to display, an optional tea.Cmd, and
+// whether the line was recognised as a local command. It is shared by submitLine
+// (interactive input) and the "clientcommand" handler (commands forwarded by the
+// proxy from the zlilyStartup memo), so both paths behave identically.
+func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
+	// Debug key toggle.
 	if strings.EqualFold(strings.TrimSpace(line), "%set debug keys") {
 		m.debugKeys = !m.debugKeys
 		state := "off"
 		if m.debugKeys {
 			state = "on"
 		}
-		m.output = append(m.output, OutputItem{Type: "command", Data: []string{"Key debug logging: " + state}})
-		m = m.syncViewportContent()
-		return m, nil
+		return m, []string{"Key debug logging: " + state}, nil, true
 	}
 
-	// Handle %page toggle for the viewport pager
+	// %page toggle for the viewport pager.
 	if fields := strings.Fields(line); len(fields) > 0 && fields[0] == "%page" {
 		// %page wheel [on|off] controls mouse-wheel scrolling of the viewport.
 		if len(fields) >= 2 && strings.EqualFold(fields[1], "wheel") {
@@ -416,9 +442,7 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 			default:
 				lines = []string{"Usage: %page wheel on|off"}
 			}
-			m.output = append(m.output, OutputItem{Type: "command", Data: lines})
-			m = m.syncViewportContent()
-			return m, cmd
+			return m, lines, cmd, true
 		}
 
 		var msg string
@@ -438,29 +462,11 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 		default:
 			msg = "Usage: %page on|off|wheel"
 		}
-		m.output = append(m.output, OutputItem{Type: "command", Data: []string{msg}})
-		m = m.syncViewportContent()
-		return m, nil
+		return m, []string{msg}, nil, true
 	}
 
-	// Handle local commands
-	localOutput, handled, asyncCmd := m.handleLocalCommand(line)
-	if localOutput != nil {
-		m.output = append(m.output, OutputItem{Type: "command", Data: localOutput})
-	}
-	if asyncCmd != nil {
-		m = m.syncViewportContent()
-		return m, asyncCmd
-	}
-	if !handled {
-		m = m.trackOutgoingSend(line)
-		if err := m.client.Send(line); err != nil {
-			m.output = append(m.output, OutputItem{Type: "error", Data: err.Error()})
-		}
-	}
-
-	m = m.syncViewportContent()
-	return m, nil
+	out, handled, asyncCmd := m.handleLocalCommand(line)
+	return m, out, asyncCmd, handled
 }
 
 // handleReconnectKey handles key events during reconnect prompt.

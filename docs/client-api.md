@@ -160,6 +160,7 @@ Every message has the shape:
 | `"event"` | `EventData` | A structured Lily event (message, join, rename, …) |
 | `"text"` | `{"text": "…"}` | A raw unformatted text line from the server |
 | `"commandresult"` | `{"cmd_id": N, "lines": […]}` | Buffered output from a `/command` (sent as one block) |
+| `"clientcommand"` | `{"text": "…"}` | A client-only command (e.g. `%style`) the proxy forwarded for the client to execute locally — typically replayed from the user's `zlilyStartup` memo on login. See [Client-only commands](#client-only-commands-clientcommand). |
 | `"prompt"` | `"text of prompt"` | The current input prompt string |
 | `"error"` | `"description"` | A proxy-generated error (e.g. keepalive timeout, disconnection) |
 
@@ -341,6 +342,7 @@ Commands sent over the WebSocket with `text` starting with `%` are handled by th
 | `%version` | Proxy version |
 | `%whoami` | Your handle and display name |
 | `%server` | Connected server name and version |
+| `%alias` | Define / list / clear command aliases (see below) |
 | `%debug` | Inspect proxy-side state |
 | `%debug discs` | List all discussions with membership status |
 | `%debug users` | List all known users |
@@ -348,6 +350,55 @@ Commands sent over the WebSocket with `text` starting with `%` are handled by th
 | `%debug all` | Show everything |
 | `%info` | Placeholder (implement client-side using `/fetch` + `/store`) |
 | `%memo` | Placeholder (implement client-side using `/fetch` + `/store`) |
+
+### Command aliases (`%alias`)
+
+The proxy expands shell-style aliases before forwarding input to Lily, so every client
+gets aliasing for free.
+
+```
+%alias <name> <commands>     # define
+%alias clear <name>          # remove
+%alias list [<name>]         # list all, or just <name>
+%alias                       # list all
+```
+
+`<name>` must match `[A-Za-z0-9_]+`. Within `<commands>`:
+
+| Token | Expands to |
+|-------|-----------|
+| `$1` … `$9` | positional arguments to the alias invocation |
+| `$0` | the alias name |
+| `$*` | all arguments |
+| `\n` | command separator (expands to multiple lines, each dispatched in turn) |
+
+Invoke an alias as `%<name> [args]`. Example: `%alias inbeener /who beener $*` then
+`%inbeener foo` sends `/who beener foo`. Aliases are per-session; persist them by adding the
+`%alias …` lines to your `zlilyStartup` memo (see below).
+
+### Client-only commands (`clientcommand`)
+
+On login the proxy fetches the user's `zlilyStartup` memo and replays each non-blank,
+non-`#` line as a command (this used to be the TUI's job; it now lives in the proxy so all
+clients share it). Aliases, proxy commands, and server sends are handled by the proxy
+directly. Any **other** `%` command — one the proxy doesn't own, e.g. a client-side
+presentation setting like `%style` or `%spell` — is delivered to the client as a
+`clientcommand` event so the client can apply its own local settings.
+
+Requirements for clients:
+
+- **Recognise the `clientcommand` type and execute the commands you support. Never treat an
+  unsupported command as a fatal error** — a memo containing `%style` must not break a client
+  that has no styling concept.
+- How you surface a command you don't execute is up to the client:
+  - A client with a fixed local-command vocabulary (e.g. the TUI, which knows `%style`,
+    `%spell`, `%page`, …) can treat anything outside that set as a typo and show
+    `Unknown command: …`.
+  - A client that implements no local commands (e.g. the current web UI) should silently
+    ignore them, since it can't distinguish an unsupported presentation command from a typo.
+- `clientcommand` events are buffered like other events, so a client that connects *after*
+  login receives them through the `/events` catch-up path — handle them there too, not only on
+  the live WebSocket.
 
 ---
 
@@ -359,6 +410,7 @@ A complete client must:
 - [ ] Call `GET /state` to obtain `whoami`, the entity list, `last_seen_id`, and `event_buf_size`
 - [ ] Page through `GET /events?after={last_seen_id}` until `more` is false to replay history
 - [ ] Open a WebSocket to `/ws?token=<token>` and handle all incoming message types
+- [ ] Handle `clientcommand` events — execute the ones your client supports, ignore the rest (they also arrive via `/events` catch-up)
 - [ ] Send commands over the WebSocket as `{"type":"command","text":"…"}`
 - [ ] Periodically call `POST /seen` with the highest displayed message ID
 - [ ] Handle `"error"` messages (keepalive timeout, Lily TCP disconnection)

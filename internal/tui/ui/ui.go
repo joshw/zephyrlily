@@ -273,24 +273,6 @@ type editorSaveResultMsg struct {
 	err  error
 }
 
-// startupMemoName is the memo fetched from "me" after login whose lines are
-// replayed as commands.
-const startupMemoName = "zlilyStartup"
-
-type startupMemoMsg struct {
-	lines []string
-	err   error
-}
-
-// fetchStartupMemoCmd fetches the zlilyStartup memo so its commands can be
-// replayed once the connection is established.
-func fetchStartupMemoCmd(c *client.Client) tea.Cmd {
-	return func() tea.Msg {
-		lines, err := c.FetchContent("memo", "me", startupMemoName)
-		return startupMemoMsg{lines: lines, err: err}
-	}
-}
-
 // fetchInitialStateCmd fetches state (blocking until the SLCP sync is done).
 func fetchInitialStateCmd(c *client.Client) tea.Cmd {
 	return func() tea.Msg {
@@ -526,14 +508,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.debugMsgs = append(m.debugMsgs, strings.Split(string(jsonBytes), "\n")...)
 		}
 
-		m = m.handleProxy(msg.msg)
+		var proxyCmd tea.Cmd
+		m, proxyCmd = m.handleProxy(msg.msg)
 		m.advanceLastSeenID()
 		m = m.syncViewportContent()
 
 		if m.reconnectPrompt {
 			return m, nil
 		}
-		return m, listenCmd(m.client)
+		return m, tea.Batch(proxyCmd, listenCmd(m.client))
 
 	case logMsg:
 		if msg.level == "DEBUG" {
@@ -576,8 +559,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.events) > 0 {
 			slog.Info(fmt.Sprintf("loaded %d events from history (proxy buffer: %d)", len(msg.events), msg.state.EventBufSize))
 		}
+		var replayCmds []tea.Cmd
 		for i := range msg.events {
-			m = m.handleProxy(&msg.events[i])
+			var cmd tea.Cmd
+			m, cmd = m.handleProxy(&msg.events[i])
+			if cmd != nil {
+				replayCmds = append(replayCmds, cmd)
+			}
 		}
 		m.storedLastSeenID = msg.state.LastSeenID
 		m = m.syncViewportContent()
@@ -595,43 +583,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.needsPositionRestore = true
 			}
 		}
-		return m, tea.Batch(
-			reportSeenNow(m.client, m.lastSeenID),
-			fetchStartupMemoCmd(m.client),
-		)
-
-	case startupMemoMsg:
-		if msg.err != nil {
-			// No zlilyStartup memo (or fetch failed) — nothing to replay.
-			slog.Debug("startup memo: " + msg.err.Error())
-			return m, nil
-		}
-		// Collect the executable (non-comment, non-blank) lines first so we only
-		// announce the memo when it actually has commands to run.
-		var toRun []string
-		for _, raw := range msg.lines {
-			line := strings.TrimSpace(raw)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue // skip blank lines and comments
-			}
-			toRun = append(toRun, line)
-		}
-		if len(toRun) == 0 {
-			return m, nil
-		}
-		m.output = append(m.output, OutputItem{Type: "text",
-			Data: "(found " + startupMemoName + " memo, running its commands)"})
-		var cmds []tea.Cmd
-		for _, line := range toRun {
-			m = m.addHistoryEntry(line)
-			var cmd tea.Cmd
-			m, cmd = m.submitLine(line)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-		}
-		m = m.syncViewportContent()
-		return m, tea.Batch(cmds...)
+		// The zlilyStartup memo is fetched and replayed by the proxy now; any
+		// client-only commands it contains arrive as "clientcommand" events.
+		replayCmds = append(replayCmds, reportSeenNow(m.client, m.lastSeenID))
+		return m, tea.Batch(replayCmds...)
 
 	case editorFetchResultMsg:
 		content := strings.Join(msg.lines, "\n")
@@ -857,8 +812,10 @@ func (m Model) syncViewportContent() Model {
 	return m
 }
 
-// handleProxy incorporates a proxy message into the model.
-func (m Model) handleProxy(msg *api.WSServerMsg) Model {
+// handleProxy incorporates a proxy message into the model. It may return a
+// tea.Cmd (e.g. when a forwarded clientcommand toggles mouse-wheel mode).
+func (m Model) handleProxy(msg *api.WSServerMsg) (Model, tea.Cmd) {
+	var cmd tea.Cmd
 	switch msg.Type {
 	case "text":
 		if d, ok := msg.Data.(map[string]interface{}); ok {
@@ -919,6 +876,25 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 			}
 		}
 
+	case "clientcommand":
+		// A client-only command the proxy forwarded for local execution (e.g.
+		// %style/%spell/%page replayed from the zlilyStartup memo, or a command
+		// this client doesn't own). Run it through the same local-command handler
+		// as interactive input so behaviour matches, and report unknown commands.
+		if d, ok := msg.Data.(map[string]interface{}); ok {
+			if text, ok := d["text"].(string); ok && strings.TrimSpace(text) != "" {
+				var out []string
+				var recognized bool
+				m, out, cmd, recognized = m.applyLocalCommand(text)
+				if !recognized && out == nil {
+					out = []string{"Unknown command: " + strings.Fields(text)[0]}
+				}
+				if out != nil {
+					m.output = append(m.output, OutputItem{Type: "command", Data: out, ID: msg.ID})
+				}
+			}
+		}
+
 	case "prompt":
 		if p, ok := msg.Data.(string); ok {
 			m.prompt = p
@@ -932,7 +908,7 @@ func (m Model) handleProxy(msg *api.WSServerMsg) Model {
 			}
 		}
 	}
-	return m
+	return m, cmd
 }
 
 // computeLastSeenID returns the highest ID among visible OutputItems.

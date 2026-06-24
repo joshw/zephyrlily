@@ -61,6 +61,9 @@ type Session struct {
 	subsMu      sync.Mutex
 	subscribers map[*wsClient]struct{}
 
+	// Per-session command aliases (see %alias / commands.AliasTable).
+	aliases *commands.AliasTable
+
 	// Command output buffering
 	cmdMu     sync.Mutex
 	cmdBuffer map[int][]string // cmdID -> lines of output
@@ -100,6 +103,44 @@ type wsClient struct {
 // assignID assigns the next message ID to a WSServerMsg.
 func (s *Session) assignID(msg *WSServerMsg) {
 	msg.ID = s.nextMsgID.Add(1)
+}
+
+// bufferableType reports whether a message type is retained in the event history
+// buffer for catch-up by clients that connect after it was sent.
+func bufferableType(t string) bool {
+	switch t {
+	case "event", "text", "commandresult", "clientcommand", "prompt":
+		return true
+	}
+	return false
+}
+
+// publish assigns msg an ID, retains it in the event buffer when appropriate, and
+// broadcasts it to every current subscriber.
+func (s *Session) publish(msg *WSServerMsg) {
+	s.assignID(msg)
+	if bufferableType(msg.Type) {
+		s.eventBufMu.Lock()
+		s.eventBuf = append(s.eventBuf, msg)
+		if len(s.eventBuf) > maxEventBuf {
+			s.eventBuf = s.eventBuf[len(s.eventBuf)-maxEventBuf:]
+		}
+		s.eventBufMu.Unlock()
+	}
+	s.broadcast(msg)
+}
+
+// broadcast sends msg to every current subscriber without buffering it. Slow
+// clients are skipped rather than blocking the sender.
+func (s *Session) broadcast(msg *WSServerMsg) {
+	s.subsMu.Lock()
+	for client := range s.subscribers {
+		select {
+		case client.send <- msg:
+		default:
+		}
+	}
+	s.subsMu.Unlock()
 }
 
 // New creates a Server.
@@ -218,6 +259,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		conn:        conn,
 		subscribers: make(map[*wsClient]struct{}),
 		cmdBuffer:   make(map[int][]string),
+		aliases:     commands.NewAliasTable(),
 	}
 
 	// A (re)connect always starts a fresh session: a new Lily login replays the
@@ -231,6 +273,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	s.userTokens.Store(req.Username, token)
 
 	go s.fanOut(sess)
+	go s.runStartup(sess)
 
 	writeJSON(w, AuthResponse{Token: token})
 }
@@ -402,34 +445,13 @@ func (s *Server) fanOut(sess *Session) {
 				}
 				sess.fetchMu.Unlock()
 
-				wsMsg := &WSServerMsg{
+				sess.publish(&WSServerMsg{
 					Type: "commandresult",
 					Data: CommandResultData{
 						CmdID: id,
 						Lines: lines,
 					},
-				}
-				sess.assignID(wsMsg)
-
-				if wsMsg.Type == "event" || wsMsg.Type == "text" || wsMsg.Type == "commandresult" || wsMsg.Type == "prompt" {
-					sess.eventBufMu.Lock()
-					sess.eventBuf = append(sess.eventBuf, wsMsg)
-					if len(sess.eventBuf) > maxEventBuf {
-						sess.eventBuf = sess.eventBuf[len(sess.eventBuf)-maxEventBuf:]
-					}
-					sess.eventBufMu.Unlock()
-				}
-
-				// Broadcast to subscribers
-				sess.subsMu.Lock()
-				for client := range sess.subscribers {
-					select {
-					case client.send <- wsMsg:
-					default:
-						// slow client — drop rather than block
-					}
-				}
-				sess.subsMu.Unlock()
+				})
 				continue
 			}
 			sess.cmdMu.Unlock()
@@ -460,39 +482,11 @@ func (s *Server) fanOut(sess *Session) {
 		if wsMsg == nil {
 			continue
 		}
-		sess.assignID(wsMsg)
-
-		if wsMsg.Type == "event" || wsMsg.Type == "text" || wsMsg.Type == "commandresult" || wsMsg.Type == "prompt" {
-			sess.eventBufMu.Lock()
-			sess.eventBuf = append(sess.eventBuf, wsMsg)
-			if len(sess.eventBuf) > maxEventBuf {
-				sess.eventBuf = sess.eventBuf[len(sess.eventBuf)-maxEventBuf:]
-			}
-			sess.eventBufMu.Unlock()
-		}
-
-		sess.subsMu.Lock()
-		for client := range sess.subscribers {
-			select {
-			case client.send <- wsMsg:
-			default:
-				// slow client — drop rather than block
-			}
-		}
-		sess.subsMu.Unlock()
+		sess.publish(wsMsg)
 	}
 
 	// Lily connection closed — notify subscribers.
-	errMsg := &WSServerMsg{Type: "error", Data: "lily connection closed"}
-	sess.assignID(errMsg)
-	sess.subsMu.Lock()
-	for client := range sess.subscribers {
-		select {
-		case client.send <- errMsg:
-		default:
-		}
-	}
-	sess.subsMu.Unlock()
+	sess.publish(&WSServerMsg{Type: "error", Data: "lily connection closed"})
 	s.sessions.Delete(sess.token)
 	s.userTokens.Delete(sess.username)
 
@@ -501,6 +495,53 @@ func (s *Server) fanOut(sess *Session) {
 	// server the session is gone so it reaps it promptly, which lets a follow-up
 	// reconnect log in without waiting for the old session to time out.
 	sess.conn.Close()
+}
+
+// startupMemoName is the memo fetched from the user after login whose lines are
+// replayed as commands. Persisting an alias (or any startup command) is done by
+// adding the line to this memo.
+const startupMemoName = "zlilyStartup"
+
+// runStartup waits for the initial Lily sync, then fetches the user's
+// zlilyStartup memo and replays each non-comment, non-blank line as a command.
+// Output is published (buffered + broadcast) so a client that connects after
+// login still receives it through the /events catch-up path.
+func (s *Server) runStartup(sess *Session) {
+	select {
+	case <-sess.conn.SyncComplete():
+	case <-time.After(60 * time.Second):
+		slog.Debug("runStartup: sync timeout", "user", sess.username)
+		return
+	}
+
+	lines, err := sess.fetchLines("/memo me " + startupMemoName)
+	if err != nil {
+		// No memo (or fetch failed) — nothing to replay.
+		slog.Debug("runStartup: " + err.Error())
+		return
+	}
+
+	var toRun []string
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		toRun = append(toRun, line)
+	}
+	if len(toRun) == 0 {
+		return
+	}
+
+	sess.publish(&WSServerMsg{Type: "text",
+		Data: TextData{Text: "(found " + startupMemoName + " memo, running its commands)"}})
+
+	for _, line := range toRun {
+		if err := sess.dispatchInput(line, sess.publish); err != nil {
+			slog.Debug("runStartup: replay send error", "err", err)
+			return
+		}
+	}
 }
 
 // handleEvents returns buffered event and text messages after a given ID.
@@ -588,34 +629,67 @@ func (c *wsClient) readLoop(sess *Session) {
 		if err := wsjson.Read(c.ctx, c.ws, &cm); err != nil {
 			return
 		}
-		if cm.Type == "command" {
-			// Check for client commands (starting with %)
-			if strings.HasPrefix(cm.Text, "%") {
-				// Execute client command
-				commands.Execute(sess.conn.State(), cm.Text, func(lines []string) {
-					msg := &WSServerMsg{
-						Type: "commandresult",
-						Data: CommandResultData{
-							CmdID: 0, // Client commands use ID 0
-							Lines: lines,
-						},
-					}
-					sess.assignID(msg)
-					select {
-					case c.send <- msg:
-					default:
-					}
-				})
-				continue
-			}
-
-			// Forward to Lily server
-			if err := sess.conn.Send(cm.Text); err != nil {
-				slog.Debug("lily send error", "err", err)
-				return
+		if cm.Type != "command" {
+			continue
+		}
+		// Command output goes only to the client that issued it (assigned an ID
+		// but not buffered/broadcast, matching the prior behaviour).
+		emit := func(msg *WSServerMsg) {
+			sess.assignID(msg)
+			select {
+			case c.send <- msg:
+			default:
 			}
 		}
+		if err := sess.dispatchInput(cm.Text, emit); err != nil {
+			slog.Debug("lily send error", "err", err)
+			return
+		}
 	}
+}
+
+// dispatchInput expands any alias in text and dispatches each resulting command
+// line. emit publishes proxy-command output and forwarded client commands. A
+// send error to the Lily server is returned so the caller can tear down.
+func (sess *Session) dispatchInput(text string, emit func(*WSServerMsg)) error {
+	lines := []string{text}
+	if expanded, ok := sess.aliases.Expand(text); ok {
+		lines = expanded
+	}
+	for _, line := range lines {
+		if err := sess.dispatchLine(line, emit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// dispatchLine handles one concrete command line: %alias and registered proxy
+// commands are handled here; any other %-command is forwarded to the client to
+// run locally; everything else is sent upstream to Lily.
+func (sess *Session) dispatchLine(line string, emit func(*WSServerMsg)) error {
+	if strings.HasPrefix(line, "%") {
+		fields := strings.Fields(line)
+		var cmd string
+		if len(fields) > 0 {
+			cmd = fields[0]
+		}
+		respond := func(lines []string) {
+			emit(&WSServerMsg{Type: "commandresult", Data: CommandResultData{CmdID: 0, Lines: lines}})
+		}
+		switch {
+		case cmd == "%alias":
+			sess.aliases.HandleCommand(fields[1:], respond)
+		case commands.IsRegistered(cmd):
+			commands.Execute(sess.conn.State(), line, respond)
+		default:
+			// A client-only command (e.g. %style) — forward for local execution.
+			emit(&WSServerMsg{Type: "clientcommand", Data: ClientCommandData{Text: line}})
+		}
+		return nil
+	}
+	// Plain text — forward to Lily.
+	return sess.conn.Send(line)
 }
 
 // writeLoop drains the send channel and writes messages to the WebSocket.
@@ -831,12 +905,35 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	content, err := sess.fetchLines(cmd)
+	if err != nil {
+		switch {
+		case errors.Is(err, errFetchInProgress):
+			http.Error(w, "fetch already in progress", http.StatusConflict)
+		case errors.Is(err, errFetchTimeout):
+			http.Error(w, "fetch timeout", http.StatusGatewayTimeout)
+		default:
+			http.Error(w, "send failed: "+err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	writeJSON(w, FetchResponse{Lines: content})
+}
+
+var (
+	errFetchInProgress = errors.New("fetch already in progress")
+	errFetchTimeout    = errors.New("fetch timeout")
+)
+
+// fetchLines sends cmd to the Lily server and returns its command output with the
+// server's "* " content prefix stripped. fanOut routes the result back here rather
+// than broadcasting it. Only one fetch may be in flight per session at a time.
+func (sess *Session) fetchLines(cmd string) ([]string, error) {
 	resultCh := make(chan []string, 1)
 	sess.fetchMu.Lock()
 	if sess.fetchResultCh != nil {
 		sess.fetchMu.Unlock()
-		http.Error(w, "fetch already in progress", http.StatusConflict)
-		return
+		return nil, errFetchInProgress
 	}
 	sess.fetchResultCh = resultCh
 	sess.fetchCmdID = 0
@@ -846,28 +943,24 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 		sess.fetchMu.Lock()
 		sess.fetchResultCh = nil
 		sess.fetchMu.Unlock()
-		http.Error(w, "send failed: "+err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 
 	select {
 	case lines := <-resultCh:
 		// Content lines are prefixed "* " by the server; strip those two chars.
-		var content []string
+		content := make([]string, 0, len(lines))
 		for _, line := range lines {
 			if strings.HasPrefix(line, "* ") {
 				content = append(content, line[2:])
 			}
 		}
-		if content == nil {
-			content = []string{}
-		}
-		writeJSON(w, FetchResponse{Lines: content})
+		return content, nil
 	case <-time.After(10 * time.Second):
 		sess.fetchMu.Lock()
 		sess.fetchResultCh = nil
 		sess.fetchMu.Unlock()
-		http.Error(w, "fetch timeout", http.StatusGatewayTimeout)
+		return nil, errFetchTimeout
 	}
 }
 

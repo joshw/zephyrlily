@@ -127,8 +127,9 @@ func wrapTextCore(curLine, wordPrefix, text string, maxWidth int, initialSep str
 func wrapKeepURLs(s string, width int) string {
 	w := wordwrap.NewWriter(width)
 	w.Breakpoints = nil
-	w.Write([]byte(s))
-	w.Close()
+	// wordwrap.Writer writes to an in-memory buffer and never errors.
+	_, _ = w.Write([]byte(s))
+	_ = w.Close()
 	return w.String()
 }
 

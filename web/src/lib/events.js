@@ -33,6 +33,11 @@ export function processMessage(wsMsg) {
       addMessage(get(activeTarget) ?? '__system__', { id, kind: 'commandresult', lines });
       break;
     }
+    case 'clientcommand':
+      // A client-only command the proxy forwarded for local execution (e.g.
+      // %style replayed from the zlilyStartup memo). Execute the ones we support.
+      executeClientCommand(wsMsg.data?.text ?? '');
+      break;
     case 'prompt':
       // handled in ws.js → serverPrompt store
       break;
@@ -43,6 +48,22 @@ export function processMessage(wsMsg) {
 
   if (id > _lastSeenID) {
     lastSeenID.set(id);
+  }
+}
+
+/**
+ * Execute a client-only command forwarded by the proxy. The web UI has no
+ * local presentation commands yet (e.g. %style/%spell/%page are terminal-only),
+ * so unsupported commands are silently ignored. Add cases here as the web UI
+ * grows its own local commands.
+ */
+function executeClientCommand(text) {
+  if (!text) return;
+  const cmd = text.trim().split(/\s+/)[0];
+  switch (cmd) {
+    // No web-side client commands yet.
+    default:
+      console.debug('ignoring unsupported client command:', text);
   }
 }
 

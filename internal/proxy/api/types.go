@@ -57,7 +57,7 @@ type WSClientMsg struct {
 // WSServerMsg is a message pushed from the proxy to a thin client over WebSocket.
 type WSServerMsg struct {
 	ID   int64       `json:"id"`   // unique message ID, increments per session
-	Type string      `json:"type"` // "event", "text", "commandresult", "prompt", "error"
+	Type string      `json:"type"` // "event", "text", "commandresult", "clientcommand", "prompt", "error"
 	Data interface{} `json:"data"`
 }
 
@@ -90,6 +90,14 @@ type TextData struct {
 type CommandResultData struct {
 	CmdID int      `json:"cmd_id"`
 	Lines []string `json:"lines"`
+}
+
+// ClientCommandData carries a client-only command (e.g. "%style") that the proxy
+// has forwarded for the client to execute locally. These are typically replayed
+// from the user's zlilyStartup memo on login. Clients must recognise the type and
+// silently ignore any command they do not implement.
+type ClientCommandData struct {
+	Text string `json:"text"`
 }
 
 // ExpandResponse is returned by GET /expand.

@@ -85,6 +85,13 @@ func ListHelp() []HelpTopic {
 	return topics
 }
 
+// IsRegistered reports whether name (including the leading %) is a proxy command
+// handled by this package.
+func IsRegistered(name string) bool {
+	_, ok := Registry[name]
+	return ok
+}
+
 // Execute runs a client command and sends the response.
 // The respond callback receives the lines of output from the command.
 func Execute(state *lily.State, cmd string, respond func(lines []string)) {
