@@ -92,6 +92,20 @@ func TestPasteMode(t *testing.T) {
 			expectedValue: "a b c",
 			description:   "Pasting onto existing text should work",
 		},
+		{
+			name:          "tab_between_words",
+			pasteText:     "a\tb",
+			initialValue:  "",
+			expectedValue: "a b",
+			description:   "Tab should collapse to a single space like other whitespace",
+		},
+		{
+			name:          "url_then_tab_then_text",
+			pasteText:     "url \tI'm",
+			initialValue:  "",
+			expectedValue: "url I'm",
+			description:   "Space followed by tab should collapse to a single space",
+		},
 	}
 
 	for _, tt := range tests {
@@ -104,34 +118,9 @@ func TestPasteMode(t *testing.T) {
 				pasteEatBuf:  false,
 			}
 
-			// Simulate the paste as a single KeyRunes event with all characters
-			msg := tea.KeyMsg{
-				Type:  tea.KeyRunes,
-				Runes: []rune(tt.pasteText),
-			}
-
-			// Process the paste (simulate the paste mode handling from handleNormalKey)
-			if msg.Type == tea.KeyRunes {
-				for _, r := range msg.Runes {
-					if r == ' ' || r == '\n' || r == '\r' {
-						// Whitespace: convert to space, but eat consecutive whitespace
-						if m.pasteEatFlag {
-							continue
-						}
-						if m.pasteEatBuf {
-							m.pasteEatFlag = true
-							continue
-						}
-						// First whitespace in sequence: insert it and mark to eat future whitespace
-						m.pasteEatBuf = true
-						m = m.insertString(" ")
-					} else {
-						// Non-whitespace: clear flags and insert
-						m.pasteEatFlag = false
-						m.pasteEatBuf = false
-						m = m.insertString(string(r))
-					}
-				}
+			// Feed the pasted text through the real paste-normalization path.
+			for _, r := range tt.pasteText {
+				m = m.pasteRune(r)
 			}
 
 			if m.inputValue != tt.expectedValue {
@@ -181,33 +170,11 @@ func TestPasteModeWithEnterKey(t *testing.T) {
 
 			for _, action := range tt.actions {
 				if action == "enter" {
-					// Simulate Enter key (non-rune key)
-					if m.pasteEatFlag {
-						// Skip, eat the enter
-					} else if m.pasteEatBuf {
-						m.pasteEatFlag = true
-					} else {
-						m.pasteEatBuf = true
-						m = m.insertString(" ")
-					}
+					// Enter is treated as a newline rune by the paste path.
+					m = m.pasteRune('\n')
 				} else {
-					// Simulate regular runes
 					for _, r := range action {
-						if r == ' ' {
-							if m.pasteEatFlag {
-								continue
-							}
-							if m.pasteEatBuf {
-								m.pasteEatFlag = true
-								continue
-							}
-							m.pasteEatBuf = true
-							m = m.insertString(" ")
-						} else {
-							m.pasteEatFlag = false
-							m.pasteEatBuf = false
-							m = m.insertString(string(r))
-						}
+						m = m.pasteRune(r)
 					}
 				}
 			}

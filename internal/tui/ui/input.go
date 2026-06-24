@@ -138,6 +138,10 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pasteMode = !m.pasteMode
 		m.pasteEatFlag = false
 		m.pasteEatBuf = false
+		// Toggling changes the prompt ("Paste:" vs none), which changes the
+		// first-line width and therefore the input height; resize the viewport
+		// so the layout doesn't exceed the screen and corrupt the display.
+		m = m.maybeResizeViewport()
 		return m, nil
 	}
 
@@ -148,43 +152,18 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Handle both pasted multi-line text (KeyRunes with multiple chars) and individual keystrokes
 		if msg.Type == tea.KeyRunes {
-			// Process each rune: spaces, \r, and \n all converted to spaces with eat-flag logic
 			for _, r := range msg.Runes {
-				if r == ' ' || r == '\n' || r == '\r' {
-					// Whitespace: convert to space, but eat consecutive whitespace
-					if m.pasteEatFlag {
-						continue
-					}
-					if m.pasteEatBuf {
-						m.pasteEatFlag = true
-						continue
-					}
-					// First whitespace in sequence: insert it and mark to eat future whitespace
-					m.pasteEatBuf = true
-					m = m.insertString(" ")
-				} else {
-					// Non-whitespace: clear flags and insert
-					m.pasteEatFlag = false
-					m.pasteEatBuf = false
-					m = m.insertString(string(r))
-				}
+				m = m.pasteRune(r)
 			}
 			m.syncTextarea()
+			m = m.maybeResizeViewport()
 			return m, nil
 		}
-		// Non-rune keys: Enter/Ctrl+M/Ctrl+J treated same as \r/\n runes
+		// Non-rune keys: Enter/Ctrl+M/Ctrl+J treated the same as a newline rune.
 		if keyStr == "enter" || keyStr == "ctrl+m" || keyStr == "ctrl+j" {
-			if m.pasteEatFlag {
-				return m, nil
-			}
-			if m.pasteEatBuf {
-				m.pasteEatFlag = true
-				m.syncTextarea()
-				return m, nil
-			}
-			m.pasteEatBuf = true
-			m = m.insertString(" ")
+			m = m.pasteRune('\n')
 			m.syncTextarea()
+			m = m.maybeResizeViewport()
 			return m, nil
 		}
 		// Non-enter, non-rune key: clear flags
@@ -913,13 +892,66 @@ func (m Model) downcaseWord() Model {
 	return m
 }
 
+// pasteRune applies one pasted rune to the input using paste-mode whitespace
+// rules: a run of whitespace (space, tab, CR, or LF) collapses to a single
+// space, and any other rune is inserted verbatim. pasteEatBuf/pasteEatFlag
+// carry the run state across calls, so callers must feed runes in order.
+func (m Model) pasteRune(r rune) Model {
+	if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+		// Whitespace: emit one space for the run, then eat the rest.
+		if m.pasteEatFlag {
+			return m
+		}
+		if m.pasteEatBuf {
+			m.pasteEatFlag = true
+			return m
+		}
+		m.pasteEatBuf = true
+		return m.insertString(" ")
+	}
+	// Non-whitespace: end any whitespace run and insert.
+	m.pasteEatFlag = false
+	m.pasteEatBuf = false
+	return m.insertString(string(r))
+}
+
 // insertString inserts s at the cursor position, converting Unicode to ASCII.
 func (m Model) insertString(s string) Model {
 	// Convert Unicode characters to ASCII approximations
 	s = ascify.String(s)
+	// Drop ASCII control characters (tabs, stray CR/LF, etc.). The input is a
+	// single logical line and renderInputArea hard-wraps by byte offset assuming
+	// one byte == one display column; a literal tab renders as several columns
+	// and would desync the wrap from what the terminal draws. After ascify the
+	// string is pure ASCII, so keeping only printable bytes guarantees the
+	// invariant and a clean hard wrap at the window width.
+	s = stripControl(s)
 	m.inputValue = m.inputValue[:m.inputCursor] + s + m.inputValue[m.inputCursor:]
 	m.inputCursor += len(s)
 	return m
+}
+
+// stripControl removes ASCII control characters (bytes < 0x20 and DEL) from s.
+// s is expected to already be pure ASCII (post-ascify).
+func stripControl(s string) string {
+	clean := true
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c >= 0x20 && c != 0x7f {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // Word boundary helpers
