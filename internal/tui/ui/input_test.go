@@ -1,10 +1,14 @@
 package ui
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/joshw/zephyrlily/internal/tui/client"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPasteMode(t *testing.T) {
@@ -128,6 +132,49 @@ func TestPasteMode(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSubmitLineAnchorRespectsScrollPosition verifies that submitting a line
+// only arms the auto-page anchor (which scrolls the viewport down to the
+// response) when the user was already following the bottom. Scrolled back into
+// history, a submit must leave the viewport where it is.
+func TestSubmitLineAnchorRespectsScrollPosition(t *testing.T) {
+	build := func() Model {
+		logChan, _ := NewLogger()
+		m := New(client.New(""), logChan)
+		for i := 0; i < 40; i++ {
+			m.output = append(m.output, OutputItem{Type: "text", Data: fmt.Sprintf("line %02d", i)})
+		}
+		m = sizeTo(t, m, 80, 6)
+		require.Greater(t, m.viewport.TotalLineCount(), m.viewport.Height,
+			"fixture must be tall enough to scroll")
+		return m
+	}
+
+	t.Run("scrolled back keeps anchor disabled and viewport put", func(t *testing.T) {
+		m := build()
+		m.viewport.GotoTop()
+		require.False(t, m.viewport.AtBottom())
+		before := m.viewport.YOffset
+
+		// %page exercises submitLine's anchor logic (set unconditionally at the
+		// top) without reaching client.Send, which the test client can't service.
+		m, _ = m.submitLine("%page")
+
+		assert.Equal(t, -1, m.autoPageAnchor, "anchor must stay disabled when scrolled back")
+		assert.Equal(t, before, m.viewport.YOffset, "viewport must not jump when scrolled back")
+	})
+
+	t.Run("at bottom arms anchor and follows the response", func(t *testing.T) {
+		m := build()
+		m.viewport.GotoBottom()
+		require.True(t, m.viewport.AtBottom())
+
+		m, _ = m.submitLine("%page")
+
+		assert.GreaterOrEqual(t, m.autoPageAnchor, 0, "anchor must be armed when caught up at bottom")
+		assert.True(t, m.viewport.AtBottom(), "viewport should keep following the bottom")
+	})
 }
 
 func TestPasteModeWithEnterKey(t *testing.T) {

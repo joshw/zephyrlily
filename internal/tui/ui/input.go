@@ -343,8 +343,13 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 // user had typed it and pressed Enter. It is the shared core of handleSubmit and
 // is also used to replay commands from the zlilyStartup memo.
 func (m Model) submitLine(line string) (Model, tea.Cmd) {
-	// Set auto-page anchor to current line count so we auto-scroll response
-	m.autoPageAnchor = m.viewport.TotalLineCount()
+	// Auto-scroll to the response only if the user was already following the
+	// bottom; if they're scrolled back reading history, leave the viewport put.
+	if m.viewport.AtBottom() {
+		m.autoPageAnchor = m.viewport.TotalLineCount()
+	} else {
+		m.autoPageAnchor = -1
+	}
 
 	// Echo the sent line
 	m.output = append(m.output, OutputItem{Type: "input", Data: line})
