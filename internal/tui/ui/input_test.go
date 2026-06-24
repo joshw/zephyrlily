@@ -3,6 +3,7 @@ package ui
 import (
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -216,4 +217,64 @@ func TestPasteModeWithEnterKey(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMetaPrefixDoesNotSwallowNonRuneKeys reproduces the bug where a stray ESC
+// (left over from a split Alt-word-motion escape sequence) primed metaPrefix
+// and caused the *next* Ctrl-B / Ctrl-F / arrow key to be alt-ified into an
+// unbound combo and silently swallowed. Non-rune keys have no M- bindings, so a
+// pending metaPrefix must not consume them.
+func TestMetaPrefixDoesNotSwallowNonRuneKeys(t *testing.T) {
+	send := func(m Model, msg tea.KeyMsg) Model {
+		next, _ := m.handleNormalKey(msg)
+		return next.(Model)
+	}
+
+	newModel := func() Model {
+		return Model{
+			keys:        NewKeyMap(),
+			input:       textarea.New(),
+			width:       80,
+			height:      24,
+			inputValue:  "foo, bar",
+			inputCursor: len("foo, bar"),
+		}
+	}
+
+	nonRune := []struct {
+		name string
+		msg  tea.KeyMsg
+	}{
+		{"ctrl+b", tea.KeyMsg{Type: tea.KeyCtrlB}},
+		{"ctrl+f", tea.KeyMsg{Type: tea.KeyCtrlF}},
+		{"left", tea.KeyMsg{Type: tea.KeyLeft}},
+		{"right", tea.KeyMsg{Type: tea.KeyRight}},
+	}
+
+	for _, tc := range nonRune {
+		t.Run("prefix_then_"+tc.name, func(t *testing.T) {
+			m := newModel()
+			m.inputCursor = 4 // mid-line so both back and forward motions can move
+			// A stray ESC primes the meta prefix.
+			m = send(m, tea.KeyMsg{Type: tea.KeyEscape})
+			before := m.inputCursor
+			m = send(m, tc.msg)
+			if m.inputCursor == before {
+				t.Fatalf("%s after meta prefix was swallowed: cursor stayed at %d", tc.name, before)
+			}
+			if m.metaPrefix {
+				t.Fatalf("metaPrefix should be cleared after %s", tc.name)
+			}
+		})
+	}
+
+	// Genuine ESC-as-Meta on a rune still works: ESC then 'b' is M-b (word back).
+	t.Run("prefix_then_rune_b_is_word_back", func(t *testing.T) {
+		m := newModel() // cursor at end of "foo, bar"
+		m = send(m, tea.KeyMsg{Type: tea.KeyEscape})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+		if want := len("foo, "); m.inputCursor != want {
+			t.Fatalf("M-b should move to start of word: got cursor %d, want %d", m.inputCursor, want)
+		}
+	})
 }

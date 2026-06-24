@@ -106,7 +106,14 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// ESC as meta prefix: ESC <key> is equivalent to M-<key>
 	if m.metaPrefix {
 		m.metaPrefix = false
-		if keyStr != "esc" {
+		// Only printable runes and Backspace have M- bindings (M-b, M-f, M-v,
+		// M-<, M-Bksp, …); nothing here is bound to Meta+Ctrl or Meta+arrow. A
+		// lone ESC in front of such a key is almost always the stray tail of a
+		// split escape sequence (e.g. the terminal flushing Alt-B as "ESC" then
+		// "b" can leave a dangling ESC), so alt-ifying it would turn the next
+		// Ctrl-B/Ctrl-F/arrow into an unbound combo and silently swallow it.
+		// Drop the prefix and handle those keys normally instead.
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeyBackspace {
 			// Synthesize an alt+ key by setting the Alt flag
 			msg.Alt = true
 			keyStr = msg.String()
