@@ -193,10 +193,16 @@ func (s *State) ApplyNotify(ev *slcp.NotifyEvent) {
 			e.State = "away"
 		}
 	case "destroy":
-		// discussion destroyed
-		if e := s.byHandle[ev.Source]; e != nil {
-			delete(s.byName, strings.ToLower(e.Name))
-			delete(s.byHandle, e.Handle)
+		// A discussion was destroyed. ev.Source is the user who destroyed it;
+		// the discussion(s) being removed are in ev.Recips. Drop only the
+		// discussion entities — deleting the source would wipe the destroyer's
+		// handle→name mapping.
+		for _, h := range ev.Recips {
+			if e := s.byHandle[h]; e != nil && e.Kind == KindDisc {
+				delete(s.byName, strings.ToLower(e.Name))
+				delete(s.byHandle, e.Handle)
+				delete(s.discMembership, e.Handle)
+			}
 		}
 	case "retitle":
 		if e := s.byHandle[ev.Source]; e != nil {

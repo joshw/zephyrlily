@@ -94,9 +94,17 @@ func TestApplyNotify_DiscEvents(t *testing.T) {
 	s.ApplyNotify(&slcp.NotifyEvent{Event: "retitle", Source: "#5", Value: "New"})
 	assert.Equal(t, "New", s.Get("#5").Title)
 
-	s.ApplyNotify(&slcp.NotifyEvent{Event: "destroy", Source: "#5"})
+	// destroy: Source is the user who destroyed it, the disc is in Recips.
+	// The destroyer's own mapping must survive.
+	s.ApplyUser(&slcp.UserRecord{Handle: "#142", Name: "Garance"})
+	s.JoinDisc("#5")
+	s.ApplyNotify(&slcp.NotifyEvent{Event: "destroy", Source: "#142", Recips: []string{"#5"}})
 	assert.Nil(t, s.Get("#5"))
 	assert.Nil(t, s.LookupName("cafe"))
+	assert.False(t, s.IsDiscMember("#5"))
+	// The destroyer is untouched — handle→name mapping intact.
+	assert.Equal(t, "Garance", s.Get("#142").Name)
+	assert.Equal(t, "#142", s.LookupName("Garance").Handle)
 }
 
 func TestApplyNotify_MembershipOnlyForSelf(t *testing.T) {
