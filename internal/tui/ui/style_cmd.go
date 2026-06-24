@@ -286,7 +286,17 @@ func renderStyleTable() []string {
 // style vars in place; the caller re-renders the viewport so changes show up
 // immediately. Returns the lines to display.
 func handleStyleCommand(args []string) []string {
-	usage := []string{"Usage: %style [list] | %style <name> [fg|bg <color>|bold|underline on|off|default|none] | %style all default"}
+	usage := []string{
+		"Usage: %style [list]                table of all styles + whether each is default",
+		"       %style <name>                show one style",
+		"       %style <name> fg <color>     set foreground",
+		"       %style <name> bg <color>     set background",
+		"       %style <name> bold on|off",
+		"       %style <name> underline on|off",
+		"       %style <name> default        restore one style to its default",
+		"       %style <name> none           make one style unstyled but visible",
+		"       %style all default           restore every style to its default",
+	}
 
 	if len(args) == 0 || args[0] == "list" {
 		return renderStyleTable()
