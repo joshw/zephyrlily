@@ -3,7 +3,9 @@ package lily
 import (
 	"bufio"
 	"context"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -109,6 +111,51 @@ func (c *Conn) SyncComplete() <-chan struct{} {
 	return c.syncComplete
 }
 
+// describeCertError enriches a TLS handshake failure with concrete details
+// about the certificate the server offered. It exists because of how Go reports
+// verification failures on macOS: chain validation is delegated to Apple's
+// Security framework, which returns opaque strings like "certificate is not
+// standards compliant" without naming the rule that was broken. Go surfaces
+// that string verbatim, so the bare error tells the operator nothing
+// actionable.
+//
+// The verification error still carries the offered (unverified) chain, so we
+// decode the leaf ourselves and point at the fields Apple most commonly
+// rejects: an over-long validity period, a missing Subject Alternative Name, a
+// weak signature algorithm, or an undersized RSA key. If none of those match we
+// at least print the subject/issuer/validity so the cert can be identified.
+func describeCertError(err error) error {
+	var ve *tls.CertificateVerificationError
+	if !errors.As(err, &ve) || len(ve.UnverifiedCertificates) == 0 {
+		return err
+	}
+	leaf := ve.UnverifiedCertificates[0]
+
+	var notes []string
+	if days := leaf.NotAfter.Sub(leaf.NotBefore).Hours() / 24; days > 398 {
+		notes = append(notes, fmt.Sprintf("validity is %.0f days (Apple rejects TLS certs valid >398 days)", days))
+	}
+	if len(leaf.DNSNames) == 0 && len(leaf.IPAddresses) == 0 {
+		notes = append(notes, fmt.Sprintf("no Subject Alternative Name (CN=%q alone is no longer accepted)", leaf.Subject.CommonName))
+	}
+	switch leaf.SignatureAlgorithm {
+	case x509.MD5WithRSA, x509.SHA1WithRSA, x509.DSAWithSHA1, x509.ECDSAWithSHA1:
+		notes = append(notes, "weak signature algorithm "+leaf.SignatureAlgorithm.String())
+	}
+	if pk, ok := leaf.PublicKey.(*rsa.PublicKey); ok && pk.N.BitLen() < 2048 {
+		notes = append(notes, fmt.Sprintf("RSA key is %d bits (<2048)", pk.N.BitLen()))
+	}
+
+	detail := fmt.Sprintf("offered cert subject=%q issuer=%q notBefore=%s notAfter=%s SANs=%v",
+		leaf.Subject, leaf.Issuer,
+		leaf.NotBefore.Format(time.RFC3339), leaf.NotAfter.Format(time.RFC3339),
+		leaf.DNSNames)
+	if len(notes) > 0 {
+		detail += "; likely cause: " + strings.Join(notes, "; ")
+	}
+	return fmt.Errorf("%w (%s)", err, detail)
+}
+
 // Connect dials the Lily server and runs the handshake, blocking until login is
 // confirmed or an error occurs. The whole operation is bounded by
 // handshakeTimeout so a stalled or unreachable server (e.g. during a reconnect)
@@ -128,7 +175,7 @@ func (c *Conn) Connect() error {
 		nc, err = dialer.Dial("tcp", c.addr)
 	}
 	if err != nil {
-		return fmt.Errorf("dial %s: %w", c.addr, err)
+		return fmt.Errorf("dial %s: %w", c.addr, describeCertError(err))
 	}
 	slog.Debug("lily: connected", "addr", c.addr)
 	c.conn = nc
