@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
@@ -89,6 +90,10 @@ func wrapTextCore(curLine, wordPrefix, text string, maxWidth int, initialSep str
 				lineHasContent = true
 				continuingWord = false
 			} else if !lineHasContent {
+				// A word longer than the line (e.g. a long URL) is hard-broken at
+				// the width boundary. Continuation lines carry no wordPrefix so the
+				// full token stays readable on terminals without OSC8 support, while
+				// the fragments share one id and remain a single clickable link.
 				curLine += sep + render(consumed, consumed+avail)
 				consumed += avail
 				lines = append(lines, curLine)
@@ -113,9 +118,140 @@ func wrapTextCore(curLine, wordPrefix, text string, maxWidth int, initialSep str
 	return lines
 }
 
+// wrapKeepURLs word-wraps s to width like wordwrap.String but drops '-' from the
+// set of breakpoints. reflow treats '-' as a breakpoint by default, which splits
+// a long URL at its first hyphen; because linkification runs per wrapped line,
+// that truncates the OSC8 link at the '-' and leaves the remainder unlinked.
+// Without the hyphen breakpoint a URL stays a single token (overflowing the width
+// if need be, which the terminal soft-wraps) and remains one clickable link.
+func wrapKeepURLs(s string, width int) string {
+	w := wordwrap.NewWriter(width)
+	w.Breakpoints = nil
+	w.Write([]byte(s))
+	w.Close()
+	return w.String()
+}
+
+// charWrapLinkify renders any URLs in line as OSC8 hyperlinks and, when the line
+// is wider than width, hard-wraps it at the width boundary. A URL spanning the
+// boundary is emitted as one OSC8 link (its fragments share an id) so it stays
+// clickable, while terminals without OSC8 support still show the whole URL across
+// the wrapped lines. Continuation lines carry no prefix or leading whitespace.
+func charWrapLinkify(line string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+
+	// Locate URL spans (byte ranges, trailing punctuation excluded) and give each
+	// a shared OSC8 id so fragments split across wrapped lines group together.
+	type urlSpan struct {
+		start, end int
+		id         int64
+	}
+	var spans []urlSpan
+	for _, loc := range urlPattern.FindAllStringIndex(line, -1) {
+		s, e := loc[0], loc[1]
+		for e > s && strings.IndexByte(trailingURLPunct, line[e-1]) != -1 {
+			e--
+		}
+		spans = append(spans, urlSpan{s, e, linkID.Add(1)})
+	}
+
+	// render emits line[a:b], wrapping any portion inside a URL span in an OSC8
+	// hyperlink to that span's full URL.
+	render := func(a, b int) string {
+		var sb strings.Builder
+		for i := a; i < b; {
+			var sp *urlSpan
+			for k := range spans {
+				if i >= spans[k].start && i < spans[k].end {
+					sp = &spans[k]
+					break
+				}
+			}
+			if sp == nil {
+				next := b
+				for k := range spans {
+					if spans[k].start > i && spans[k].start < next {
+						next = spans[k].start
+					}
+				}
+				sb.WriteString(line[i:next])
+				i = next
+				continue
+			}
+			hi := min(b, sp.end)
+			sb.WriteString(osc8Link(line[sp.start:sp.end], line[i:hi], sp.id))
+			i = hi
+		}
+		return sb.String()
+	}
+
+	// Hard-wrap at the width column, measured on visible characters only. ANSI
+	// escape sequences are zero width and are never split, so styled content (the
+	// splash logo, lipgloss-rendered lines) passes through intact — a line already
+	// within the width yields a single line unchanged. No continuation prefix.
+	var out []string
+	col, lineStart := 0, 0
+	for i := 0; i < len(line); {
+		if n := escSeqLen(line, i); n > 0 {
+			i += n // escape sequence: zero width, never a break point
+			continue
+		}
+		if col == width {
+			out = append(out, render(lineStart, i))
+			lineStart, col = i, 0
+		}
+		_, sz := utf8.DecodeRuneInString(line[i:])
+		i += sz
+		col++
+	}
+	return append(out, render(lineStart, len(line)))
+}
+
+// escSeqLen returns the byte length of the ANSI escape sequence starting at
+// s[i], or 0 if s[i] does not begin one. It recognizes CSI sequences (ESC '['
+// ... final byte 0x40-0x7E, e.g. SGR colors) and OSC sequences (ESC ']' ...
+// terminated by BEL or ST), so width counting and line breaking step over them
+// rather than splitting them and emitting stray control characters.
+func escSeqLen(s string, i int) int {
+	if i >= len(s) || s[i] != 0x1b {
+		return 0
+	}
+	if i+1 >= len(s) {
+		return 1
+	}
+	switch s[i+1] {
+	case '[': // CSI: parameters/intermediates then a final byte in 0x40-0x7E.
+		j := i + 2
+		for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+			j++
+		}
+		if j < len(s) {
+			j++ // include the final byte
+		}
+		return j - i
+	case ']': // OSC: terminated by BEL (0x07) or ST (ESC '\').
+		j := i + 2
+		for j < len(s) {
+			if s[j] == 0x07 {
+				return j + 1 - i
+			}
+			if s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\' {
+				return j + 2 - i
+			}
+			j++
+		}
+		return j - i
+	default:
+		return 2 // two-byte escape (ESC + one byte)
+	}
+}
+
 // wrapCommandLines word-wraps each line to the available width, then renders any
-// URLs as OSC8 hyperlinks. Linkification is applied after wrapping so wrapping
-// never splits in the middle of an escape sequence.
+// URLs as OSC8 hyperlinks. Word wrapping (on spaces, preserving alignment) is
+// done first; charWrapLinkify then hard-wraps any line still too wide — a URL
+// longer than the width — at the width boundary, keeping it one clickable link.
 func wrapCommandLines(lines []string, width int) []string {
 	wrapWidth := width - 2
 	if wrapWidth < 1 {
@@ -123,11 +259,9 @@ func wrapCommandLines(lines []string, width int) []string {
 	}
 	var out []string
 	for _, line := range lines {
-		wrapped := strings.Split(wordwrap.String(line, wrapWidth), "\n")
-		for i := range wrapped {
-			wrapped[i] = linkifyText(wrapped[i])
+		for _, wrapped := range strings.Split(wrapKeepURLs(line, wrapWidth), "\n") {
+			out = append(out, charWrapLinkify(wrapped, wrapWidth)...)
 		}
-		out = append(out, wrapped...)
 	}
 	return out
 }
