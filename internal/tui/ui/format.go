@@ -556,7 +556,8 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 		headerStr := "> (" + ts + "to " + recipStr + ") " + lookupName(source)
 		styledHeader := emoteBodyStyle.Render("> ("+ts+"to ") +
 			emoteRecipsStyle.Render(recipStr) +
-			emoteBodyStyle.Render(") "+lookupName(source))
+			emoteBodyStyle.Render(") ") +
+			emoteSenderStyle.Render(lookupName(source))
 		if value == "" {
 			return styledHeader
 		}

@@ -43,6 +43,7 @@ var styleList = []*styleDescriptor{
 	{name: "private-recips", ptrs: []*lipgloss.Style{&privateRecipsStyle}},
 	{name: "emote", ptrs: []*lipgloss.Style{&emoteBodyStyle}},
 	{name: "emote-recips", ptrs: []*lipgloss.Style{&emoteRecipsStyle}},
+	{name: "emote-sender", ptrs: []*lipgloss.Style{&emoteSenderStyle}},
 	{name: "slcp-body", ptrs: []*lipgloss.Style{&slcpBodyStyle}},
 	{name: "command", ptrs: []*lipgloss.Style{&commandResultStyle}},
 	{name: "error", ptrs: []*lipgloss.Style{&errorStyle}},

@@ -61,6 +61,11 @@ var (
 	emoteRecipsStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("6")) // cyan, normal
 
+	// Sender of an emote — whose action it was. Defaults to match emoteBodyStyle
+	// so existing displays are unchanged.
+	emoteSenderStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("6")) // cyan, normal
+
 	// Blurb styles — context-matched to their message type
 	publicBlurbStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("6")) // cyan, matching public color
