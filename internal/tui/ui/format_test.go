@@ -190,3 +190,26 @@ func TestFormatEvent_StampLeavesQuietSelfNoticeAlone(t *testing.T) {
 	got := stripStyle(formatEvent(d, 80, "me"))
 	assert.Equal(t, "(you are now named Alicia)", got)
 }
+
+func TestFormatEvent_EmoteSeparator(t *testing.T) {
+	// A Lily emote value carries its own leading separator. A normal emote
+	// (" waves") gets a space after the name; a possessive ("'s stuff") arrives
+	// with no leading space and must join the name directly.
+	emote := func(value string) string {
+		d := map[string]interface{}{
+			"event":  "emote",
+			"text":   "Kiwi" + value, // proxy plain-text fallback; forces rich path
+			"source": "#1",
+			"value":  value,
+			"recips": []interface{}{"#2"},
+			"entities": map[string]interface{}{
+				"#1": map[string]interface{}{"name": "Kiwi"},
+				"#2": map[string]interface{}{"name": "beener"},
+			},
+		}
+		return stripStyle(formatEvent(d, 80, "me"))
+	}
+
+	assert.Equal(t, "> (to beener) Kiwi waves", emote(" waves"))
+	assert.Equal(t, "> (to beener) Kiwi's stuff", emote("'s stuff"))
+}

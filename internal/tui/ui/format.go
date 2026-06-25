@@ -558,10 +558,18 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 			emoteRecipsStyle.Render(recipStr) +
 			emoteBodyStyle.Render(") ") +
 			emoteSenderStyle.Render(lookupName(source))
-		if value == "" {
+		if strings.TrimSpace(value) == "" {
 			return styledHeader
 		}
-		lines := wrapTextLinkify(headerStr, "> ", strings.TrimSpace(value), width, " ")
+		// Lily emote values carry their own leading separator: " waves" renders as
+		// "Name waves", while a possessive like "'s stuff" arrives with no leading
+		// space and must join the name directly ("Name's stuff"). Honor that
+		// distinction instead of always inserting a space.
+		sep := ""
+		if value[0] == ' ' || value[0] == '\t' {
+			sep = " "
+		}
+		lines := wrapTextLinkify(headerStr, "> ", strings.TrimSpace(value), width, sep)
 		// Line 0 begins with the literal headerStr; swap in the styled version and
 		// render the remainder (plus all later lines) with the emote body style.
 		lines[0] = styledHeader + emoteBodyStyle.Render(strings.TrimPrefix(lines[0], headerStr))
