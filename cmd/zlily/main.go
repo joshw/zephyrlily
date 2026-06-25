@@ -25,6 +25,7 @@ import (
 
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
+	"github.com/joshw/zephyrlily/internal/tui/inputguard"
 	"github.com/joshw/zephyrlily/internal/tui/ui"
 	"github.com/joshw/zephyrlily/internal/version"
 )
@@ -210,7 +211,17 @@ func runTUI(proxyAddr string, startupMsgs ...string) {
 	slog.SetDefault(logger)
 
 	m := ui.New(c, logChan, startupMsgs...)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	opts := []tea.ProgramOption{tea.WithAltScreen()}
+	// Interpose a sequence-boundary guard on stdin so Bubble Tea never sees an
+	// escape sequence split across read boundaries (which leaks mouse reports
+	// into the input during fast wheel scrolling). Only do this for a real
+	// terminal; otherwise leave input to Bubble Tea's default TTY handling.
+	// This is a workaround for a Bubble Tea parser bug — see package inputguard;
+	// remove this line and the package together once it's fixed upstream.
+	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		opts = append(opts, tea.WithInput(inputguard.New(os.Stdin)))
+	}
+	p := tea.NewProgram(m, opts...)
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("tui: %v", err)
 	}
