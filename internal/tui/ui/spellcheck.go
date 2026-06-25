@@ -87,6 +87,10 @@ func (s *SpellChecker) CheckWord(word string) bool {
 	if s.off || word == "" {
 		return true
 	}
+	// Tokens with no letters (e.g. "---", "'") aren't words; never flag them.
+	if !hasLetter(word) {
+		return true
+	}
 	lw := strings.ToLower(word)
 	if _, ok := s.forbidden[lw]; ok {
 		return false
@@ -98,6 +102,16 @@ func (s *SpellChecker) CheckWord(word string) bool {
 		return true
 	}
 	return s.checker.Spell(word)
+}
+
+// hasLetter reports whether word contains at least one letter.
+func hasLetter(word string) bool {
+	for _, r := range word {
+		if unicode.IsLetter(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // Enabled reports whether spell checking is currently active (the user has not
