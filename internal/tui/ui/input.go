@@ -531,136 +531,157 @@ func (m Model) enterSearch(backward bool) Model {
 	m.searchBuf = ""
 	m.searchSave = m.inputValue
 	m.searchIdx = -1
+	// Anchor the search at the cursor end of the current line: reverse search
+	// scans leftward from the end, forward search rightward from the start.
+	if backward {
+		m.searchPos = len(m.searchSave)
+	} else {
+		m.searchPos = 0
+	}
 	return m
 }
 
+// The incremental search space is an ordered list of "lines": history items
+// (oldest..newest at indices 0..len-1) followed by the current saved line at
+// index len(history). Backward search moves toward older lines / leftward
+// within a line; forward search moves toward newer lines / rightward.
+
+// searchLineAt returns the text of linear line L (len(history) == current line).
+func (m Model) searchLineAt(L int) string {
+	if L >= len(m.history) {
+		return m.searchSave
+	}
+	return m.history[L]
+}
+
+// searchLinear returns the linear index of the current match.
+func (m Model) searchLinear() int {
+	if m.searchIdx < 0 {
+		return len(m.history)
+	}
+	return m.searchIdx
+}
+
+// withSearchResult records a match at linear line L, byte offset pos.
+func (m Model) withSearchResult(L, pos int) Model {
+	if L >= len(m.history) {
+		m.searchIdx = -1
+	} else {
+		m.searchIdx = L
+	}
+	m.searchPos = pos
+	m.inputValue = m.searchLineAt(L)
+	m.inputCursor = pos
+	return m
+}
+
+// searchFind scans for the current pattern starting from linear line L at byte
+// offset off, moving in direction (-1 backward/older, +1 forward/newer). When
+// inclusive is false the starting offset itself is skipped. It first looks
+// within the starting line, then crosses into adjacent lines. Returns the line,
+// match offset, and whether a match was found.
+func (m Model) searchFind(L, off, direction int, inclusive bool) (int, int, bool) {
+	searchLower := strings.ToLower(m.searchBuf)
+	if searchLower == "" {
+		return 0, 0, false
+	}
+
+	if direction < 0 {
+		limit := off
+		if !inclusive {
+			limit = off - 1
+		}
+		if pos := lastMatchAtMost(m.searchLineAt(L), searchLower, limit); pos >= 0 {
+			return L, pos, true
+		}
+		for LL := L - 1; LL >= 0; LL-- {
+			line := m.searchLineAt(LL)
+			if pos := lastMatchAtMost(line, searchLower, len(line)); pos >= 0 {
+				return LL, pos, true
+			}
+		}
+	} else {
+		from := off
+		if !inclusive {
+			from = off + 1
+		}
+		if pos := firstMatchAtLeast(m.searchLineAt(L), searchLower, from); pos >= 0 {
+			return L, pos, true
+		}
+		for LL := L + 1; LL <= len(m.history); LL++ {
+			if pos := firstMatchAtLeast(m.searchLineAt(LL), searchLower, 0); pos >= 0 {
+				return LL, pos, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// searchRefresh re-runs the search after the pattern changes (typing/backspace),
+// re-anchoring from the current match position in the active direction.
 func (m Model) searchRefresh() Model {
 	if m.searchBuf == "" {
 		m.inputValue = m.searchSave
 		m.inputCursor = len(m.inputValue)
 		m.searchIdx = -1
+		m.searchPos = len(m.searchSave)
 		return m
 	}
 
-	searchLower := strings.ToLower(m.searchBuf)
-
-	// Search backward: check current line first, then history backward
+	dir := 1
 	if m.searchBack {
-		// Check current line first
-		if strings.Contains(strings.ToLower(m.searchSave), searchLower) {
-			m.inputValue = m.searchSave
-			pos := findSubstringPos(m.searchSave, searchLower)
-			m.inputCursor = pos
-			m.searchIdx = -1 // Mark as using current line, not history
-			return m
-		}
-
-		// Then search history backward
-		for i := len(m.history) - 1; i >= 0; i-- {
-			if strings.Contains(strings.ToLower(m.history[i]), searchLower) {
-				m.searchIdx = i
-				m.inputValue = m.history[i]
-				pos := findSubstringPos(m.history[i], searchLower)
-				m.inputCursor = pos
-				return m
-			}
-		}
-	} else {
-		// Search forward: check current line first, then history forward
-		// Check current line first
-		if strings.Contains(strings.ToLower(m.searchSave), searchLower) {
-			m.inputValue = m.searchSave
-			pos := findSubstringPos(m.searchSave, searchLower)
-			m.inputCursor = pos
-			m.searchIdx = -1 // Mark as using current line, not history
-			return m
-		}
-
-		// Then search history forward
-		for i := 0; i < len(m.history); i++ {
-			if strings.Contains(strings.ToLower(m.history[i]), searchLower) {
-				m.searchIdx = i
-				m.inputValue = m.history[i]
-				pos := findSubstringPos(m.history[i], searchLower)
-				m.inputCursor = pos
-				return m
-			}
-		}
+		dir = -1
 	}
-
-	// No match found
-	m.searchIdx = -1
+	if L, pos, ok := m.searchFind(m.searchLinear(), m.searchPos, dir, true); ok {
+		m = m.withSearchResult(L, pos)
+	}
 	return m
 }
 
+// searchStep moves to the next match in direction (C-r/C-s repeats), skipping
+// the current match position.
 func (m Model) searchStep(direction int) Model {
-	if m.searchIdx < 0 {
-		// Currently on saved line; search from history
-		searchLower := strings.ToLower(m.searchBuf)
-
-		if m.searchBack {
-			// Search history backward
-			for i := len(m.history) - 1; i >= 0; i-- {
-				if strings.Contains(strings.ToLower(m.history[i]), searchLower) {
-					m.searchIdx = i
-					m.inputValue = m.history[i]
-					pos := findSubstringPos(m.history[i], searchLower)
-					m.inputCursor = pos
-					return m
-				}
-			}
-		} else {
-			// Search history forward
-			for i := 0; i < len(m.history); i++ {
-				if strings.Contains(strings.ToLower(m.history[i]), searchLower) {
-					m.searchIdx = i
-					m.inputValue = m.history[i]
-					pos := findSubstringPos(m.history[i], searchLower)
-					m.inputCursor = pos
-					return m
-				}
-			}
-		}
+	if m.searchBuf == "" {
 		return m
 	}
-
-	// Currently on a history item; move to next/previous
-	searchLower := strings.ToLower(m.searchBuf)
-	start := m.searchIdx + direction
-
-	if m.searchBack {
-		for i := start; i >= 0; i-- {
-			if strings.Contains(strings.ToLower(m.history[i]), searchLower) {
-				m.searchIdx = i
-				m.inputValue = m.history[i]
-				pos := findSubstringPos(m.history[i], searchLower)
-				m.inputCursor = pos
-				return m
-			}
-		}
-	} else {
-		for i := start; i < len(m.history); i++ {
-			if strings.Contains(strings.ToLower(m.history[i]), searchLower) {
-				m.searchIdx = i
-				m.inputValue = m.history[i]
-				pos := findSubstringPos(m.history[i], searchLower)
-				m.inputCursor = pos
-				return m
-			}
-		}
+	if L, pos, ok := m.searchFind(m.searchLinear(), m.searchPos, direction, false); ok {
+		m = m.withSearchResult(L, pos)
 	}
-
 	return m
 }
 
-// findSubstringPos finds the byte position of the search string in text (case-insensitive)
-func findSubstringPos(text, searchLower string) int {
-	textLower := strings.ToLower(text)
-	idx := strings.Index(textLower, searchLower)
-	if idx < 0 {
-		return 0
+// firstMatchAtLeast returns the byte offset of the first occurrence of
+// searchLower (already lowercase) in text at or after from, or -1 if none.
+func firstMatchAtLeast(text, searchLower string, from int) int {
+	if from < 0 {
+		from = 0
 	}
-	return idx
+	if from > len(text) {
+		return -1
+	}
+	idx := strings.Index(strings.ToLower(text)[from:], searchLower)
+	if idx < 0 {
+		return -1
+	}
+	return from + idx
+}
+
+// lastMatchAtMost returns the byte offset of the last (rightmost) occurrence of
+// searchLower (already lowercase) in text starting at or before limit, or -1.
+func lastMatchAtMost(text, searchLower string, limit int) int {
+	if limit < 0 {
+		return -1
+	}
+	textLower := strings.ToLower(text)
+	if limit > len(textLower) {
+		limit = len(textLower)
+	}
+	for i := limit; i >= 0; i-- {
+		if strings.HasPrefix(textLower[i:], searchLower) {
+			return i
+		}
+	}
+	return -1
 }
 
 // History helpers

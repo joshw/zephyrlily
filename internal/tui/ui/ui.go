@@ -79,7 +79,8 @@ type Model struct {
 	searchBack bool   // true=reverse (C-r), false=forward (C-s)
 	searchBuf  string // pattern typed so far
 	searchSave string // input saved on entering search
-	searchIdx  int    // index of current match in history (-1=none)
+	searchIdx  int    // index of current match in history (-1=current line)
+	searchPos  int    // byte offset of current match within the current line/item
 
 	// Meta prefix: Esc followed by a key is treated as M-<key>
 	metaPrefix bool
