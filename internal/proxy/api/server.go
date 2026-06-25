@@ -64,6 +64,12 @@ type Session struct {
 	// Per-session command aliases (see %alias / commands.AliasTable).
 	aliases *commands.AliasTable
 
+	// Per-session scheduled tasks (%after / %every / %cron).
+	cron *commands.CronTable
+
+	// Per-session event triggers (%on).
+	on *commands.OnTable
+
 	// Command output buffering
 	cmdMu     sync.Mutex
 	cmdBuffer map[int][]string // cmdID -> lines of output
@@ -261,6 +267,18 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		cmdBuffer:   make(map[int][]string),
 		aliases:     commands.NewAliasTable(),
 	}
+
+	// Timer- and event-driven commands re-inject their actions through
+	// dispatchInput and publish their output to every client (they fire outside
+	// any single client's request), mirroring how %startup replays the memo.
+	sessFire := func(line string) { _ = sess.dispatchInput(line, sess.publish) }
+	sessAnnounce := func(lines []string) {
+		for _, line := range lines {
+			sess.publish(&WSServerMsg{Type: "text", Data: TextData{Text: line}})
+		}
+	}
+	sess.cron = commands.NewCronTable(sessFire, sessAnnounce)
+	sess.on = commands.NewOnTable(sessFire, sessAnnounce)
 
 	// A (re)connect always starts a fresh session: a new Lily login replays the
 	// full login sequence (banner, blurb/review prompts, entity sync), and the
@@ -483,7 +501,17 @@ func (s *Server) fanOut(sess *Session) {
 			continue
 		}
 		sess.publish(wsMsg)
+
+		// Evaluate %on triggers against notification events.
+		if msg.Type == slcp.MsgNotify {
+			if ev, err := slcp.ParseNotify(msg); err == nil {
+				sess.on.Dispatch(ev, sess.conn.State())
+			}
+		}
 	}
+
+	// Stop any scheduled tasks; their session is gone.
+	sess.cron.StopAll()
 
 	// Lily connection closed — notify subscribers.
 	sess.publish(&WSServerMsg{Type: "error", Data: "lily connection closed"})
@@ -703,6 +731,11 @@ func (sess *Session) dispatchLine(line string, emit func(*WSServerMsg)) error {
 			return sess.replayStartup(emit, true)
 		case cmd == "%alias":
 			sess.aliases.HandleCommand(fields[1:], respond)
+		case cmd == "%after" || cmd == "%every" || cmd == "%cron":
+			sess.cron.HandleCommand(strings.TrimPrefix(cmd, "%"), fields[1:], respond)
+		case cmd == "%on":
+			// %on needs quote-aware parsing, so pass the raw remainder.
+			sess.on.HandleCommand(strings.TrimSpace(strings.TrimPrefix(line, cmd)), sess.conn.State(), respond)
 		case commands.IsRegistered(cmd):
 			commands.Execute(sess.conn.State(), line, respond)
 		default:
