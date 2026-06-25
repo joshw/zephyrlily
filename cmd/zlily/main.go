@@ -43,7 +43,7 @@ func main() {
 			cmdCombined(os.Args[2:])
 			return
 		case "version", "-v", "--version":
-			fmt.Println("zlily", version.Version)
+			fmt.Println("zlily", version.String())
 			return
 		case "help", "-h", "--help":
 			printUsage()
@@ -266,7 +266,7 @@ func signalCtx() context.Context {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, "zlily %s — ZephyrLily Lily chat client\n\n", version.Version)
+	fmt.Fprintf(os.Stderr, "zlily %s — ZephyrLily Lily chat client\n\n", version.String())
 	fmt.Fprint(os.Stderr, `Usage:
   zlily [flags]                 Combined mode (TUI + embedded proxy, default)
   zlily combined [flags]        Same as above

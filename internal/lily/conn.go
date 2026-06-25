@@ -446,7 +446,7 @@ func (c *Conn) readLoop() {
 			return
 		}
 		whereStarted = true
-		if err := c.Send(fmt.Sprintf("#$# client zlily %s", version.Version)); err != nil {
+		if err := c.Send(fmt.Sprintf("#$# client zlily %s", version.String())); err != nil {
 			slog.Debug("lily: client name send error", "err", err)
 		}
 		if err := c.Send("/where me"); err != nil {

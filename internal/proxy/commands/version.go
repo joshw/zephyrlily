@@ -22,5 +22,5 @@ func init() {
 
 // handleVersion implements the %version command.
 func handleVersion(_ *lily.State, _ []string, respond func(lines []string)) {
-	respond([]string{fmt.Sprintf("zlily version %s", version.Version)})
+	respond([]string{fmt.Sprintf("zlily version %s", version.String())})
 }
