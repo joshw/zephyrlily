@@ -514,11 +514,28 @@ func (s *Server) runStartup(sess *Session) {
 		return
 	}
 
+	if err := sess.replayStartup(sess.publish, false); err != nil {
+		slog.Debug("runStartup: " + err.Error())
+	}
+}
+
+// replayStartup fetches the user's zlilyStartup memo and replays each
+// non-comment, non-blank line as a command, emitting output through emit. It is
+// invoked both after the initial login sync and on demand via the %startup
+// command. When announce is true (the %startup path) a fetch failure or empty
+// memo is reported to the user; on login it is silent. Only a genuine Lily send
+// error is returned, so a missing memo never tears down the session.
+func (sess *Session) replayStartup(emit func(*WSServerMsg), announce bool) error {
 	lines, err := sess.fetchLines("/memo me " + startupMemoName)
 	if err != nil {
-		// No memo (or fetch failed) — nothing to replay.
-		slog.Debug("runStartup: " + err.Error())
-		return
+		// No memo (or fetch failed) — nothing to replay. Not a Lily send error,
+		// so don't propagate it (which would tear down the session).
+		if announce {
+			emit(&WSServerMsg{Type: "text",
+				Data: TextData{Text: "(no " + startupMemoName + " memo to run)"}})
+		}
+		slog.Debug("replayStartup fetch: " + err.Error())
+		return nil
 	}
 
 	var toRun []string
@@ -530,18 +547,22 @@ func (s *Server) runStartup(sess *Session) {
 		toRun = append(toRun, line)
 	}
 	if len(toRun) == 0 {
-		return
+		if announce {
+			emit(&WSServerMsg{Type: "text",
+				Data: TextData{Text: "(" + startupMemoName + " memo has no commands to run)"}})
+		}
+		return nil
 	}
 
-	sess.publish(&WSServerMsg{Type: "text",
+	emit(&WSServerMsg{Type: "text",
 		Data: TextData{Text: "(found " + startupMemoName + " memo, running its commands)"}})
 
 	for _, line := range toRun {
-		if err := sess.dispatchInput(line, sess.publish); err != nil {
-			slog.Debug("runStartup: replay send error", "err", err)
-			return
+		if err := sess.dispatchInput(line, emit); err != nil {
+			return err
 		}
 	}
+	return nil
 }
 
 // handleEvents returns buffered event and text messages after a given ID.
@@ -678,6 +699,8 @@ func (sess *Session) dispatchLine(line string, emit func(*WSServerMsg)) error {
 			emit(&WSServerMsg{Type: "commandresult", Data: CommandResultData{CmdID: 0, Lines: lines}})
 		}
 		switch {
+		case cmd == "%startup":
+			return sess.replayStartup(emit, true)
 		case cmd == "%alias":
 			sess.aliases.HandleCommand(fields[1:], respond)
 		case commands.IsRegistered(cmd):

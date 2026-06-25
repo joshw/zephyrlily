@@ -102,6 +102,7 @@ var tuiHelp = map[string][]string{
 		"blank lines are ignored too.",
 		"",
 		"To edit it:  %memo edit zlilyStartup",
+		"To re-read and re-run it now:  %startup",
 		"If the memo doesn't exist, nothing happens.",
 	},
 	"debug": {
