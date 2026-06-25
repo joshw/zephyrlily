@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,6 +16,12 @@ var osc8Re = regexp.MustCompile("\x1b\\]8;[^\x1b]*\x1b\\\\")
 
 // stripOSC8 removes OSC8 hyperlink escapes, leaving the visible text.
 func stripOSC8(s string) string { return osc8Re.ReplaceAllString(s, "") }
+
+// ansiRe matches SGR color escapes emitted by lipgloss styling.
+var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// stripStyle removes both OSC8 and SGR escapes, leaving the visible text.
+func stripStyle(s string) string { return ansiRe.ReplaceAllString(stripOSC8(s), "") }
 
 func TestWrapText_Empty(t *testing.T) {
 	// With no words, the current line is returned unchanged.
@@ -147,4 +155,38 @@ func TestCharWrapLinkify_ShortLineUnchanged(t *testing.T) {
 	require.Len(t, lines, 1)
 	assert.Equal(t, "see https://example.com now", stripOSC8(lines[0]))
 	assert.Contains(t, lines[0], ";https://example.com\x1b\\")
+}
+
+func TestFormatEvent_StampInsertsTimestampIntoBanner(t *testing.T) {
+	const epoch = int64(1700000000)
+	// Timestamp is rendered in local time, so derive the expected value the same
+	// way formatEvent does rather than hard-coding a zone-specific string.
+	lt := time.Unix(epoch, 0)
+	wantTS := fmt.Sprintf("(%02d:%02d) ", lt.Hour(), lt.Minute())
+
+	d := map[string]interface{}{
+		"event": "connect",
+		"text":  "*** Alice has entered lily ***",
+		"stamp": true,
+		"time":  float64(epoch),
+	}
+	got := stripStyle(formatEvent(d, 80, "me"))
+	assert.Equal(t, "*** "+wantTS+"Alice has entered lily ***", got)
+
+	// Without STAMP the banner is left untouched.
+	d["stamp"] = false
+	got = stripStyle(formatEvent(d, 80, "me"))
+	assert.Equal(t, "*** Alice has entered lily ***", got)
+}
+
+func TestFormatEvent_StampLeavesQuietSelfNoticeAlone(t *testing.T) {
+	// Quiet "(…)" self-notices carry no %T in tigerlily; we mirror that.
+	d := map[string]interface{}{
+		"event": "rename",
+		"text":  "(you are now named Alicia)",
+		"stamp": true,
+		"time":  float64(1700000000),
+	}
+	got := stripStyle(formatEvent(d, 80, "me"))
+	assert.Equal(t, "(you are now named Alicia)", got)
 }

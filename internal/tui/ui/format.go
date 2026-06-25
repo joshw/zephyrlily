@@ -339,26 +339,32 @@ func formatEvent(d map[string]interface{}, width int, whoami string) string {
 	source, _ := d["source"].(string)
 	value, _ := d["value"].(string)
 
-	// Use the proxy's pre-formatted text for all events except styled ones
-	if text, ok := d["text"].(string); ok && text != "" {
-		switch event {
-		case "public", "private", "emote", "pa":
-			// fall through to rich formatting below
-		default:
-			lines := wrapTextLinkify("", "", text, max(width-2, 1), "")
-			for i := range lines {
-				lines[i] = slcpBodyStyle.Render(lines[i])
-			}
-			return strings.Join(lines, "\n")
-		}
-	}
-
 	var timestamp string
 	stamp, _ := d["stamp"].(bool)
 	if stamp {
 		if timeVal, ok := d["time"].(float64); ok && timeVal > 0 {
 			t := time.Unix(int64(timeVal), 0)
 			timestamp = fmt.Sprintf("(%02d:%02d) ", t.Hour(), t.Minute())
+		}
+	}
+
+	// Use the proxy's pre-formatted text for all events except styled ones
+	if text, ok := d["text"].(string); ok && text != "" {
+		switch event {
+		case "public", "private", "emote", "pa":
+			// fall through to rich formatting below
+		default:
+			// When the event carries a STAMP, splice the timestamp into the
+			// "*** … ***" banner (mirrors %T in tigerlily's slcp_output). Quiet
+			// "(…)" self-notices are left untouched, matching tigerlily.
+			if timestamp != "" && strings.HasPrefix(text, "*** ") {
+				text = "*** " + timestamp + strings.TrimPrefix(text, "*** ")
+			}
+			lines := wrapTextLinkify("", "", text, max(width-2, 1), "")
+			for i := range lines {
+				lines[i] = slcpBodyStyle.Render(lines[i])
+			}
+			return strings.Join(lines, "\n")
 		}
 	}
 
