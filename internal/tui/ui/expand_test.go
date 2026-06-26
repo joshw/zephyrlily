@@ -3,6 +3,7 @@ package ui
 import (
 	"testing"
 
+	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -42,4 +43,16 @@ func TestNameFromEntities(t *testing.T) {
 	assert.Equal(t, "#3", nameFromEntities(entities, "#3"))
 	assert.Equal(t, "#9", nameFromEntities(entities, "#9"), "unknown handle falls back to itself")
 	assert.Equal(t, "#1", nameFromEntities(nil, "#1"), "nil map falls back to handle")
+}
+
+func TestTrackIncomingPrivate(t *testing.T) {
+	// Whoami is #me; Alice (#1) is a user.
+	m := Model{state: &api.StateResponse{Whoami: "#me"}}
+	m = m.trackIncomingPrivate(map[string]interface{}{
+		"source":   "#1",
+		"recips":   []interface{}{"#me"},
+		"entities": map[string]interface{}{"#1": map[string]interface{}{"name": "Alice", "kind": "user"}},
+	})
+	assert.Equal(t, "Alice", m.expandSender, "private sender becomes the ':' recall")
+	assert.Equal(t, []string{"Alice"}, m.pastSends, "private sender becomes the Tab default")
 }

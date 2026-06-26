@@ -848,7 +848,10 @@ func (m Model) handleProxy(msg *api.WSServerMsg) (Model, tea.Cmd) {
 				m.output = append(m.output, OutputItem{Type: "event", Data: d, ID: msg.ID})
 			}
 
-			if event == "private" || event == "emote" {
+			// Only private sends drive the ':' recall and the cursor-0 Tab
+			// default. Emotes are always public (sent to a discussion), so they
+			// must not hijack that state with whoever last emoted in public.
+			if event == "private" {
 				m = m.trackIncomingPrivate(d)
 			}
 

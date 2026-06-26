@@ -287,7 +287,11 @@ func (m Model) tabCompleteCommand() Model {
 	return m.showCompletionPopup(matches, rest, fore)
 }
 
-// trackIncomingPrivate updates expand state when a private or emote arrives.
+// trackIncomingPrivate updates expand state when a private send arrives. Only
+// private sends count: they are the ones ':' recalls and the cursor-0 Tab
+// default fills in. Public traffic (regular sends and emotes, both of which go
+// to a discussion) must not touch this state, so the caller gates on the event
+// type before calling here.
 func (m Model) trackIncomingPrivate(d map[string]interface{}) Model {
 	if m.state == nil {
 		return m
