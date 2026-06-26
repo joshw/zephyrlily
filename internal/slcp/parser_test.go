@@ -18,8 +18,12 @@ func TestParse_Dispatch(t *testing.T) {
 		{name: "password prompt", line: "password:", wantType: MsgPassPrompt},
 		{name: "connected", line: "%connected #123", wantType: MsgConnected},
 		{name: "pong", line: "%pong", wantType: MsgPong},
-		{name: "sync begin", line: "%SLCP-SYNC beginning", wantType: MsgSyncBegin},
-		{name: "sync end", line: "%SLCP-SYNC ending", wantType: MsgSyncEnd},
+		{name: "sync begin", line: "%SLCP-SYNC START", wantType: MsgSyncBegin},
+		{name: "sync end", line: "%SLCP-SYNC END", wantType: MsgSyncEnd},
+		// Delimiter token is matched tolerantly, so the older beginning/ending
+		// wording still classifies correctly rather than falling through to raw.
+		{name: "sync begin legacy", line: "%SLCP-SYNC beginning", wantType: MsgSyncBegin},
+		{name: "sync end legacy", line: "%SLCP-SYNC ending", wantType: MsgSyncEnd},
 		{name: "prompt", line: "%prompt -> ", wantType: MsgPrompt, wantText: "-> "},
 		{name: "options", line: "%options +prompt +connected", wantType: MsgOptions, wantText: "+prompt +connected"},
 		{name: "export_file", line: "%export_file OKAY", wantType: MsgExportFile, wantText: "OKAY"},

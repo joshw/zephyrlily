@@ -15,8 +15,8 @@ const (
 	MsgGroup                      // %GROUP NAME=... MEMBERS=...
 	MsgData                       // %DATA NAME=... VALUE=...
 	MsgServer                     // %server version=...
-	MsgSyncBegin                  // %SLCP-SYNC beginning
-	MsgSyncEnd                    // %SLCP-SYNC ending
+	MsgSyncBegin                  // %SLCP-SYNC START
+	MsgSyncEnd                    // %SLCP-SYNC END
 	MsgCmdBegin                   // %begin [id] <cmd>
 	MsgCmdEnd                     // %end [id]
 	MsgLoginPrompt                // "login: " prompt

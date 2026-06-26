@@ -736,6 +736,14 @@ func (sess *Session) dispatchLine(line string, emit func(*WSServerMsg)) error {
 		case cmd == "%on":
 			// %on needs quote-aware parsing, so pass the raw remainder.
 			sess.on.HandleCommand(strings.TrimSpace(strings.TrimPrefix(line, cmd)), sess.conn.State(), respond)
+		case cmd == "%sync":
+			// Request a fresh entity sync: the server re-sends the full
+			// %SLCP-SYNC START…END block, which the proxy re-applies to rebuild
+			// its entity database without reconnecting.
+			if err := sess.conn.Send("#$# slcp-sync"); err != nil {
+				return err
+			}
+			respond([]string{"Requested a fresh SLCP sync."})
 		case commands.IsRegistered(cmd):
 			commands.Execute(sess.conn.State(), line, respond)
 		default:

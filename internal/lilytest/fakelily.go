@@ -222,12 +222,12 @@ func (s *Server) handshake(r *bufio.Reader) error {
 	// block — the client uses it as the login-success signal.
 	s.write("*** Connected ***")
 
-	s.write("%SLCP-SYNC beginning")
+	s.write("%SLCP-SYNC START")
 	s.write("%DATA NAME=whoami VALUE=" + s.opt.Whoami)
 	for _, l := range s.opt.Setup {
 		s.write(l)
 	}
-	s.write("%SLCP-SYNC ending")
+	s.write("%SLCP-SYNC END")
 	s.write("%connected " + s.opt.Whoami)
 
 	// On %connected the client sends "#$# client zlily <ver>" then "/where me".

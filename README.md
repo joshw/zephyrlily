@@ -118,6 +118,7 @@ Each client will connect to the same proxy session. The proxy persists event his
 
 ## Documentation
 
+- **[SLCP Protocol Reference](docs/slcp-protocol.md)** — The Simple Lily Client Protocol spoken between the proxy and the Lily server: transport, login handshake, message types, and `%NOTIFY` events
 - **[Authentication and Login Flow](docs/auth.md)** — How the TUI and proxy authenticate with the Lily server, including token management and session persistence
 - **[Client API Reference](docs/client-api.md)** — Complete HTTP and WebSocket API for the proxy; use this if building a custom client
 - **[Event Types Reference](docs/events.md)** — Comprehensive guide to all Lily event types, display conventions, and how the TUI renders them

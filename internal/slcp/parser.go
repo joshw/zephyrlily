@@ -28,12 +28,20 @@ func Parse(line string) (*Message, error) {
 		msg.Type = MsgPong
 		return msg, nil
 
-	case line == "%SLCP-SYNC beginning":
-		msg.Type = MsgSyncBegin
-		return msg, nil
-
-	case line == "%SLCP-SYNC ending":
-		msg.Type = MsgSyncEnd
+	case strings.HasPrefix(line, "%SLCP-SYNC "):
+		// The sync block is delimited by "%SLCP-SYNC START" and "%SLCP-SYNC END"
+		// (a fresh block can be re-requested mid-session via "#$# slcp-sync").
+		// Match the delimiter token tolerantly rather than against an exact
+		// literal — tigerlily accepts any "%SLCP-SYNC <token>" — so a wording
+		// change (START/END vs the older beginning/ending) doesn't silently fall
+		// through to MsgRaw. Any "end…" token closes the block; anything else
+		// opens it.
+		tok := strings.ToLower(strings.TrimSpace(line[len("%SLCP-SYNC "):]))
+		if strings.HasPrefix(tok, "end") {
+			msg.Type = MsgSyncEnd
+		} else {
+			msg.Type = MsgSyncBegin
+		}
 		return msg, nil
 
 	case strings.HasPrefix(line, "%prompt "):
