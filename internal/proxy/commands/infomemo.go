@@ -1,11 +1,13 @@
 package commands
 
-import "github.com/joshw/zephyrlily/internal/lily"
-
+// %info and %memo are client-side commands: each client implements them
+// locally. The proxy deliberately does not register them in the command
+// Registry, so dispatchLine forwards them to the client as a "clientcommand"
+// for local execution. (Registering a stub here would intercept the command
+// before the client could handle it, breaking %info/%memo lines that originate
+// on the proxy — e.g. alias expansions and zlilyStartup memo replay.) Only the
+// help topics are registered here.
 func init() {
-	Registry["%info"] = handleInfoCmd
-	Registry["%memo"] = handleMemoCmd
-
 	RegisterHelp(HelpTopic{
 		Name: "info",
 		Text: []string{
@@ -25,19 +27,5 @@ func init() {
 			"",
 			"This command must be implemented by each client.",
 		},
-	})
-}
-
-func handleInfoCmd(_ *lily.State, _ []string, respond func([]string)) {
-	respond([]string{
-		"(%info is a client-side command not yet implemented for this client.)",
-		"(TUI clients: use %info edit [target] instead.)",
-	})
-}
-
-func handleMemoCmd(_ *lily.State, _ []string, respond func([]string)) {
-	respond([]string{
-		"(%memo is a client-side command not yet implemented for this client.)",
-		"(TUI clients: use %memo edit [target] <name> instead.)",
 	})
 }
