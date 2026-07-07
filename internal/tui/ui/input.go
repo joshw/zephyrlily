@@ -148,7 +148,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Paste mode intercepts Enter and Space
 	if m.pasteMode {
 		if m.debugMode {
-			m.debugMsgs = append(m.debugMsgs, fmt.Sprintf("[paste] keyStr=%q type=%v runes=%q", keyStr, msg.Type, string(msg.Runes)))
+			m.appendDebug(fmt.Sprintf("[paste] keyStr=%q type=%v runes=%q", keyStr, msg.Type, string(msg.Runes)))
 		}
 		// Handle both pasted multi-line text (KeyRunes with multiple chars) and individual keystrokes
 		if msg.Type == tea.KeyRunes {
@@ -290,6 +290,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// anchor on the top item (at the current width) so it stays in view.
 		m.scrollAnchor = m.topVisibleItemIndex()
 		m.debugMode = !m.debugMode
+		m.renderEpoch++ // render width changed; item caches are stale
 		m = m.updateViewportSize()
 	case key.Matches(msg, m.keys.Redraw):
 		// Bubbletea handles redraw automatically
@@ -375,8 +376,8 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 			Text string `json:"text"`
 		}{"command", line}
 		if jsonBytes, err := json.MarshalIndent(cmdMsg, "", "  "); err == nil {
-			m.debugMsgs = append(m.debugMsgs, "SEND:")
-			m.debugMsgs = append(m.debugMsgs, strings.Split(string(jsonBytes), "\n")...)
+			m.appendDebug("SEND:")
+			m.appendDebug(strings.Split(string(jsonBytes), "\n")...)
 		}
 	}
 

@@ -72,7 +72,7 @@ type Session struct {
 
 	// Command output buffering
 	cmdMu     sync.Mutex
-	cmdBuffer map[int][]string // cmdID -> lines of output
+	cmdBuffer map[int]*cmdCapture // cmdID -> output collected between %begin and %end
 
 	// Message ID counter
 	nextMsgID atomic.Int64
@@ -98,6 +98,21 @@ type Session struct {
 	storeMu       sync.Mutex
 	storeResultCh chan string
 }
+
+// cmdCapture accumulates the output lines of one leafed command (between
+// %begin and %end). started allows abandoned captures — a %begin whose %end
+// never arrives — to be detected and flushed.
+type cmdCapture struct {
+	lines   []string
+	started time.Time
+}
+
+// cmdCaptureMaxAge is how long a command capture may stay open before it is
+// flushed as a command result. Lily answers commands promptly (the fetch path
+// gives up after 10s), so a capture this old means its %end was lost; without
+// the flush it would swallow and accumulate every subsequent raw line for the
+// rest of the session.
+const cmdCaptureMaxAge = 60 * time.Second
 
 // wsClient is a single WebSocket connection to the proxy.
 type wsClient struct {
@@ -264,7 +279,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		username:    req.Username,
 		conn:        conn,
 		subscribers: make(map[*wsClient]struct{}),
-		cmdBuffer:   make(map[int][]string),
+		cmdBuffer:   make(map[int]*cmdCapture),
 		aliases:     commands.NewAliasTable(),
 	}
 
@@ -386,9 +401,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	go client.writeLoop()
 	client.readLoop(sess) // blocks until client disconnects
 
+	// Unsubscribe before closing the send channel: broadcasters send to it
+	// while holding subsMu, and a send on a closed channel panics (even inside
+	// a select), so the channel may only be closed once no broadcaster can
+	// still reach this client.
 	sess.subsMu.Lock()
 	delete(sess.subscribers, client)
 	sess.subsMu.Unlock()
+	close(client.send)
 
 	_ = ws.Close(websocket.StatusNormalClosure, "")
 }
@@ -403,6 +423,10 @@ func (s *Server) fanOut(sess *Session) {
 	go s.runKeepalive(sess, doneCh)
 
 	for msg := range sess.conn.Events {
+		// Flush any capture whose %end never arrived; left in place it would
+		// swallow (and accumulate) every raw line for the rest of the session.
+		sess.flushStaleCaptures()
+
 		// Pong responses update keepalive state and are not forwarded to clients.
 		if msg.Type == slcp.MsgPong {
 			sess.lastPongReceivedAt.Store(time.Now().UnixNano())
@@ -429,7 +453,7 @@ func (s *Server) fanOut(sess *Session) {
 		case slcp.MsgCmdBegin:
 			// Start buffering for this command
 			id := msg.CmdID
-			sess.cmdBuffer[id] = []string{}
+			sess.cmdBuffer[id] = &cmdCapture{started: time.Now()}
 			sess.cmdMu.Unlock()
 			// If a fetch is pending and we haven't pinned a command ID yet,
 			// claim this one.  We don't match on text because the server may
@@ -445,7 +469,8 @@ func (s *Server) fanOut(sess *Session) {
 		case slcp.MsgCmdEnd:
 			// Send the complete buffered output
 			id := msg.CmdID
-			if lines, ok := sess.cmdBuffer[id]; ok {
+			if buf, ok := sess.cmdBuffer[id]; ok {
+				lines := buf.lines
 				delete(sess.cmdBuffer, id)
 				sess.cmdMu.Unlock()
 
@@ -480,12 +505,12 @@ func (s *Server) fanOut(sess *Session) {
 			// We'll add it to all active command buffers
 			// (in practice, there's usually only one active command at a time)
 			added := false
-			for id := range sess.cmdBuffer {
+			for id, buf := range sess.cmdBuffer {
 				text := msg.Text
 				// Strip "%command [id] " prefix if present
 				prefix := fmt.Sprintf("%%command [%d] ", id)
 				text = strings.TrimPrefix(text, prefix)
-				sess.cmdBuffer[id] = append(sess.cmdBuffer[id], text)
+				buf.lines = append(buf.lines, text)
 				added = true
 			}
 			if added {
@@ -523,6 +548,28 @@ func (s *Server) fanOut(sess *Session) {
 	// server the session is gone so it reaps it promptly, which lets a follow-up
 	// reconnect log in without waiting for the old session to time out.
 	sess.conn.Close()
+}
+
+// flushStaleCaptures publishes and removes any command capture older than
+// cmdCaptureMaxAge — its %end was lost, so nothing else will ever close it.
+// Delivering the collected lines as a normal command result both frees the
+// memory and un-swallows the raw output that had been diverted into it.
+func (sess *Session) flushStaleCaptures() {
+	var flushed []*WSServerMsg
+	sess.cmdMu.Lock()
+	for id, buf := range sess.cmdBuffer {
+		if time.Since(buf.started) > cmdCaptureMaxAge {
+			delete(sess.cmdBuffer, id)
+			flushed = append(flushed, &WSServerMsg{
+				Type: "commandresult",
+				Data: CommandResultData{CmdID: id, Lines: buf.lines},
+			})
+		}
+	}
+	sess.cmdMu.Unlock()
+	for _, msg := range flushed {
+		sess.publish(msg)
+	}
 }
 
 // startupMemoName is the memo fetched from the user after login whose lines are
@@ -670,9 +717,11 @@ func (s *Server) handleSeen(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// readLoop receives commands from the WebSocket client and forwards them to Lily.
+// readLoop receives commands from the WebSocket client and forwards them to
+// Lily. The send channel is closed by handleWS after it unsubscribes the
+// client — closing it here would race with broadcasters that still hold a
+// reference and panic the proxy.
 func (c *wsClient) readLoop(sess *Session) {
-	defer close(c.send)
 	for {
 		var cm WSClientMsg
 		if err := wsjson.Read(c.ctx, c.ws, &cm); err != nil {

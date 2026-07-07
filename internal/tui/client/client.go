@@ -268,7 +268,15 @@ func (c *Client) readLoop() {
 		if err := wsjson.Read(c.ctx, c.ws, &msg); err != nil {
 			return
 		}
-		ch <- &msg
+		// A plain send could block forever after Close: a Reconnect abandons this
+		// client's Events channel, and context cancellation does not unblock a
+		// channel send, which would strand this goroutine (and the WebSocket)
+		// permanently once the buffer filled.
+		select {
+		case ch <- &msg:
+		case <-c.ctx.Done():
+			return
+		}
 	}
 }
 

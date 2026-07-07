@@ -41,7 +41,21 @@ type OutputItem struct {
 	Type string      // "text", "event", "command", "error", "input", "log"
 	Data interface{} // raw data (string, map[string]interface{}, []string, logMsg)
 	ID   int64       // WSServerMsg.ID of the message that produced this item (0 for local items)
+
+	// Render cache: the lines this item produced the last time it was rendered,
+	// valid while cacheEpoch matches Model.renderEpoch (see renderItem). Without
+	// it every incoming message re-renders (regex, wrapping, styling) the whole
+	// scrollback — O(n²) over a session.
+	cache      []string
+	cacheEpoch int
 }
+
+// maxScrollback caps the number of OutputItems retained; the oldest are
+// trimmed once exceeded so a long-lived session's memory stays bounded.
+const maxScrollback = 10000
+
+// maxDebugMsgs caps the debug-pane transcript lines for the same reason.
+const maxDebugMsgs = 2000
 
 // Model is the root Bubble Tea model for the TUI.
 type Model struct {
@@ -106,6 +120,17 @@ type Model struct {
 	autoPageAnchor int  // line count when user sent command; -1 = disabled
 	pagerEnabled   bool // false = never pause; scroll straight to bottom (%page off)
 	mouseWheel     bool // mouse-wheel scrolling of the viewport (%page wheel); off by default
+
+	// renderEpoch versions the per-item render cache. It is bumped whenever
+	// something that affects how items render changes: the window width, the
+	// debug split (which halves the render width), or the whoami identity.
+	// renderItem re-renders an item whose cacheEpoch doesn't match.
+	renderEpoch int
+
+	// seenLoopStarted records that the recurring 5-second ReportSeen loop
+	// (seenTickMsg → reportSeenCmd → seenTickMsg …) has been started. It must
+	// run at most once per process: each extra chain would live forever.
+	seenLoopStarted bool
 
 	// scrollAnchor is the output-item index to keep at the top of the viewport
 	// across a width-changing resize (which rewraps and invalidates raw line
@@ -234,6 +259,7 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		autoPageAnchor: -1,
 		pagerEnabled:   true,
 		scrollAnchor:   -1,
+		renderEpoch:    1, // 1 so zero-valued item caches (epoch 0) read as stale
 		authMode:       !c.HasToken(),
 		authField:      0,
 		usernameInput:  usernameField,
@@ -272,6 +298,29 @@ type editorFetchResultMsg struct {
 type editorSaveResultMsg struct {
 	meta editMeta
 	err  error
+}
+
+// appendDebug appends lines to the debug-pane transcript, trimming the oldest
+// entries beyond maxDebugMsgs so the transcript cannot grow without bound.
+func (m *Model) appendDebug(lines ...string) {
+	m.debugMsgs = append(m.debugMsgs, lines...)
+	if over := len(m.debugMsgs) - maxDebugMsgs; over > 0 {
+		// Copy to a fresh slice so the trimmed backing array can be collected.
+		m.debugMsgs = append([]string(nil), m.debugMsgs[over:]...)
+	}
+}
+
+// renderItem returns the rendered lines for output item i, re-rendering only
+// when the cache is stale (renderEpoch changed, i.e. width/debug-split/whoami
+// changed). All scrollback walks must use this rather than renderOutputItem so
+// a long session doesn't re-render the entire buffer on every message.
+func (m Model) renderItem(i int) []string {
+	it := &m.output[i]
+	if it.cacheEpoch != m.renderEpoch || it.cache == nil {
+		it.cache = m.renderOutputItem(*it)
+		it.cacheEpoch = m.renderEpoch
+	}
+	return it.cache
 }
 
 // fetchInitialStateCmd fetches state (blocking until the SLCP sync is done).
@@ -343,11 +392,14 @@ func reconnectCmd(c *client.Client) tea.Cmd {
 	}
 }
 
-// reportSeenNow reports lastSeenID to the proxy immediately.
+// reportSeenNow reports lastSeenID to the proxy immediately. It is a one-shot:
+// it deliberately does NOT yield a seenTickMsg, because every seenTickMsg
+// spawns a reportSeenCmd chain that lives forever — returning one here made
+// every resize/reconnect add another eternal 5-second reporting loop.
 func reportSeenNow(c *client.Client, lastSeenID int64) tea.Cmd {
 	return func() tea.Msg {
 		_ = c.ReportSeen(lastSeenID)
-		return seenTickMsg{}
+		return nil
 	}
 }
 
@@ -391,8 +443,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// put instead of jumping — e.g. when re-attaching screen from a
 		// different-sized terminal. Skip on the first size (m.width == 0): there
 		// is nothing to preserve and rendering at width 0 is meaningless.
-		if m.width > 0 && msg.Width != m.width {
-			m.scrollAnchor = m.topVisibleItemIndex()
+		if msg.Width != m.width {
+			if m.width > 0 {
+				m.scrollAnchor = m.topVisibleItemIndex()
+			}
+			// The anchor above is computed from caches at the old width; only
+			// after that may the new width invalidate them.
+			m.renderEpoch++
 		}
 		m.width = msg.Width
 		m.height = msg.Height
@@ -409,7 +466,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if m.debugKeys {
-			m.debugMsgs = append(m.debugMsgs, fmt.Sprintf("KEY: %s", msg.String()))
+			m.appendDebug(fmt.Sprintf("KEY: %s", msg.String()))
 		}
 
 		if m.authMode {
@@ -491,12 +548,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reconnectPrompt = false
 		// Run the identical post-login sequence (state fetch, history replay,
 		// startup memo) for both initial login and reconnect.
-		return m, tea.Batch(
+		cmds := []tea.Cmd{
 			listenCmd(m.client),
 			listenLogCmd(m.logChan),
 			fetchInitialStateCmd(m.client),
-			reportSeenCmd(m.client, 0),
-		)
+		}
+		// Start the recurring ReportSeen loop exactly once: the chain never
+		// terminates (and always reads the current m.client), so starting
+		// another on every reconnect would accumulate loops forever.
+		if !m.seenLoopStarted {
+			m.seenLoopStarted = true
+			cmds = append(cmds, reportSeenCmd(m.client, 0))
+		}
+		return m, tea.Batch(cmds...)
 
 	case serverEventMsg:
 		if msg.msg == nil {
@@ -504,9 +568,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		if jsonBytes, err := json.MarshalIndent(msg.msg, "", "  "); err == nil {
-			m.debugMsgs = append(m.debugMsgs, "RECV:")
-			m.debugMsgs = append(m.debugMsgs, strings.Split(string(jsonBytes), "\n")...)
+		// Only collect the JSON transcript while the debug pane is open: the
+		// pretty-printed copy of every message is expensive to produce and, if
+		// collected unconditionally, retains (a multiple of) all traffic ever
+		// received for the life of the session.
+		if m.debugMode {
+			if jsonBytes, err := json.MarshalIndent(msg.msg, "", "  "); err == nil {
+				m.appendDebug("RECV:")
+				m.appendDebug(strings.Split(string(jsonBytes), "\n")...)
+			}
 		}
 
 		var proxyCmd tea.Cmd
@@ -521,7 +591,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case logMsg:
 		if msg.level == "DEBUG" {
-			m.debugMsgs = append(m.debugMsgs, msg.text)
+			m.appendDebug(msg.text)
 		} else {
 			m.output = append(m.output, OutputItem{Type: "log", Data: msg})
 			m = m.syncViewportContent()
@@ -543,6 +613,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// or print an empty "Connected to … ()" line.
 		if msg.state != nil && msg.state.Whoami != "" {
 			m.state = msg.state
+			// Whoami feeds event rendering (own-message styling); cached lines
+			// rendered before it was known are stale.
+			m.renderEpoch++
 		}
 		if m.state != nil && m.state.Whoami != "" {
 			displayName := m.state.Whoami
@@ -685,8 +758,8 @@ func (m Model) updateViewportSize() Model {
 func (m Model) topVisibleItemIndex() int {
 	target := m.viewport.YOffset
 	lineCount := 0
-	for i, item := range m.output {
-		lineCount += len(m.renderOutputItem(item))
+	for i := range m.output {
+		lineCount += len(m.renderItem(i))
 		if lineCount > target {
 			return i
 		}
@@ -702,7 +775,7 @@ func (m Model) topVisibleItemIndex() int {
 func (m Model) itemStartLine(idx int) int {
 	lineCount := 0
 	for i := 0; i < idx && i < len(m.output); i++ {
-		lineCount += len(m.renderOutputItem(m.output[i]))
+		lineCount += len(m.renderItem(i))
 	}
 	return lineCount
 }
@@ -761,15 +834,43 @@ func (m Model) inputTotalLines() int {
 
 // syncViewportContent updates viewport with rendered output.
 func (m Model) syncViewportContent() Model {
-	var lines []string
-	for _, item := range m.output {
-		lines = append(lines, m.renderOutputItem(item)...)
-	}
-	// Capture follow state before SetContent: adding lines leaves YOffset
-	// unchanged, so AtBottom() would read false afterwards even if we were
-	// following the bottom a moment ago.
+	// Capture follow state before trimming/SetContent: adding lines leaves
+	// YOffset unchanged, so AtBottom() would read false afterwards even if we
+	// were following the bottom a moment ago.
 	wasAtBottom := m.viewport.AtBottom()
 	prevLines := m.viewport.TotalLineCount()
+
+	// Trim scrollback beyond the cap, shifting the scroll state up by the
+	// dropped lines so the view (and the pager anchor) stays on the same
+	// content instead of jumping.
+	if over := len(m.output) - maxScrollback; over > 0 {
+		dropped := 0
+		for i := 0; i < over; i++ {
+			dropped += len(m.renderItem(i))
+		}
+		// Copy to a fresh slice so the trimmed items can be collected.
+		m.output = append([]OutputItem(nil), m.output[over:]...)
+		prevLines -= dropped
+		if prevLines < 0 {
+			prevLines = 0
+		}
+		if off := m.viewport.YOffset - dropped; off > 0 {
+			m.viewport.SetYOffset(off)
+		} else {
+			m.viewport.SetYOffset(0)
+		}
+		if m.autoPageAnchor >= 0 {
+			m.autoPageAnchor -= dropped
+			if m.autoPageAnchor < 0 {
+				m.autoPageAnchor = 0
+			}
+		}
+	}
+
+	var lines []string
+	for i := range m.output {
+		lines = append(lines, m.renderItem(i)...)
+	}
 	m.viewport.SetContent(strings.Join(lines, "\n"))
 
 	totalLines := m.viewport.TotalLineCount()
@@ -926,14 +1027,13 @@ func (m Model) computeLastSeenID() int64 {
 	lineCount := 0
 	var maxID int64
 
-	for _, item := range m.output {
-		itemLines := len(m.renderOutputItem(item))
-		lineCount += itemLines
+	for i := range m.output {
+		lineCount += len(m.renderItem(i))
 		if lineCount > visibleEnd {
 			break
 		}
-		if item.ID > maxID {
-			maxID = item.ID
+		if m.output[i].ID > maxID {
+			maxID = m.output[i].ID
 		}
 	}
 	return maxID
@@ -953,9 +1053,9 @@ func (m *Model) restorePosition() {
 	}
 
 	lineCount := 0
-	for _, item := range m.output {
-		lineCount += len(m.renderOutputItem(item))
-		if item.ID >= m.storedLastSeenID {
+	for i := range m.output {
+		lineCount += len(m.renderItem(i))
+		if m.output[i].ID >= m.storedLastSeenID {
 			break
 		}
 	}
