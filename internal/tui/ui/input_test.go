@@ -177,6 +177,88 @@ func TestSubmitLineAnchorRespectsScrollPosition(t *testing.T) {
 	})
 }
 
+// TestPagerArmsOnCatchUp verifies that reaching the bottom by any user
+// interaction — not just submitting a line — re-arms the auto-page anchor, so
+// output that trickles in one message at a time while the user is idle pauses
+// at -- MORE -- instead of following the bottom indefinitely. Regression test
+// for "came back after 12 hours and nothing was paged up": previously only
+// submitLine armed the anchor, and every scroll key / blank-Enter advance
+// disarmed it for good.
+func TestPagerArmsOnCatchUp(t *testing.T) {
+	build := func() Model {
+		logChan, _ := NewLogger()
+		m := New(client.New(""), logChan)
+		for i := 0; i < 40; i++ {
+			m.output = append(m.output, OutputItem{Type: "text", Data: fmt.Sprintf("line %02d", i)})
+		}
+		m = sizeTo(t, m, 80, 6)
+		require.Greater(t, m.viewport.TotalLineCount(), m.viewport.Height,
+			"fixture must be tall enough to scroll")
+		return m
+	}
+
+	// trickle appends single-line items one at a time, syncing after each, the
+	// way live server events arrive.
+	trickle := func(m Model, n int) Model {
+		for i := 0; i < n; i++ {
+			m.output = append(m.output, OutputItem{Type: "text", Data: fmt.Sprintf("new %02d", i)})
+			m = m.syncViewportContent()
+		}
+		return m
+	}
+
+	t.Run("goto-bottom key re-arms and trickled output pauses", func(t *testing.T) {
+		m := build()
+		m.viewport.GotoTop()
+		m.autoPageAnchor = -1
+
+		// M-> (goto bottom) catches up to the newest output.
+		upd, _ := m.handleNormalKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(">"), Alt: true})
+		m = upd.(Model)
+		require.True(t, m.viewport.AtBottom())
+		require.GreaterOrEqual(t, m.autoPageAnchor, 0, "catching up must re-arm the anchor")
+		anchor := m.autoPageAnchor
+
+		// Under a page of new output: keep following the bottom, anchor stays armed.
+		m = trickle(m, m.viewport.Height-1)
+		assert.True(t, m.viewport.AtBottom(), "should follow the bottom while under a page")
+		assert.Equal(t, anchor, m.autoPageAnchor, "anchor must stay armed while following")
+
+		// Crossing a page: pause showing one page past the anchor.
+		m = trickle(m, 2)
+		assert.False(t, m.viewport.AtBottom(), "must pause once a page accumulates")
+		assert.Equal(t, anchor, m.viewport.YOffset, "pause must show one page from the anchor")
+		assert.Equal(t, -1, m.autoPageAnchor, "anchor disarms after firing")
+
+		// Still idle: further output must not move the paused view.
+		m = trickle(m, 10)
+		assert.Equal(t, anchor, m.viewport.YOffset, "paused view must hold while output accumulates")
+	})
+
+	t.Run("blank-Enter pager advance to the bottom re-arms", func(t *testing.T) {
+		m := build()
+		m.viewport.GotoTop()
+		m.autoPageAnchor = -1
+
+		for i := 0; !m.viewport.AtBottom(); i++ {
+			require.Less(t, i, 100, "pager advance must terminate")
+			upd, _ := m.handleSubmit() // empty input while behind: advances the pager
+			m = upd.(Model)
+		}
+		assert.GreaterOrEqual(t, m.autoPageAnchor, 0, "reaching bottom via blank Enter must re-arm")
+	})
+
+	t.Run("scrolling away from the bottom leaves the anchor disarmed", func(t *testing.T) {
+		m := build()
+		m.viewport.GotoBottom()
+
+		upd, _ := m.handleNormalKey(tea.KeyMsg{Type: tea.KeyPgUp})
+		m = upd.(Model)
+		require.False(t, m.viewport.AtBottom())
+		assert.Equal(t, -1, m.autoPageAnchor, "scrolled back must stay disarmed")
+	})
+}
+
 func TestPasteModeWithEnterKey(t *testing.T) {
 	tests := []struct {
 		name          string

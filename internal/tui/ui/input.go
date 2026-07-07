@@ -157,6 +157,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.syncTextarea()
 			m = m.maybeResizeViewport()
+			m.armPagerIfAtBottom()
 			return m, nil
 		}
 		// Non-rune keys: Enter/Ctrl+M/Ctrl+J treated the same as a newline rune.
@@ -164,6 +165,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.pasteRune('\n')
 			m.syncTextarea()
 			m = m.maybeResizeViewport()
+			m.armPagerIfAtBottom()
 			return m, nil
 		}
 		// Non-enter, non-rune key: clear flags
@@ -303,6 +305,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case ";", ":", ",", "=":
 				m = m.handleExpandKey(s)
 				m.syncTextarea()
+				m.armPagerIfAtBottom()
 				return m, nil
 			default:
 				m = m.insertString(s)
@@ -314,6 +317,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	m.syncTextarea()
 	m = m.maybeResizeViewport()
+	m.armPagerIfAtBottom()
 	return m, nil
 }
 
@@ -330,6 +334,9 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 			m.viewport.PageDown()
 			m.advanceLastSeenID()
 			m.autoPageAnchor = -1 // clear auto-paging on manual pager advance
+			// …but if this advance caught us up, re-arm so output arriving while
+			// we're idle pauses again instead of streaming past.
+			m.armPagerIfAtBottom()
 			return m, nil
 		}
 		// Otherwise (caught up to the bottom) fall through and send the blank line.

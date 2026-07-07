@@ -116,8 +116,9 @@ type Model struct {
 	// Scroll state
 	lastSeenID int64 // highest WSServerMsg.ID whose output has been visible; never decreases
 
-	// Auto-paging: after user sends input, auto-scroll up to one page of new output
-	autoPageAnchor int  // line count when user sent command; -1 = disabled
+	// Auto-paging: auto-scroll up to one page of output past the anchor, then
+	// pause at -- MORE -- (see syncViewportContent).
+	autoPageAnchor int  // viewport line count at the user's last interaction while at the bottom; -1 = disabled
 	pagerEnabled   bool // false = never pause; scroll straight to bottom (%page off)
 	mouseWheel     bool // mouse-wheel scrolling of the viewport (%page wheel); off by default
 
@@ -511,6 +512,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.advanceLastSeenID()
 			}
 		}
+		m.armPagerIfAtBottom()
 		return m, nil
 
 	case authResultMsg:
@@ -1043,6 +1045,21 @@ func (m Model) computeLastSeenID() int64 {
 func (m *Model) advanceLastSeenID() {
 	if id := m.computeLastSeenID(); id > m.lastSeenID {
 		m.lastSeenID = id
+	}
+}
+
+// armPagerIfAtBottom (re)arms the auto-page anchor when the viewport is
+// following the bottom. It runs after every user interaction (keys, wheel,
+// blank-Enter pager advance), so the pager pauses once more than a page of
+// output accumulates after the user's LAST interaction — not only after their
+// last submitted line. Without this, catching up to the bottom with PgDn,
+// blank Enter, or the wheel left the anchor disarmed, and output trickling in
+// while the user was away followed the bottom forever instead of holding at
+// -- MORE -- (and dragged lastSeenID along, so a reconnect restored to the
+// bottom too).
+func (m *Model) armPagerIfAtBottom() {
+	if m.viewport.Height > 0 && m.viewport.AtBottom() {
+		m.autoPageAnchor = m.viewport.TotalLineCount()
 	}
 }
 
