@@ -64,7 +64,7 @@ func NewKeyMap() KeyMap {
 		// Application control
 		Quit: key.NewBinding(
 			key.WithKeys("ctrl+c"),
-			key.WithHelp("C-c", "quit"),
+			key.WithHelp("C-c C-c", "quit"),
 		),
 		ForceQuit: key.NewBinding(
 			key.WithKeys("ctrl+d"),
@@ -264,7 +264,7 @@ func (k KeyMap) KeyBindingHelp() []string {
 		"Key Bindings",
 		"",
 		"Application:",
-		"  C-c         quit",
+		"  C-c C-c     quit (press twice)",
 		"  C-d         quit (empty input) / delete forward",
 		"  C-l         redraw screen",
 		"  M-g         toggle debug view",

@@ -34,6 +34,10 @@ func (m Model) maybeResizeViewport() Model {
 func (m Model) handleAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	keyStr := msg.String()
 
+	// Double C-c to quit, as in normal mode; any other key cancels it.
+	quitArmed := m.quitPending
+	m.quitPending = false
+
 	switch keyStr {
 	case "tab":
 		// Switch between username and password fields
@@ -77,9 +81,13 @@ func (m Model) handleAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, attemptAuthCmd(m.client, m.authUsername, m.authPassword)
 
 	case "esc", "ctrl+c":
-		// Ctrl+C quits
+		// Ctrl+C quits (on the second consecutive press)
 		if keyStr == "ctrl+c" {
-			return m, tea.Quit
+			if quitArmed {
+				return m, tea.Quit
+			}
+			m.quitPending = true
+			return m, nil
 		}
 		// ESC dismisses auth dialog (but we don't allow that for now)
 		return m, nil
@@ -102,6 +110,11 @@ func (m Model) handleAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleNormalKey handles key events in normal (non-special) mode.
 func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	keyStr := msg.String()
+
+	// Double C-c to quit: only a second consecutive C-c exits; any other key
+	// cancels the pending quit.
+	quitArmed := m.quitPending
+	m.quitPending = false
 
 	// ESC as meta prefix: ESC <key> is equivalent to M-<key>
 	if m.metaPrefix {
@@ -179,7 +192,12 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	// Quit
 	case key.Matches(msg, m.keys.Quit):
-		return m, tea.Quit
+		if quitArmed {
+			return m, tea.Quit
+		}
+		m.quitPending = true
+		m.output = append(m.output, OutputItem{Type: "text", Data: "Press C-c again to exit."})
+		m = m.syncViewportContent()
 
 	case key.Matches(msg, m.keys.ForceQuit):
 		if m.inputValue == "" {

@@ -374,3 +374,58 @@ func TestMetaPrefixDoesNotSwallowNonRuneKeys(t *testing.T) {
 		}
 	})
 }
+
+func TestDoubleCtrlCToQuit(t *testing.T) {
+	ctrlC := tea.KeyMsg{Type: tea.KeyCtrlC}
+
+	newModel := func(t *testing.T) Model {
+		logChan, _ := NewLogger()
+		m := New(client.New(""), logChan)
+		m.authMode = false
+		return sizeTo(t, m, 80, 24)
+	}
+
+	t.Run("first C-c warns instead of quitting", func(t *testing.T) {
+		m := newModel(t)
+		upd, cmd := m.handleNormalKey(ctrlC)
+		m = upd.(Model)
+		assert.Nil(t, cmd, "first C-c must not quit")
+		assert.True(t, m.quitPending)
+		require.NotEmpty(t, m.output)
+		assert.Equal(t, "Press C-c again to exit.", m.output[len(m.output)-1].Data)
+	})
+
+	t.Run("second consecutive C-c quits", func(t *testing.T) {
+		m := newModel(t)
+		upd, _ := m.handleNormalKey(ctrlC)
+		upd, cmd := upd.(Model).handleNormalKey(ctrlC)
+		m = upd.(Model)
+		require.NotNil(t, cmd)
+		assert.Equal(t, tea.Quit(), cmd(), "second C-c must quit")
+	})
+
+	t.Run("any other key cancels the pending quit", func(t *testing.T) {
+		m := newModel(t)
+		upd, _ := m.handleNormalKey(ctrlC)
+		upd, _ = upd.(Model).handleNormalKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+		m = upd.(Model)
+		assert.False(t, m.quitPending, "typing must cancel the pending quit")
+		upd, cmd := m.handleNormalKey(ctrlC)
+		assert.Nil(t, cmd, "C-c after a cancel must warn again, not quit")
+		assert.True(t, upd.(Model).quitPending)
+	})
+
+	t.Run("auth dialog also requires double C-c", func(t *testing.T) {
+		logChan, _ := NewLogger()
+		m := New(client.New(""), logChan)
+		m.authMode = true
+		upd, cmd := m.handleAuthKey(ctrlC)
+		m = upd.(Model)
+		assert.Nil(t, cmd, "first C-c in auth dialog must not quit")
+		assert.True(t, m.quitPending)
+		upd, cmd = m.handleAuthKey(ctrlC)
+		require.NotNil(t, cmd)
+		assert.Equal(t, tea.Quit(), cmd(), "second C-c in auth dialog must quit")
+		_ = upd
+	})
+}

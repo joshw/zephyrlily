@@ -99,6 +99,9 @@ type Model struct {
 	// Meta prefix: Esc followed by a key is treated as M-<key>
 	metaPrefix bool
 
+	// Double C-c to quit: set by the first C-c, cleared by any other key.
+	quitPending bool
+
 	// Paste mode: newlines become spaces, leading spaces after newlines are eaten
 	pasteMode    bool
 	pasteEatFlag bool // eating whitespace after a newline
@@ -1179,6 +1182,10 @@ func (m Model) viewAuth() string {
 		}
 
 		dialogContent.WriteString("\nTab: switch | Enter: submit")
+
+		if m.quitPending {
+			dialogContent.WriteString("\n\nPress C-c again to exit.")
+		}
 	}
 
 	dialogStyle := lipgloss.NewStyle().
