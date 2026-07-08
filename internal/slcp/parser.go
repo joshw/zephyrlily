@@ -110,6 +110,27 @@ func parseCmdBound(line string, t MsgType) (*Message, error) {
 	return &Message{Type: t, Raw: line, CmdID: id, Text: text}, nil
 }
 
+// SplitCommandPrefix splits the "%command [id] " prefix that +leaf-cmd puts on
+// the output lines of a leafed command. It returns the command id and the rest
+// of the line; ok is false when the line carries no such prefix. The prefix is
+// the routing key for command output — several commands may be in flight at
+// once, with their lines interleaved.
+func SplitCommandPrefix(line string) (id int, rest string, ok bool) {
+	const p = "%command ["
+	if !strings.HasPrefix(line, p) {
+		return 0, line, false
+	}
+	end := strings.Index(line, "] ")
+	if end == -1 {
+		return 0, line, false
+	}
+	id, err := strconv.Atoi(line[len(p):end])
+	if err != nil {
+		return 0, line, false
+	}
+	return id, line[end+2:], true
+}
+
 // parseParams parses the SLCP key=value parameter string after the message type token.
 // Parameters may be:
 //

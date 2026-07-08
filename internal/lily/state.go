@@ -99,10 +99,8 @@ func (s *State) ApplyWhereResponse(lines []string) {
 	const prefix = "You are a member of "
 	for _, line := range lines {
 		// Strip the "%command [id] " prefix that +leaf-cmd adds to output lines.
-		if strings.HasPrefix(line, "%command [") {
-			if idx := strings.Index(line, "] "); idx != -1 {
-				line = line[idx+2:]
-			}
+		if _, rest, ok := slcp.SplitCommandPrefix(line); ok {
+			line = rest
 		}
 		if !strings.HasPrefix(line, prefix) {
 			continue

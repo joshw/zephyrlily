@@ -149,6 +149,58 @@ func TestE2E_StartupCommand(t *testing.T) {
 	fake.WaitCommand(t, "STARTUPSEND hi")
 }
 
+// TestE2E_InterleavedCommandLeafing drives two concurrent leafed commands — the
+// shape of /review commands replayed from zlilyStartup while the attach-time
+// review is still streaming — and verifies each %command-tagged line lands only
+// in its own command's result, with the wire prefix stripped.
+func TestE2E_InterleavedCommandLeafing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping end-to-end test in -short mode")
+	}
+	c, fake := startStack(t)
+
+	fake.Push(
+		"%begin [101] /review detach",
+		"%begin [202] /review discussion",
+		"%command [202] REVIEWB no matching events",
+		"%command [101] REVIEWA beginning review",
+		"%command [101] # REVIEWA from clee",
+		"%end [202]",
+		"%end [101]",
+	)
+
+	results := map[int][]string{}
+	deadline := time.After(5 * time.Second)
+	for len(results) < 2 {
+		select {
+		case msg, ok := <-c.Events:
+			require.True(t, ok, "events channel closed before both results arrived")
+			d, _ := msg.Data.(map[string]interface{})
+			switch msg.Type {
+			case "commandresult":
+				id, _ := d["cmd_id"].(float64)
+				if int(id) != 101 && int(id) != 202 {
+					continue // unrelated capture (e.g. the login /where)
+				}
+				lines := []string{}
+				for _, l := range d["lines"].([]interface{}) {
+					lines = append(lines, l.(string))
+				}
+				results[int(id)] = lines
+			case "text":
+				// No tagged line may leak out of the captures as plain text.
+				text, _ := d["text"].(string)
+				require.NotContains(t, text, "REVIEW")
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for command results; got %v", results)
+		}
+	}
+
+	require.Equal(t, []string{"REVIEWB no matching events"}, results[202])
+	require.Equal(t, []string{"REVIEWA beginning review", "# REVIEWA from clee"}, results[101])
+}
+
 func TestE2E_ResizeSmoke(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping teatest end-to-end test in -short mode")

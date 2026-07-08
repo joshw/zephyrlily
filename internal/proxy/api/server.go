@@ -92,6 +92,7 @@ type Session struct {
 	fetchMu       sync.Mutex
 	fetchResultCh chan []string
 	fetchCmdID    int
+	fetchCmd      string // command sent for the pending fetch; pins only a matching %begin
 
 	// Store coordination: set before sending #$# export_file; fanOut routes
 	// the %export_file OKAY/ERROR message back through the channel.
@@ -456,10 +457,12 @@ func (s *Server) fanOut(sess *Session) {
 			sess.cmdBuffer[id] = &cmdCapture{started: time.Now()}
 			sess.cmdMu.Unlock()
 			// If a fetch is pending and we haven't pinned a command ID yet,
-			// claim this one.  We don't match on text because the server may
-			// echo a different form of the command than we sent.
+			// claim this one — but only when the %begin label plausibly echoes
+			// the command we sent, so a concurrent unrelated command (e.g. a
+			// /review replayed from zlilyStartup while the fetch is in flight)
+			// isn't claimed as the fetch result.
 			sess.fetchMu.Lock()
-			if sess.fetchResultCh != nil && sess.fetchCmdID == 0 {
+			if sess.fetchResultCh != nil && sess.fetchCmdID == 0 && fetchLabelMatches(sess.fetchCmd, msg.Text) {
 				slog.Debug("fetch pinning", "cmdID", id, "beginText", msg.Text)
 				sess.fetchCmdID = id
 			}
@@ -501,21 +504,31 @@ func (s *Server) fanOut(sess *Session) {
 			continue
 
 		case slcp.MsgRaw:
-			// Check if this belongs to any active command
-			// We'll add it to all active command buffers
-			// (in practice, there's usually only one active command at a time)
-			added := false
-			for id, buf := range sess.cmdBuffer {
-				text := msg.Text
-				// Strip "%command [id] " prefix if present
-				prefix := fmt.Sprintf("%%command [%d] ", id)
-				text = strings.TrimPrefix(text, prefix)
-				buf.lines = append(buf.lines, text)
-				added = true
-			}
-			if added {
+			// +leaf-cmd tags each output line of a leafed command with its own
+			// "%command [id] " prefix; route by that id. Several commands can be
+			// in flight at once (e.g. /review commands replayed from zlilyStartup
+			// while the attach-time review is still streaming), so appending to
+			// every open capture would duplicate each line into every command's
+			// result — with foreign ids' prefixes left visible.
+			if id, text, ok := slcp.SplitCommandPrefix(msg.Text); ok {
+				if buf, open := sess.cmdBuffer[id]; open {
+					buf.lines = append(buf.lines, text)
+					sess.cmdMu.Unlock()
+					continue
+				}
+				// Capture already flushed (or its %begin was lost): fall through
+				// and publish as ordinary text, without the wire prefix.
+				msg.Text = text
+			} else if len(sess.cmdBuffer) == 1 {
+				// Untagged line with exactly one command open belongs to it: the
+				// server may leave lines inside a lone %begin/%end bracket
+				// untagged. With several commands open an untagged line is not
+				// attributable, so it falls through as ordinary output.
+				for _, buf := range sess.cmdBuffer {
+					buf.lines = append(buf.lines, msg.Text)
+				}
 				sess.cmdMu.Unlock()
-				continue // don't send raw lines that are part of command output
+				continue
 			}
 		}
 		sess.cmdMu.Unlock()
@@ -1038,6 +1051,20 @@ var (
 	errFetchTimeout    = errors.New("fetch timeout")
 )
 
+// fetchLabelMatches reports whether a %begin label plausibly echoes the fetch
+// command we sent. The server may echo a slightly different form than we sent,
+// so beyond an exact match any label sharing the command word is accepted;
+// requiring that much keeps a concurrent unrelated command's %begin from being
+// pinned as the fetch result.
+func fetchLabelMatches(sent, label string) bool {
+	if sent == label {
+		return true
+	}
+	sentVerb, _, _ := strings.Cut(sent, " ")
+	labelVerb, _, _ := strings.Cut(label, " ")
+	return sentVerb != "" && strings.EqualFold(sentVerb, labelVerb)
+}
+
 // fetchLines sends cmd to the Lily server and returns its command output with the
 // server's "* " content prefix stripped. fanOut routes the result back here rather
 // than broadcasting it. Only one fetch may be in flight per session at a time.
@@ -1050,6 +1077,7 @@ func (sess *Session) fetchLines(cmd string) ([]string, error) {
 	}
 	sess.fetchResultCh = resultCh
 	sess.fetchCmdID = 0
+	sess.fetchCmd = cmd
 	sess.fetchMu.Unlock()
 
 	if err := sess.conn.Send(cmd); err != nil {

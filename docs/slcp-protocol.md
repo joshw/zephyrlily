@@ -217,10 +217,14 @@ and groups under one `Entity` type discriminated by `EntityKind`.
 ### Command response framing
 
 Command output is bracketed by `%begin [id] <label>` and `%end [id]`, where
-`id` is a numeric correlation token the client assigns/observes. The body
-between them is raw text. A client tracks pending/active command ids to route
-output. (The proxy uses exactly this framing to capture the `/where me`
-response during login.)
+`id` is a numeric correlation token the client assigns/observes. Each body
+line carries its own `%command [id] ` prefix, and that prefix — not the
+enclosing bracket — is the routing key: several commands may be in flight at
+once with their lines interleaved (tigerlily routes solely by this per-line
+tag, never by bracket position). A line with no prefix is ordinary
+asynchronous output, not command output. (The proxy uses exactly this framing
+to capture the `/where me` response during login, and tolerates untagged body
+lines when only a single command is open.)
 
 ---
 

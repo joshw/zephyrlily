@@ -214,3 +214,30 @@ func TestParseGroup(t *testing.T) {
 	_, err = ParseGroup(&Message{Type: MsgUser})
 	require.Error(t, err)
 }
+
+func TestSplitCommandPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		line     string
+		wantID   int
+		wantRest string
+		wantOK   bool
+	}{
+		{name: "tagged line", line: "%command [42] hello", wantID: 42, wantRest: "hello", wantOK: true},
+		{name: "tagged empty rest", line: "%command [7] ", wantID: 7, wantRest: "", wantOK: true},
+		{name: "rest containing brackets", line: "%command [9] a [b] c", wantID: 9, wantRest: "a [b] c", wantOK: true},
+		{name: "untagged line", line: "hello world", wantRest: "hello world"},
+		{name: "no closing bracket", line: "%command [42 hello", wantRest: "%command [42 hello"},
+		{name: "non-numeric id", line: "%command [x] hello", wantRest: "%command [x] hello"},
+		{name: "no trailing space", line: "%command [42]", wantRest: "%command [42]"},
+		{name: "empty line", line: "", wantRest: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id, rest, ok := SplitCommandPrefix(tt.line)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.wantID, id)
+			assert.Equal(t, tt.wantRest, rest)
+		})
+	}
+}
