@@ -3,6 +3,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -27,7 +28,17 @@ func startStack(t *testing.T) (*client.Client, *lilytest.Server) {
 func startStackWith(t *testing.T, opt lilytest.Options) (*client.Client, *lilytest.Server) {
 	t.Helper()
 	fake := lilytest.Start(t, opt)
+	c := client.New(startProxy(t, fake))
+	require.NoError(t, c.Auth("alice", "password"))
+	require.NoError(t, c.Connect())
+	t.Cleanup(c.Close)
+	return c, fake
+}
 
+// startProxy boots a real proxy on an ephemeral loopback port pointing at
+// fake and returns its address. Shut down via t.Cleanup.
+func startProxy(t *testing.T, fake *lilytest.Server) string {
+	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	proxyAddr := l.Addr().String()
@@ -44,12 +55,7 @@ func startStackWith(t *testing.T, opt lilytest.Options) (*client.Client, *lilyte
 			t.Error("proxy did not shut down in time")
 		}
 	})
-
-	c := client.New(proxyAddr)
-	require.NoError(t, c.Auth("alice", "password"))
-	require.NoError(t, c.Connect())
-	t.Cleanup(c.Close)
-	return c, fake
+	return proxyAddr
 }
 
 // startUI builds the real tui model wired to c and runs it under teatest.
@@ -216,4 +222,54 @@ func TestE2E_ResizeSmoke(t *testing.T) {
 	// and keep the content.
 	tm.Send(tea.WindowSizeMsg{Width: 60, Height: 24})
 	waitForOutput(t, tm, "RESIZETOKEN")
+}
+
+// A fresh WebSocket subscriber must receive the proxy's entire buffered event
+// ring. Before the per-client outbound queue, handleWS pushed the ring into a
+// fixed 64-slot channel with a non-blocking send, silently dropping everything
+// past the cap — an attach-time review burst lost most of its lines (blank
+// separators and wrapped continuations included) with no trace in any log.
+func TestE2E_BufferedBurstDeliveredCompletely(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping end-to-end test in -short mode")
+	}
+	fake := lilytest.Start(t, lilytest.DefaultWorld())
+	c := client.New(startProxy(t, fake))
+	require.NoError(t, c.Auth("alice", "password"))
+
+	// Burst arrives while no WebSocket subscriber is connected, so every line
+	// lands in the proxy's ring buffer (well past the old 64-message cap).
+	const n = 500
+	lines := make([]string, n)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("# BURST line %04d", i)
+	}
+	fake.Push(lines...)
+	require.Eventually(t, func() bool {
+		st, err := c.FetchState()
+		return err == nil && st.EventBufSize >= n
+	}, 5*time.Second, 20*time.Millisecond, "proxy never buffered the burst")
+
+	require.NoError(t, c.Connect())
+	t.Cleanup(c.Close)
+
+	seen := make(map[int]bool)
+	deadline := time.After(10 * time.Second)
+	for len(seen) < n {
+		select {
+		case msg, ok := <-c.Events:
+			require.True(t, ok, "events channel closed after %d/%d burst lines", len(seen), n)
+			if msg.Type != "text" {
+				continue
+			}
+			d, _ := msg.Data.(map[string]interface{})
+			text, _ := d["text"].(string)
+			var i int
+			if _, err := fmt.Sscanf(text, "# BURST line %d", &i); err == nil {
+				seen[i] = true
+			}
+		case <-deadline:
+			t.Fatalf("timed out: received %d of %d burst lines", len(seen), n)
+		}
+	}
 }

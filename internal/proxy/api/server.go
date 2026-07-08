@@ -115,11 +115,69 @@ type cmdCapture struct {
 // rest of the session.
 const cmdCaptureMaxAge = 60 * time.Second
 
+// maxClientBacklog is the most outbound messages a client may have queued
+// before it is forcibly disconnected. It matches maxEventBuf: a client this
+// far behind can recover everything the ring still holds by reconnecting and
+// fetching /events, so disconnecting loses nothing that was recoverable.
+const maxClientBacklog = maxEventBuf
+
 // wsClient is a single WebSocket connection to the proxy.
 type wsClient struct {
-	ws   *websocket.Conn
-	ctx  context.Context
-	send chan *WSServerMsg
+	ws  *websocket.Conn
+	ctx context.Context
+
+	// Outbound queue. Unbounded (up to maxClientBacklog) so a slow reader
+	// never causes silent message loss — the queue holds the same pointers as
+	// the session event ring, so a deep backlog costs pointers, not payload
+	// copies. A client that exceeds maxClientBacklog is disconnected with a
+	// logged warning rather than being fed a stream with invisible gaps; its
+	// reconnect recovers the backlog from the ring via GET /events.
+	mu     sync.Mutex
+	queue  []*WSServerMsg
+	closed bool
+	wake   chan struct{} // 1-buffered nudge: queue went non-empty
+}
+
+// enqueue appends msg to the client's outbound queue and nudges writeLoop.
+// It never blocks and never silently drops: if the client has fallen
+// maxClientBacklog behind it is disconnected instead, which surfaces in the
+// proxy log and to the client as a connection loss it recovers from.
+func (c *wsClient) enqueue(msg *WSServerMsg) {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.queue = append(c.queue, msg)
+	overflow := len(c.queue) > maxClientBacklog
+	if overflow {
+		c.closed = true
+		c.queue = nil
+	}
+	c.mu.Unlock()
+	if overflow {
+		slog.Warn("ws client too slow, disconnecting so it refetches instead of losing messages",
+			"backlog", maxClientBacklog)
+		_ = c.ws.CloseNow()
+		return
+	}
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
+}
+
+// shutdown stops writeLoop and makes any further enqueue a no-op. Safe to
+// call concurrently with broadcasters that still hold a reference.
+func (c *wsClient) shutdown() {
+	c.mu.Lock()
+	c.closed = true
+	c.queue = nil
+	c.mu.Unlock()
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
 }
 
 // assignID assigns the next message ID to a WSServerMsg.
@@ -152,15 +210,13 @@ func (s *Session) publish(msg *WSServerMsg) {
 	s.broadcast(msg)
 }
 
-// broadcast sends msg to every current subscriber without buffering it. Slow
-// clients are skipped rather than blocking the sender.
+// broadcast sends msg to every current subscriber. Delivery is queued per
+// client and never silently dropped; a client too slow to keep up is
+// disconnected by enqueue so it can recover via refetch.
 func (s *Session) broadcast(msg *WSServerMsg) {
 	s.subsMu.Lock()
 	for client := range s.subscribers {
-		select {
-		case client.send <- msg:
-		default:
-		}
+		client.enqueue(msg)
 	}
 	s.subsMu.Unlock()
 }
@@ -375,7 +431,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	client := &wsClient{
 		ws:   ws,
 		ctx:  ctx,
-		send: make(chan *WSServerMsg, 64),
+		wake: make(chan struct{}, 1),
 	}
 
 	sess.subsMu.Lock()
@@ -392,24 +448,20 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		copy(snapshot, sess.eventBuf)
 		sess.eventBufMu.RUnlock()
 		for _, msg := range snapshot {
-			select {
-			case client.send <- msg:
-			default:
-			}
+			client.enqueue(msg)
 		}
 	}
 
 	go client.writeLoop()
 	client.readLoop(sess) // blocks until client disconnects
 
-	// Unsubscribe before closing the send channel: broadcasters send to it
-	// while holding subsMu, and a send on a closed channel panics (even inside
-	// a select), so the channel may only be closed once no broadcaster can
-	// still reach this client.
+	// Unsubscribe, then stop writeLoop. Broadcasters that raced the unsubscribe
+	// and still hold a reference hit the closed flag inside enqueue, which is
+	// always safe.
 	sess.subsMu.Lock()
 	delete(sess.subscribers, client)
 	sess.subsMu.Unlock()
-	close(client.send)
+	client.shutdown()
 
 	_ = ws.Close(websocket.StatusNormalClosure, "")
 }
@@ -731,9 +783,8 @@ func (s *Server) handleSeen(w http.ResponseWriter, r *http.Request) {
 }
 
 // readLoop receives commands from the WebSocket client and forwards them to
-// Lily. The send channel is closed by handleWS after it unsubscribes the
-// client — closing it here would race with broadcasters that still hold a
-// reference and panic the proxy.
+// Lily. Cleanup (unsubscribe + shutdown) is done by handleWS after this
+// returns.
 func (c *wsClient) readLoop(sess *Session) {
 	for {
 		var cm WSClientMsg
@@ -747,10 +798,7 @@ func (c *wsClient) readLoop(sess *Session) {
 		// but not buffered/broadcast, matching the prior behaviour).
 		emit := func(msg *WSServerMsg) {
 			sess.assignID(msg)
-			select {
-			case c.send <- msg:
-			default:
-			}
+			c.enqueue(msg)
 		}
 		if err := sess.dispatchInput(cm.Text, emit); err != nil {
 			slog.Debug("lily send error", "err", err)
@@ -818,10 +866,30 @@ func (sess *Session) dispatchLine(line string, emit func(*WSServerMsg)) error {
 	return sess.conn.Send(line)
 }
 
-// writeLoop drains the send channel and writes messages to the WebSocket.
+// writeLoop drains the outbound queue and writes messages to the WebSocket.
+// It exits on a write error, on shutdown, or when the connection context ends.
 func (c *wsClient) writeLoop() {
-	for msg := range c.send {
-		if err := wsjson.Write(c.ctx, c.ws, msg); err != nil {
+	for {
+		c.mu.Lock()
+		batch := c.queue
+		c.queue = nil
+		closed := c.closed
+		c.mu.Unlock()
+
+		for _, msg := range batch {
+			if err := wsjson.Write(c.ctx, c.ws, msg); err != nil {
+				return
+			}
+		}
+		if len(batch) > 0 {
+			continue // re-check the queue before sleeping
+		}
+		if closed {
+			return
+		}
+		select {
+		case <-c.wake:
+		case <-c.ctx.Done():
 			return
 		}
 	}
@@ -1213,10 +1281,7 @@ func (s *Server) runKeepalive(sess *Session, done <-chan struct{}) {
 		sess.assignID(msg)
 		sess.subsMu.Lock()
 		for c := range sess.subscribers {
-			select {
-			case c.send <- msg:
-			default:
-			}
+			c.enqueue(msg)
 		}
 		sess.subsMu.Unlock()
 	}
