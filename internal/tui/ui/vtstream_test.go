@@ -219,7 +219,9 @@ func TestLongURLRendererByteStream(t *testing.T) {
 	}
 	time.Sleep(200 * time.Millisecond)
 
-	tm.Quit()
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("quit: %v", err)
+	}
 	out, err := io.ReadAll(tm.FinalOutput(t, teatest.WithFinalTimeout(5*time.Second)))
 	if err != nil {
 		t.Fatalf("read output: %v", err)

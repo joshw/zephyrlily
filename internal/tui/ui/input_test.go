@@ -398,8 +398,7 @@ func TestDoubleCtrlCToQuit(t *testing.T) {
 	t.Run("second consecutive C-c quits", func(t *testing.T) {
 		m := newModel(t)
 		upd, _ := m.handleNormalKey(ctrlC)
-		upd, cmd := upd.(Model).handleNormalKey(ctrlC)
-		m = upd.(Model)
+		_, cmd := upd.(Model).handleNormalKey(ctrlC)
 		require.NotNil(t, cmd)
 		assert.Equal(t, tea.Quit(), cmd(), "second C-c must quit")
 	})
