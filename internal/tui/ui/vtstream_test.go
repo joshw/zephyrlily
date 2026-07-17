@@ -9,13 +9,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/charmbracelet/x/exp/teatest"
+	"github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
-	"github.com/muesli/termenv"
 )
 
 // miniVT is a minimal terminal emulator that tracks cursor position and
@@ -29,6 +28,7 @@ type miniVT struct {
 	pendingWrap   bool
 	wraps         []string // context for each wrap event
 	scrolls       []string
+	unknown       []string // CSI finals the emulator doesn't model (would desync tracking)
 }
 
 func (v *miniVT) printable(r rune, ctx string) {
@@ -60,9 +60,15 @@ func (v *miniVT) feed(t *testing.T, data []byte) {
 			v.pendingWrap = false
 			i++
 		case c == '\n':
+			// Model ONLCR (\n → \r\n): with piped input (as under teatest),
+			// bubbletea v2 leaves the output side in cooked mode and its
+			// renderer emits bare \n expecting the tty to map it (tea.go:
+			// mapNl = ttyInput == nil). A real attached terminal behaves the
+			// same way, so column resets here.
+			v.col = 0
 			v.pendingWrap = false
 			if v.row == v.height-1 {
-				v.scrolls = append(v.scrolls, fmt.Sprintf("scroll via LF (col=%d) around byte %d: %q", v.col, i, clip(s, i)))
+				v.scrolls = append(v.scrolls, fmt.Sprintf("scroll via LF around byte %d: %q", i, clip(s, i)))
 			} else {
 				v.row++
 			}
@@ -141,6 +147,23 @@ func (v *miniVT) handleSeq(seq string) {
 			v.col = 0
 		}
 		v.pendingWrap = false
+	case 'E': // CNL: down n, column 0
+		v.row += arg(1)
+		v.col = 0
+		v.pendingWrap = false
+	case 'F': // CPL: up n, column 0
+		v.row -= arg(1)
+		if v.row < 0 {
+			v.row = 0
+		}
+		v.col = 0
+		v.pendingWrap = false
+	case 'G': // CHA: column absolute
+		v.col = arg(1) - 1
+		v.pendingWrap = false
+	case 'd': // VPA: row absolute
+		v.row = arg(1) - 1
+		v.pendingWrap = false
 	case 'H', 'f':
 		parts := strings.SplitN(body, ";", 2)
 		r, c := 1, 1
@@ -156,16 +179,25 @@ func (v *miniVT) handleSeq(seq string) {
 		}
 		v.row, v.col = r-1, c-1
 		v.pendingWrap = false
-	case 'K', 'J', 'm', 'h', 'l':
-		// erase / SGR / mode set: no cursor movement
+	case 'r': // DECSTBM: set scroll region, cursor homes
+		v.row, v.col = 0, 0
+		v.pendingWrap = false
+	case 'X', 'L', 'M', 'S', 'T', 'P', '@':
+		// ECH / IL / DL / SU / SD / DCH / ICH: content moves, cursor doesn't.
+		// The v2 cursed renderer (ncurses-style) uses these; the v1 standard
+		// renderer never did.
+		v.pendingWrap = false
+	case 'K', 'J', 'm', 'h', 'l', 'p', 'u', 'W', 'q':
+		// erase / SGR / mode set / queries: no cursor movement
+	default:
+		v.unknown = append(v.unknown, fmt.Sprintf("unhandled CSI final %q in %q", final, seq))
 	}
 }
 
 func TestLongURLRendererByteStream(t *testing.T) {
-	old := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(old)
-
+	// lipgloss v2 renders colors as specified regardless of environment
+	// (profile downgrading moved into the program renderer), so the v1-era
+	// global SetColorProfile(TrueColor) pin is no longer needed.
 	const width, height = 80, 24
 
 	logChan, _ := NewLogger()
@@ -176,7 +208,8 @@ func TestLongURLRendererByteStream(t *testing.T) {
 		m.output = append(m.output, OutputItem{Type: "text", Data: fmt.Sprintf("filler line %d", i)})
 	}
 
-	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(width, height))
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(width, height),
+		teatest.WithProgramOptions(tea.WithColorProfile(colorprofile.TrueColor)))
 
 	// Let the initial frame paint.
 	time.Sleep(200 * time.Millisecond)
@@ -211,11 +244,11 @@ func TestLongURLRendererByteStream(t *testing.T) {
 
 	// Scroll back up over the URL message and down again.
 	for i := 0; i < 6; i++ {
-		tm.Send(tea.KeyMsg{Type: tea.KeyPgUp})
+		tm.Send(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	}
 	time.Sleep(100 * time.Millisecond)
 	for i := 0; i < 6; i++ {
-		tm.Send(tea.KeyMsg{Type: tea.KeyPgDown})
+		tm.Send(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	}
 	time.Sleep(200 * time.Millisecond)
 
@@ -230,6 +263,9 @@ func TestLongURLRendererByteStream(t *testing.T) {
 
 	vt := &miniVT{width: width, height: height}
 	vt.feed(t, out)
+	for _, u := range vt.unknown {
+		t.Errorf("miniVT: %s", u)
+	}
 	for _, w := range vt.wraps {
 		t.Errorf("physical wrap: %s", w)
 	}

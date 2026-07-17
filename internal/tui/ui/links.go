@@ -6,8 +6,6 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
-
-	"github.com/muesli/termenv"
 )
 
 // osc8Enabled gates all OSC8 hyperlink emission. GNU screen never forwards
@@ -72,8 +70,9 @@ func linkifyText(text string) string {
 		if !osc8Enabled || len(cleanURL) > maxOSC8URLLen {
 			return url
 		}
-		// Return the hyperlink with the URL as both link target and display text
-		return termenv.Hyperlink(cleanURL, cleanURL) + url[len(cleanURL):]
+		// Link the URL text to itself. Ungrouped (id-less) form, matching the
+		// termenv.Hyperlink output this replaces; osc8Link is the grouped form.
+		return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", cleanURL, cleanURL) + url[len(cleanURL):]
 	})
 }
 

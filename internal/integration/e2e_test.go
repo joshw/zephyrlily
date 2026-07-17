@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/exp/teatest"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/joshw/zephyrlily/internal/lilytest"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
@@ -63,7 +64,8 @@ func startUI(t *testing.T, c *client.Client) *teatest.TestModel {
 	t.Helper()
 	logChan, _ := ui.NewLogger()
 	m := ui.New(c, logChan)
-	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 40))
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 40),
+		teatest.WithProgramOptions(tea.WithColorProfile(colorprofile.TrueColor)))
 	t.Cleanup(func() {
 		_ = tm.Quit()
 		tm.WaitFinished(t, teatest.WithFinalTimeout(5*time.Second))
@@ -127,7 +129,7 @@ func TestE2E_OutboundCommand(t *testing.T) {
 	waitForOutput(t, tm, "Connected to TestServer")
 
 	tm.Type("/who")
-	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	// The fake replies to /who; the proxy buffers %begin..%end into a
 	// commandresult the UI renders.

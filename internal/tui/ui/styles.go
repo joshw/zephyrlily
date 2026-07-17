@@ -1,6 +1,6 @@
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import "charm.land/lipgloss/v2"
 
 // Semantic styles for different message components.
 // Based on tigerlily's default color scheme.

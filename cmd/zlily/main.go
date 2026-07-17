@@ -20,12 +20,11 @@ import (
 	"strings"
 	"syscall"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/pflag"
 
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
-	"github.com/joshw/zephyrlily/internal/tui/inputguard"
 	"github.com/joshw/zephyrlily/internal/tui/ui"
 	"github.com/joshw/zephyrlily/internal/version"
 )
@@ -61,7 +60,7 @@ func main() {
 // renders poorly. tmux passes truecolor escapes through and downsamples to the
 // host terminal's real capability, so forcing it here is safe. We only set it
 // when unset, never overriding a value the user already exported.
-// See https://github.com/charmbracelet/bubbletea/issues/825
+// See https://charm.land/bubbletea/v2/issues/825
 func ensureTmuxColor() {
 	if os.Getenv("TMUX") != "" && os.Getenv("COLORTERM") == "" {
 		_ = os.Setenv("COLORTERM", "truecolor")
@@ -211,17 +210,12 @@ func runTUI(proxyAddr string, startupMsgs ...string) {
 	slog.SetDefault(logger)
 
 	m := ui.New(c, logChan, startupMsgs...)
-	opts := []tea.ProgramOption{tea.WithAltScreen()}
-	// Interpose a sequence-boundary guard on stdin so Bubble Tea never sees an
-	// escape sequence split across read boundaries (which leaks mouse reports
-	// into the input during fast wheel scrolling). Only do this for a real
-	// terminal; otherwise leave input to Bubble Tea's default TTY handling.
-	// This is a workaround for a Bubble Tea parser bug — see package inputguard;
-	// remove this line and the package together once it's fixed upstream.
-	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
-		opts = append(opts, tea.WithInput(inputguard.New(os.Stdin)))
-	}
-	p := tea.NewProgram(m, opts...)
+	// Alt-screen is declared via the View struct in ui.Model.View (bubbletea
+	// v2 has no WithAltScreen option). The v1-era inputguard stdin shim is
+	// gone: v2's input parser buffers escape sequences split across read
+	// boundaries (verified against the original repro), so no interposer is
+	// needed.
+	p := tea.NewProgram(m)
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("tui: %v", err)
 	}

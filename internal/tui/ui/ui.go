@@ -10,11 +10,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 )
@@ -419,12 +419,11 @@ func reportSeenCmd(c *client.Client, lastSeenID int64) tea.Cmd {
 // Init starts the event listener.
 func (m Model) Init() tea.Cmd {
 	if m.authMode {
-		return tea.HideCursor
+		return nil
 	}
 	return tea.Batch(
 		listenCmd(m.client),
 		listenLogCmd(m.logChan),
-		tea.HideCursor,
 		fetchInitialStateCmd(m.client),
 	)
 }
@@ -468,7 +467,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.advanceLastSeenID()
 		return m, reportSeenNow(m.client, m.lastSeenID)
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m.debugKeys {
 			m.appendDebug(fmt.Sprintf("KEY: %s", msg.String()))
 		}
@@ -491,22 +490,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m.handleNormalKey(msg)
 
-	case tea.MouseMsg:
+	case tea.PasteMsg:
+		// v2 delivers bracketed pastes as a distinct message instead of a
+		// multi-rune KeyMsg; route it by mode (see handlePaste).
+		return m.handlePaste(msg)
+
+	case tea.MouseWheelMsg:
 		// Only the output viewport reacts to the wheel; auth/edit modes own the
 		// screen and have no scrollback to page through. mouseWheel gates the
-		// whole feature (off by default; toggled via %page wheel).
+		// whole feature (off by default; toggled via %page wheel, which flips
+		// m.mouseWheel — View() reports the matching MouseMode declaratively).
 		if !m.mouseWheel || m.authMode || m.editMode {
 			return m, nil
 		}
 		switch msg.Button {
-		case tea.MouseButtonWheelUp:
+		case tea.MouseWheelUp:
 			m.autoPageAnchor = -1
 			if m.debugMode {
 				m.debugViewport.ScrollUp(mouseWheelLines)
 			} else {
 				m.viewport.ScrollUp(mouseWheelLines)
 			}
-		case tea.MouseButtonWheelDown:
+		case tea.MouseWheelDown:
 			m.autoPageAnchor = -1
 			if m.debugMode {
 				m.debugViewport.ScrollDown(mouseWheelLines)
@@ -656,7 +661,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// deferring) keeps needsPositionRestore from lingering until the user's
 			// first manual resize, where it would override the resize anchor and
 			// yank the viewport to a stale position.
-			if m.viewport.Height > 0 {
+			if m.viewport.Height() > 0 {
 				m.restorePosition()
 			} else {
 				m.needsPositionRestore = true
@@ -710,15 +715,15 @@ func (m Model) updateViewportSize() Model {
 
 	// Preserve scroll state
 	wasAtBottom := m.viewport.AtBottom()
-	oldYOffset := m.viewport.YOffset
+	oldYOffset := m.viewport.YOffset()
 
-	m.viewport = viewport.New(viewportWidth, viewportHeight)
+	m.viewport = viewport.New(viewport.WithWidth(viewportWidth), viewport.WithHeight(viewportHeight))
 	m.viewport.Style = lipgloss.NewStyle()
 
 	if m.debugMode {
 		debugWasAtBottom := m.debugViewport.AtBottom()
-		debugOldYOffset := m.debugViewport.YOffset
-		m.debugViewport = viewport.New(m.width-viewportWidth-1, viewportHeight)
+		debugOldYOffset := m.debugViewport.YOffset()
+		m.debugViewport = viewport.New(viewport.WithWidth(m.width-viewportWidth-1), viewport.WithHeight(viewportHeight))
 		m.debugViewport.Style = lipgloss.NewStyle()
 		// Sync debug content and restore position
 		m.debugViewport.SetContent(strings.Join(m.debugMsgs, "\n"))
@@ -742,7 +747,7 @@ func (m Model) updateViewportSize() Model {
 		// Width changed: re-anchor on the item that was at the top, recomputed at
 		// the new width so the same message stays in view instead of jumping.
 		off := m.itemStartLine(m.scrollAnchor)
-		if max := m.viewport.TotalLineCount() - m.viewport.Height; off > max {
+		if max := m.viewport.TotalLineCount() - m.viewport.Height(); off > max {
 			off = max
 		}
 		if off < 0 {
@@ -761,7 +766,7 @@ func (m Model) updateViewportSize() Model {
 // visible line of the viewport (viewport.YOffset), measured at the current width.
 // Returns 0 when there is no output.
 func (m Model) topVisibleItemIndex() int {
-	target := m.viewport.YOffset
+	target := m.viewport.YOffset()
 	lineCount := 0
 	for i := range m.output {
 		lineCount += len(m.renderItem(i))
@@ -859,7 +864,7 @@ func (m Model) syncViewportContent() Model {
 		if prevLines < 0 {
 			prevLines = 0
 		}
-		if off := m.viewport.YOffset - dropped; off > 0 {
+		if off := m.viewport.YOffset() - dropped; off > 0 {
 			m.viewport.SetYOffset(off)
 		} else {
 			m.viewport.SetYOffset(0)
@@ -883,29 +888,29 @@ func (m Model) syncViewportContent() Model {
 	// Auto-paging: after user sends input, scroll to show up to one page of new output
 	if m.autoPageAnchor >= 0 {
 		newLines := totalLines - m.autoPageAnchor
-		if !m.pagerEnabled || newLines <= m.viewport.Height {
+		if !m.pagerEnabled || newLines <= m.viewport.Height() {
 			// Pager off, or new output fits in one page - show it all
 			m.viewport.GotoBottom()
 		} else {
 			// More than one page of new output - show one page past anchor, then stop
 			targetOffset := m.autoPageAnchor
-			if targetOffset > totalLines-m.viewport.Height {
-				targetOffset = totalLines - m.viewport.Height
+			if targetOffset > totalLines-m.viewport.Height() {
+				targetOffset = totalLines - m.viewport.Height()
 			}
 			m.viewport.SetYOffset(targetOffset)
 			m.autoPageAnchor = -1 // disable further auto-paging until next user input
 		}
-	} else if wasAtBottom || totalLines <= m.viewport.Height {
+	} else if wasAtBottom || totalLines <= m.viewport.Height() {
 		// We were following the bottom. Keep following for incremental output, but
 		// if a whole page or more arrives at once, show one page from where we were
 		// and pause the pager so the new output isn't scrolled past unseen.
 		newLines := totalLines - prevLines
-		if !m.pagerEnabled || newLines <= m.viewport.Height || m.viewport.Height <= 0 {
+		if !m.pagerEnabled || newLines <= m.viewport.Height() || m.viewport.Height() <= 0 {
 			m.viewport.GotoBottom()
 		} else {
 			targetOffset := prevLines
-			if targetOffset > totalLines-m.viewport.Height {
-				targetOffset = totalLines - m.viewport.Height
+			if targetOffset > totalLines-m.viewport.Height() {
+				targetOffset = totalLines - m.viewport.Height()
 			}
 			m.viewport.SetYOffset(targetOffset)
 		}
@@ -1028,7 +1033,7 @@ func (m Model) computeLastSeenID() int64 {
 	}
 
 	// With viewport, we track what's visible
-	visibleEnd := m.viewport.YOffset + m.viewport.Height
+	visibleEnd := m.viewport.YOffset() + m.viewport.Height()
 	lineCount := 0
 	var maxID int64
 
@@ -1061,14 +1066,14 @@ func (m *Model) advanceLastSeenID() {
 // -- MORE -- (and dragged lastSeenID along, so a reconnect restored to the
 // bottom too).
 func (m *Model) armPagerIfAtBottom() {
-	if m.viewport.Height > 0 && m.viewport.AtBottom() {
+	if m.viewport.Height() > 0 && m.viewport.AtBottom() {
 		m.autoPageAnchor = m.viewport.TotalLineCount()
 	}
 }
 
 // restorePosition sets viewport scroll position from stored lastSeenID.
 func (m *Model) restorePosition() {
-	if m.viewport.Height <= 0 {
+	if m.viewport.Height() <= 0 {
 		return
 	}
 
@@ -1080,7 +1085,7 @@ func (m *Model) restorePosition() {
 		}
 	}
 
-	offset := lineCount - m.viewport.Height
+	offset := lineCount - m.viewport.Height()
 	if offset < 0 {
 		offset = 0
 	}
@@ -1090,7 +1095,19 @@ func (m *Model) restorePosition() {
 }
 
 // View renders the full TUI.
-func (m Model) View() string {
+func (m Model) View() tea.View {
+	v := tea.NewView(m.viewContent())
+	v.AltScreen = true
+	// The terminal cursor stays hidden (v.Cursor nil): every mode draws its
+	// own virtual cursor inside the content string.
+	if m.mouseWheel && !m.authMode && !m.editMode {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
+	return v
+}
+
+// viewContent renders the whole frame as a styled string.
+func (m Model) viewContent() string {
 	if m.height == 0 {
 		return "connecting..."
 	}
@@ -1238,11 +1255,11 @@ func (m Model) renderViewportWithPopup() string {
 	result = append(result, popupLines...)
 
 	// Ensure we have the right number of lines
-	for len(result) < m.viewport.Height {
+	for len(result) < m.viewport.Height() {
 		result = append(result, "")
 	}
 
-	return strings.Join(result[:m.viewport.Height], "\n")
+	return strings.Join(result[:m.viewport.Height()], "\n")
 }
 
 // viewWithDebug renders split view: left=output, right=debug JSON.
@@ -1254,7 +1271,7 @@ func (m Model) viewWithDebug() string {
 	rightLines := strings.Split(m.debugViewport.View(), "\n")
 
 	var sb strings.Builder
-	for i := 0; i < m.viewport.Height; i++ {
+	for i := 0; i < m.viewport.Height(); i++ {
 		left := ""
 		if i < len(leftLines) {
 			left = leftLines[i]
@@ -1323,8 +1340,8 @@ func (m Model) formatStatusBar() string {
 
 	// MORE indicator centered when not at bottom
 	center := ""
-	if !m.viewport.AtBottom() && m.viewport.TotalLineCount() > m.viewport.Height {
-		moreCount := m.viewport.TotalLineCount() - m.viewport.YOffset - m.viewport.Height
+	if !m.viewport.AtBottom() && m.viewport.TotalLineCount() > m.viewport.Height() {
+		moreCount := m.viewport.TotalLineCount() - m.viewport.YOffset() - m.viewport.Height()
 		if moreCount > 0 {
 			center = fmt.Sprintf("-- MORE (%d) --", moreCount)
 		}

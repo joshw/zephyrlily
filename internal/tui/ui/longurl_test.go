@@ -4,10 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/joshw/zephyrlily/internal/tui/client"
-	"github.com/muesli/termenv"
 )
 
 const longURL = "https://scontent-iad3-2.xx.fbcdn.net/v/t39.99422-6/747038350_28117976701121955_6928995500826763906_n.png?stp=dst-jpg_tt6&cstp=mx1608x2144&ctp=s1608x2144&_nc_cat=111&ccb=1-7&_nc_sid=127cfc&_nc_ohc=oiY1F8iplg0Q7kNvwGrIAw2&_nc_oc=AdoYDc8I_MX_-BG47lLqAfZqPRznZUogSJV_Dgw0brTaF8y2op1ASwfakvaHHC_bp8w&_nc_zt=14&_nc_ht=scontent-iad3-2.xx&_nc_gid=6xlzlcQ0YnjRAovPvca_sQ&_nc_ss=7b2a8&oh=00_AQAJBHfZkYfhJIq6dXiDDhocTXSm2vrVKi7y35IW2fzAxA&oe=6A5DCE67"
@@ -74,10 +72,9 @@ func checkLines(t *testing.T, label string, lines []string, width int) {
 }
 
 func TestLongURLFullView(t *testing.T) {
-	old := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(old)
-
+	// lipgloss v2 renders colors as specified regardless of environment
+	// (profile downgrading moved into the program renderer), so the v1-era
+	// global SetColorProfile(TrueColor) pin is no longer needed.
 	values := map[string]string{
 		"leading-space": " says check this out " + longURL + " pretty wild",
 		"url-only":      " " + longURL,
@@ -96,7 +93,7 @@ func TestLongURLFullView(t *testing.T) {
 			}
 			m = sizeTo(t, m, width, height)
 
-			view := m.View()
+			view := m.viewContent()
 			vlines := strings.Split(view, "\n")
 			if len(vlines) != height {
 				t.Errorf("%s w=%d: View has %d lines, want %d", name, width, len(vlines), height)

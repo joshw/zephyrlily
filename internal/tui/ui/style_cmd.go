@@ -2,11 +2,13 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // styleDescriptor tracks a user-editable style: the live lipgloss vars it drives
@@ -92,42 +94,46 @@ func init() {
 
 // tokenFromColor produces a display token for a terminal color: a friendly name
 // for ANSI 0-15, the raw value for hex/256-color, or "none" when unset.
-func tokenFromColor(tc lipgloss.TerminalColor) string {
-	c, ok := tc.(lipgloss.Color)
-	if !ok {
+// lipgloss v2 colors are plain color.Color values: ansi.BasicColor for 0-15,
+// ansi.IndexedColor for 16-255, color.RGBA for hex, NoColor when unset.
+func tokenFromColor(tc color.Color) string {
+	switch c := tc.(type) {
+	case ansi.BasicColor:
+		s := strconv.Itoa(int(c))
+		if name, ok := reverseNames[s]; ok {
+			return name
+		}
+		return s
+	case ansi.IndexedColor:
+		return strconv.Itoa(int(c))
+	case color.RGBA:
+		return fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B)
+	default:
 		return "none"
 	}
-	s := string(c)
-	if s == "" {
-		return "none"
-	}
-	if name, ok := reverseNames[s]; ok {
-		return name
-	}
-	return s
 }
 
 // parseColor resolves a user color token. unset is true for "none"; ok is false
 // for an unrecognized token (the caller should report an error and not change
 // anything). "default" is handled by the command layer, not here.
-func parseColor(tok string) (color lipgloss.Color, unset bool, ok bool) {
+func parseColor(tok string) (col color.Color, unset bool, ok bool) {
 	tok = strings.ToLower(strings.TrimSpace(tok))
 	if tok == "none" {
-		return "", true, true
+		return nil, true, true
 	}
 	if strings.HasPrefix(tok, "#") {
 		return lipgloss.Color(tok), false, true
 	}
 	if n, err := strconv.Atoi(tok); err == nil {
 		if n < 0 || n > 255 {
-			return "", false, false
+			return nil, false, false
 		}
 		return lipgloss.Color(tok), false, true
 	}
 	if code, found := colorNames[tok]; found {
 		return lipgloss.Color(code), false, true
 	}
-	return "", false, false
+	return nil, false, false
 }
 
 // canonicalToken normalizes a user-entered color token to how it will be stored
@@ -200,7 +206,7 @@ func (d *styleDescriptor) resetAttr(which string) {
 	case "fg":
 		def := d.def.GetForeground()
 		d.each(func(s lipgloss.Style) lipgloss.Style {
-			if _, ok := def.(lipgloss.Color); !ok {
+			if _, ok := def.(lipgloss.NoColor); ok {
 				return s.UnsetForeground()
 			}
 			return s.Foreground(def)
@@ -209,7 +215,7 @@ func (d *styleDescriptor) resetAttr(which string) {
 	case "bg":
 		def := d.def.GetBackground()
 		d.each(func(s lipgloss.Style) lipgloss.Style {
-			if _, ok := def.(lipgloss.Color); !ok {
+			if _, ok := def.(lipgloss.NoColor); ok {
 				return s.UnsetBackground()
 			}
 			return s.Background(def)

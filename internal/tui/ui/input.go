@@ -5,21 +5,21 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"github.com/joshw/zephyrlily/internal/tui/ascify"
 )
 
 // syncTextarea updates the textarea to match inputValue and inputCursor.
 func (m *Model) syncTextarea() {
 	m.input.SetValue(m.inputValue)
-	m.input.SetCursor(m.inputCursor)
+	m.input.SetCursorColumn(m.inputCursor)
 }
 
 // maybeResizeViewport updates viewport if input height changed.
 func (m Model) maybeResizeViewport() Model {
 	newHeight := m.calculateInputHeight()
-	currentViewportHeight := m.viewport.Height
+	currentViewportHeight := m.viewport.Height()
 	expectedViewportHeight := m.height - 1 - newHeight // -1 for status bar
 	if expectedViewportHeight < 1 {
 		expectedViewportHeight = 1
@@ -31,7 +31,7 @@ func (m Model) maybeResizeViewport() Model {
 }
 
 // handleAuthKey handles key events in authentication dialog mode.
-func (m Model) handleAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleAuthKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keyStr := msg.String()
 
 	// Double C-c to quit, as in normal mode; any other key cancels it.
@@ -108,7 +108,7 @@ func (m Model) handleAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleNormalKey handles key events in normal (non-special) mode.
-func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keyStr := msg.String()
 
 	// Double C-c to quit: only a second consecutive C-c exits; any other key
@@ -126,9 +126,12 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// "b" can leave a dangling ESC), so alt-ifying it would turn the next
 		// Ctrl-B/Ctrl-F/arrow into an unbound combo and silently swallow it.
 		// Drop the prefix and handle those keys normally instead.
-		if msg.Type == tea.KeyRunes || msg.Type == tea.KeyBackspace {
-			// Synthesize an alt+ key by setting the Alt flag
-			msg.Alt = true
+		if msg.Text != "" || msg.Code == tea.KeyBackspace {
+			// Synthesize an alt+ key: set the Alt modifier and clear Text, as a
+			// real alt chord has no text in v2 (and String() prefers Text, so a
+			// leftover "b" would hide the "alt+b" keystroke from the bindings).
+			msg.Mod |= tea.ModAlt
+			msg.Text = ""
 			keyStr = msg.String()
 		}
 	} else if keyStr == "esc" {
@@ -161,14 +164,15 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Paste mode intercepts Enter and Space
 	if m.pasteMode {
 		if m.debugMode {
-			m.appendDebug(fmt.Sprintf("[paste] keyStr=%q type=%v runes=%q", keyStr, msg.Type, string(msg.Runes)))
+			m.appendDebug(fmt.Sprintf("[paste] keyStr=%q code=%q text=%q", keyStr, msg.Code, msg.Text))
 		}
-		// Handle both pasted multi-line text (KeyRunes with multiple chars) and
-		// individual keystrokes. Alt-modified runes are not pasted text — pastes
-		// never carry the Alt flag — they are M- chords (M-f/M-b word motion,
-		// M-d, …); let them fall through to their normal bindings.
-		if msg.Type == tea.KeyRunes && !msg.Alt {
-			for _, r := range msg.Runes {
+		// Individual printable keystrokes go through pasteRune. (Bracketed
+		// pastes arrive as tea.PasteMsg in v2, handled in Update; this path
+		// covers typed text and unbracketed floods.) Alt-modified runes are not
+		// text — they are M- chords (M-f/M-b word motion, M-d, …); let them
+		// fall through to their normal bindings.
+		if msg.Text != "" && !msg.Mod.Contains(tea.ModAlt) {
+			for _, r := range msg.Text {
 				m = m.pasteRune(r)
 			}
 			m.syncTextarea()
@@ -322,9 +326,8 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	default:
 		// Handle intelligent expand keys
-		if msg.Type == tea.KeyRunes {
-			s := string(msg.Runes)
-			switch s {
+		if msg.Text != "" && !msg.Mod.Contains(tea.ModAlt) {
+			switch s := msg.Text; s {
 			case ";", ":", ",", "=":
 				m = m.handleExpandKey(s)
 				m.syncTextarea()
@@ -333,7 +336,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			default:
 				m = m.insertString(s)
 			}
-		} else if keyStr == " " {
+		} else if keyStr == "space" {
 			m = m.insertString(" ")
 		}
 	}
@@ -342,6 +345,51 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m = m.maybeResizeViewport()
 	m.armPagerIfAtBottom()
 	return m, nil
+}
+
+// handlePaste routes bracketed-paste text by mode. v1 delivered pastes as
+// multi-rune KeyMsgs that fell through the per-key paths; v2's distinct
+// PasteMsg lets each mode take the whole text at once.
+func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	text := msg.Content
+	switch {
+	case m.authMode:
+		// The auth textareas accept PasteMsg natively.
+		if m.authField == 0 {
+			m.usernameInput, _ = m.usernameInput.Update(msg)
+		} else {
+			m.passwordInput, _ = m.passwordInput.Update(msg)
+		}
+		return m, nil
+	case m.editMode:
+		m.editor, _ = m.editor.Update(msg)
+		return m, nil
+	case m.reconnectPrompt:
+		return m, nil
+	case m.searchMode:
+		m.searchBuf += text
+		m = m.searchRefresh()
+		m.syncTextarea()
+		m = m.maybeResizeViewport()
+		return m, nil
+	case m.pasteMode:
+		for _, r := range text {
+			m = m.pasteRune(r)
+		}
+		m.syncTextarea()
+		m = m.maybeResizeViewport()
+		m.armPagerIfAtBottom()
+		return m, nil
+	default:
+		// Same insertion path a v1 multi-rune KeyMsg took. Unlike typed input,
+		// a pasted ";"/":" must not trigger expand — v2's split makes that
+		// distinction possible.
+		m = m.insertString(text)
+		m.syncTextarea()
+		m = m.maybeResizeViewport()
+		m.armPagerIfAtBottom()
+		return m, nil
+	}
 }
 
 // handleSubmit processes Enter key - sends command or advances pager.
@@ -457,12 +505,12 @@ func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
 			var cmd tea.Cmd
 			switch {
 			case len(fields) == 3 && strings.EqualFold(fields[2], "on"):
+				// v2 mouse handling is declarative: View() reports MouseMode from
+				// m.mouseWheel, so no enable/disable command is needed here.
 				m.mouseWheel = true
-				cmd = tea.EnableMouseCellMotion
 				lines = append([]string{"Mouse-wheel scrolling: on"}, mouseWheelWarning...)
 			case len(fields) == 3 && strings.EqualFold(fields[2], "off"):
 				m.mouseWheel = false
-				cmd = tea.DisableMouse
 				lines = []string{"Mouse-wheel scrolling: off"}
 			case len(fields) == 2:
 				state := "off"
@@ -501,7 +549,7 @@ func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
 }
 
 // handleReconnectKey handles key events during reconnect prompt.
-func (m Model) handleReconnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleReconnectKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y", "enter", "ctrl+m", "ctrl+j":
 		m.reconnectPrompt = false
@@ -516,7 +564,7 @@ func (m Model) handleReconnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleSearchKey handles key events during incremental search.
-func (m Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.metaPrefix = false
 
 	// Any cursor-motion key ends the search, accepting the current match, and
@@ -551,12 +599,12 @@ func (m Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchBuf = m.searchBuf[:len(m.searchBuf)-1]
 			m = m.searchRefresh()
 		}
-	case " ":
+	case "space":
 		m.searchBuf += " "
 		m = m.searchRefresh()
 	default:
-		if msg.Type == tea.KeyRunes {
-			m.searchBuf += string(msg.Runes)
+		if msg.Text != "" && !msg.Mod.Contains(tea.ModAlt) {
+			m.searchBuf += msg.Text
 			m = m.searchRefresh()
 		}
 	}

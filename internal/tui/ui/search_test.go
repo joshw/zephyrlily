@@ -3,8 +3,8 @@ package ui
 import (
 	"testing"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // typeSearch simulates entering incremental search (backward or forward) and
@@ -75,7 +75,7 @@ func TestCursorMotionEndsSearch(t *testing.T) {
 
 	// The expected cursor for each motion is whatever that key does in normal
 	// mode starting from the match-start position — the spec verbatim.
-	wantCursorFor := func(msg tea.KeyMsg) int {
+	wantCursorFor := func(msg tea.KeyPressMsg) int {
 		ref := Model{
 			keys:        NewKeyMap(),
 			input:       textarea.New(),
@@ -90,16 +90,16 @@ func TestCursorMotionEndsSearch(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		msg  tea.KeyMsg
+		msg  tea.KeyPressMsg
 	}{
-		{"ctrl+f", tea.KeyMsg{Type: tea.KeyCtrlF}},
-		{"right", tea.KeyMsg{Type: tea.KeyRight}},
-		{"ctrl+b", tea.KeyMsg{Type: tea.KeyCtrlB}},
-		{"left", tea.KeyMsg{Type: tea.KeyLeft}},
-		{"ctrl+a", tea.KeyMsg{Type: tea.KeyCtrlA}},
-		{"ctrl+e", tea.KeyMsg{Type: tea.KeyCtrlE}},
-		{"alt+b", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true}},
-		{"alt+f", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}, Alt: true}},
+		{"ctrl+f", tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl}},
+		{"right", tea.KeyPressMsg{Code: tea.KeyRight}},
+		{"ctrl+b", tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl}},
+		{"left", tea.KeyPressMsg{Code: tea.KeyLeft}},
+		{"ctrl+a", tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl}},
+		{"ctrl+e", tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl}},
+		{"alt+b", tea.KeyPressMsg{Code: 'b', Mod: tea.ModAlt}},
+		{"alt+f", tea.KeyPressMsg{Code: 'f', Mod: tea.ModAlt}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newModel()
@@ -124,7 +124,7 @@ func TestCursorMotionEndsSearch(t *testing.T) {
 	// the previous occurrence instead of ending the search.
 	t.Run("ctrl+r_still_searches", func(t *testing.T) {
 		m := newModel()
-		upd, _ := m.handleSearchKey(tea.KeyMsg{Type: tea.KeyCtrlR})
+		upd, _ := m.handleSearchKey(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 		got := upd.(Model)
 		if !got.searchMode {
 			t.Fatalf("C-r ended search mode")

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -146,7 +146,7 @@ func TestSubmitLineAnchorRespectsScrollPosition(t *testing.T) {
 			m.output = append(m.output, OutputItem{Type: "text", Data: fmt.Sprintf("line %02d", i)})
 		}
 		m = sizeTo(t, m, 80, 6)
-		require.Greater(t, m.viewport.TotalLineCount(), m.viewport.Height,
+		require.Greater(t, m.viewport.TotalLineCount(), m.viewport.Height(),
 			"fixture must be tall enough to scroll")
 		return m
 	}
@@ -155,14 +155,14 @@ func TestSubmitLineAnchorRespectsScrollPosition(t *testing.T) {
 		m := build()
 		m.viewport.GotoTop()
 		require.False(t, m.viewport.AtBottom())
-		before := m.viewport.YOffset
+		before := m.viewport.YOffset()
 
 		// %page exercises submitLine's anchor logic (set unconditionally at the
 		// top) without reaching client.Send, which the test client can't service.
 		m, _ = m.submitLine("%page")
 
 		assert.Equal(t, -1, m.autoPageAnchor, "anchor must stay disabled when scrolled back")
-		assert.Equal(t, before, m.viewport.YOffset, "viewport must not jump when scrolled back")
+		assert.Equal(t, before, m.viewport.YOffset(), "viewport must not jump when scrolled back")
 	})
 
 	t.Run("at bottom arms anchor and follows the response", func(t *testing.T) {
@@ -192,7 +192,7 @@ func TestPagerArmsOnCatchUp(t *testing.T) {
 			m.output = append(m.output, OutputItem{Type: "text", Data: fmt.Sprintf("line %02d", i)})
 		}
 		m = sizeTo(t, m, 80, 6)
-		require.Greater(t, m.viewport.TotalLineCount(), m.viewport.Height,
+		require.Greater(t, m.viewport.TotalLineCount(), m.viewport.Height(),
 			"fixture must be tall enough to scroll")
 		return m
 	}
@@ -213,26 +213,26 @@ func TestPagerArmsOnCatchUp(t *testing.T) {
 		m.autoPageAnchor = -1
 
 		// M-> (goto bottom) catches up to the newest output.
-		upd, _ := m.handleNormalKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(">"), Alt: true})
+		upd, _ := m.handleNormalKey(tea.KeyPressMsg{Code: '>', Mod: tea.ModAlt})
 		m = upd.(Model)
 		require.True(t, m.viewport.AtBottom())
 		require.GreaterOrEqual(t, m.autoPageAnchor, 0, "catching up must re-arm the anchor")
 		anchor := m.autoPageAnchor
 
 		// Under a page of new output: keep following the bottom, anchor stays armed.
-		m = trickle(m, m.viewport.Height-1)
+		m = trickle(m, m.viewport.Height()-1)
 		assert.True(t, m.viewport.AtBottom(), "should follow the bottom while under a page")
 		assert.Equal(t, anchor, m.autoPageAnchor, "anchor must stay armed while following")
 
 		// Crossing a page: pause showing one page past the anchor.
 		m = trickle(m, 2)
 		assert.False(t, m.viewport.AtBottom(), "must pause once a page accumulates")
-		assert.Equal(t, anchor, m.viewport.YOffset, "pause must show one page from the anchor")
+		assert.Equal(t, anchor, m.viewport.YOffset(), "pause must show one page from the anchor")
 		assert.Equal(t, -1, m.autoPageAnchor, "anchor disarms after firing")
 
 		// Still idle: further output must not move the paused view.
 		m = trickle(m, 10)
-		assert.Equal(t, anchor, m.viewport.YOffset, "paused view must hold while output accumulates")
+		assert.Equal(t, anchor, m.viewport.YOffset(), "paused view must hold while output accumulates")
 	})
 
 	t.Run("blank-Enter pager advance to the bottom re-arms", func(t *testing.T) {
@@ -252,7 +252,7 @@ func TestPagerArmsOnCatchUp(t *testing.T) {
 		m := build()
 		m.viewport.GotoBottom()
 
-		upd, _ := m.handleNormalKey(tea.KeyMsg{Type: tea.KeyPgUp})
+		upd, _ := m.handleNormalKey(tea.KeyPressMsg{Code: tea.KeyPgUp})
 		m = upd.(Model)
 		require.False(t, m.viewport.AtBottom())
 		assert.Equal(t, -1, m.autoPageAnchor, "scrolled back must stay disarmed")
@@ -334,10 +334,10 @@ func TestSearchKeysIgnoredInPasteMode(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		msg  tea.KeyMsg
+		msg  tea.KeyPressMsg
 	}{
-		{"ctrl+r", tea.KeyMsg{Type: tea.KeyCtrlR}},
-		{"ctrl+s", tea.KeyMsg{Type: tea.KeyCtrlS}},
+		{"ctrl+r", tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl}},
+		{"ctrl+s", tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl}},
 	} {
 		t.Run(tc.name+"_paste_mode", func(t *testing.T) {
 			upd, _ := newModel(true).handleNormalKey(tc.msg)
@@ -376,7 +376,7 @@ func TestWordMotionWorksInPasteMode(t *testing.T) {
 
 	t.Run("alt+b_moves_back_a_word", func(t *testing.T) {
 		upd, _ := newModel(len("foo bar")).handleNormalKey(
-			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true})
+			tea.KeyPressMsg{Code: 'b', Mod: tea.ModAlt})
 		m := upd.(Model)
 		if want := len("foo "); m.inputCursor != want {
 			t.Fatalf("M-b in paste mode: cursor = %d, want %d", m.inputCursor, want)
@@ -388,7 +388,7 @@ func TestWordMotionWorksInPasteMode(t *testing.T) {
 
 	t.Run("alt+f_moves_forward_a_word", func(t *testing.T) {
 		upd, _ := newModel(0).handleNormalKey(
-			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}, Alt: true})
+			tea.KeyPressMsg{Code: 'f', Mod: tea.ModAlt})
 		m := upd.(Model)
 		if want := len("foo"); m.inputCursor != want {
 			t.Fatalf("M-f in paste mode: cursor = %d, want %d", m.inputCursor, want)
@@ -400,8 +400,8 @@ func TestWordMotionWorksInPasteMode(t *testing.T) {
 
 	// The ESC-prefix spelling (ESC then 'b' == M-b) must take the same path.
 	t.Run("esc_then_b_moves_back_a_word", func(t *testing.T) {
-		upd, _ := newModel(len("foo bar")).handleNormalKey(tea.KeyMsg{Type: tea.KeyEscape})
-		upd, _ = upd.(Model).handleNormalKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+		upd, _ := newModel(len("foo bar")).handleNormalKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+		upd, _ = upd.(Model).handleNormalKey(tea.KeyPressMsg{Code: 'b', Text: "b"})
 		m := upd.(Model)
 		if want := len("foo "); m.inputCursor != want {
 			t.Fatalf("ESC b in paste mode: cursor = %d, want %d", m.inputCursor, want)
@@ -418,7 +418,7 @@ func TestWordMotionWorksInPasteMode(t *testing.T) {
 // unbound combo and silently swallowed. Non-rune keys have no M- bindings, so a
 // pending metaPrefix must not consume them.
 func TestMetaPrefixDoesNotSwallowNonRuneKeys(t *testing.T) {
-	send := func(m Model, msg tea.KeyMsg) Model {
+	send := func(m Model, msg tea.KeyPressMsg) Model {
 		next, _ := m.handleNormalKey(msg)
 		return next.(Model)
 	}
@@ -436,12 +436,12 @@ func TestMetaPrefixDoesNotSwallowNonRuneKeys(t *testing.T) {
 
 	nonRune := []struct {
 		name string
-		msg  tea.KeyMsg
+		msg  tea.KeyPressMsg
 	}{
-		{"ctrl+b", tea.KeyMsg{Type: tea.KeyCtrlB}},
-		{"ctrl+f", tea.KeyMsg{Type: tea.KeyCtrlF}},
-		{"left", tea.KeyMsg{Type: tea.KeyLeft}},
-		{"right", tea.KeyMsg{Type: tea.KeyRight}},
+		{"ctrl+b", tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl}},
+		{"ctrl+f", tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl}},
+		{"left", tea.KeyPressMsg{Code: tea.KeyLeft}},
+		{"right", tea.KeyPressMsg{Code: tea.KeyRight}},
 	}
 
 	for _, tc := range nonRune {
@@ -449,7 +449,7 @@ func TestMetaPrefixDoesNotSwallowNonRuneKeys(t *testing.T) {
 			m := newModel()
 			m.inputCursor = 4 // mid-line so both back and forward motions can move
 			// A stray ESC primes the meta prefix.
-			m = send(m, tea.KeyMsg{Type: tea.KeyEscape})
+			m = send(m, tea.KeyPressMsg{Code: tea.KeyEscape})
 			before := m.inputCursor
 			m = send(m, tc.msg)
 			if m.inputCursor == before {
@@ -464,8 +464,8 @@ func TestMetaPrefixDoesNotSwallowNonRuneKeys(t *testing.T) {
 	// Genuine ESC-as-Meta on a rune still works: ESC then 'b' is M-b (word back).
 	t.Run("prefix_then_rune_b_is_word_back", func(t *testing.T) {
 		m := newModel() // cursor at end of "foo, bar"
-		m = send(m, tea.KeyMsg{Type: tea.KeyEscape})
-		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+		m = send(m, tea.KeyPressMsg{Code: tea.KeyEscape})
+		m = send(m, tea.KeyPressMsg{Code: 'b', Text: "b"})
 		if want := len("foo, "); m.inputCursor != want {
 			t.Fatalf("M-b should move to start of word: got cursor %d, want %d", m.inputCursor, want)
 		}
@@ -473,7 +473,7 @@ func TestMetaPrefixDoesNotSwallowNonRuneKeys(t *testing.T) {
 }
 
 func TestDoubleCtrlCToQuit(t *testing.T) {
-	ctrlC := tea.KeyMsg{Type: tea.KeyCtrlC}
+	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 
 	newModel := func(t *testing.T) Model {
 		logChan, _ := NewLogger()
@@ -503,7 +503,7 @@ func TestDoubleCtrlCToQuit(t *testing.T) {
 	t.Run("any other key cancels the pending quit", func(t *testing.T) {
 		m := newModel(t)
 		upd, _ := m.handleNormalKey(ctrlC)
-		upd, _ = upd.(Model).handleNormalKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+		upd, _ = upd.(Model).handleNormalKey(tea.KeyPressMsg{Code: 'x', Text: "x"})
 		m = upd.(Model)
 		assert.False(t, m.quitPending, "typing must cancel the pending quit")
 		upd, cmd := m.handleNormalKey(ctrlC)

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,7 +14,10 @@ import (
 func newWheelModel(t *testing.T) Model {
 	t.Helper()
 	logChan, _ := NewLogger()
-	return New(client.New(""), logChan)
+	m := New(client.New(""), logChan)
+	// Leave auth mode: View() only declares a mouse mode in the normal UI.
+	m.authMode = false
+	return m
 }
 
 // lastOutputLines returns the rendered lines of the most recent output item.
@@ -29,11 +33,13 @@ func TestPageWheelToggle(t *testing.T) {
 	m := newWheelModel(t)
 	require.False(t, m.mouseWheel, "wheel scrolling should be off by default")
 
-	// Turn it on: state flips, a runtime command is issued to enable mouse
-	// reporting, and the selection warning is printed.
-	m, cmd := m.submitLine("%page wheel on")
+	// Turn it on: state flips, the View declares cell-motion mouse mode
+	// (bubbletea v2 has no enable/disable commands), and the selection
+	// warning is printed.
+	m, _ = m.submitLine("%page wheel on")
 	assert.True(t, m.mouseWheel, "%page wheel on should enable wheel scrolling")
-	assert.NotNil(t, cmd, "enabling should issue a mouse-enable command")
+	assert.Equal(t, tea.MouseModeCellMotion, m.View().MouseMode,
+		"enabling should declare cell-motion mouse mode in the View")
 	on := lastOutputLines(t, m)
 	assert.Equal(t, "Mouse-wheel scrolling: on", on[0])
 	assert.Contains(t, strings.Join(on, "\n"), "text selection",
@@ -43,11 +49,12 @@ func TestPageWheelToggle(t *testing.T) {
 			"warning should mention the %s bypass modifier", frag)
 	}
 
-	// Turn it off: state flips back and a disable command is issued, with no
-	// warning this time.
-	m, cmd = m.submitLine("%page wheel off")
+	// Turn it off: state flips back and the View stops declaring a mouse
+	// mode, with no warning this time.
+	m, _ = m.submitLine("%page wheel off")
 	assert.False(t, m.mouseWheel, "%page wheel off should disable wheel scrolling")
-	assert.NotNil(t, cmd, "disabling should issue a mouse-disable command")
+	assert.Equal(t, tea.MouseModeNone, m.View().MouseMode,
+		"disabling should declare no mouse mode in the View")
 	off := lastOutputLines(t, m)
 	assert.Equal(t, []string{"Mouse-wheel scrolling: off"}, off)
 }
