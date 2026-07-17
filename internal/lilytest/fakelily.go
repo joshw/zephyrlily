@@ -37,6 +37,7 @@ type Options struct {
 	WhereResponse  string              // e.g. "You are a member of cafe, lobby." (seeds disc membership)
 	OmitOptions    []string            // options to drop from the advertised %options line (failure tests)
 	RejectLogin    bool                // re-prompt with "login:" instead of %options, simulating bad credentials
+	RedirectLogin  bool                // user already logged in elsewhere: redirect banner + blurb prompt instead of "*** Connected ***"
 	CommandReplies map[string][]string // client command line -> reply lines (sent between %begin/%end)
 }
 
@@ -218,9 +219,26 @@ func (s *Server) handshake(r *bufio.Reader) error {
 		return nil
 	}
 
-	// "*** Connected ***" is printed as soon as login succeeds, before the sync
-	// block — the client uses it as the login-success signal.
-	s.write("*** Connected ***")
+	if s.opt.RedirectLogin {
+		// The user was already logged in from another client: the server takes
+		// over that session, printing a redirect banner in place of "*** Connected
+		// ***", then waits at the blurb prompt before syncing (real wire capture,
+		// lily 2.6.2). The client must accept the banner as login success or it
+		// hangs here: the blurb answer can only come from a user who is stuck in
+		// the auth dialog until Connect returns.
+		s.write("*** Redirecting old connection to this port ***")
+		s.write("%NOTIFY SOURCE=#1660 EVENT=detach TIME=1784247402 NOTIFY VALUE=22=(possibly by accident)")
+		s.write("")
+		s.write("Please enter a blurb, or hit <enter> for none")
+		s.write("%prompt --> ")
+		if _, err := r.ReadString('\n'); err != nil { // the blurb answer
+			return err
+		}
+	} else {
+		// "*** Connected ***" is printed as soon as login succeeds, before the sync
+		// block — the client uses it as the login-success signal.
+		s.write("*** Connected ***")
+	}
 
 	s.write("%SLCP-SYNC START")
 	s.write("%DATA NAME=whoami VALUE=" + s.opt.Whoami)

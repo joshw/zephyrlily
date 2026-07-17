@@ -481,6 +481,11 @@ func (c *Conn) readLoop() {
 		//   - "*** Connected ***" is printed as soon as the credentials are
 		//     accepted — well before the SLCP sync block and %connected — so we
 		//     treat it as the success signal and let Connect return promptly.
+		//   - "*** Redirecting old connection to this port ***" replaces that
+		//     banner when the user was already logged in from another client and
+		//     this login takes over the session. It is equally proof the
+		//     credentials were accepted; without it we would sit in the auth
+		//     dialog while the server waits at the blurb prompt, and time out.
 		//   - A fresh login/password prompt means the server rejected the
 		//     credentials ("Login in the wrong."); report the failure and stop so
 		//     Connect surfaces ErrAuthFailed and the user can retry.
@@ -488,6 +493,9 @@ func (c *Conn) readLoop() {
 			switch {
 			case msg.Type == slcp.MsgRaw && strings.Contains(msg.Text, "*** Connected ***"):
 				slog.Debug("lily: login confirmed (*** Connected ***)")
+				signalLogin(nil)
+			case msg.Type == slcp.MsgRaw && strings.Contains(msg.Text, "*** Redirecting old connection"):
+				slog.Debug("lily: login confirmed (session redirect)")
 				signalLogin(nil)
 			case msg.Type == slcp.MsgLoginPrompt || msg.Type == slcp.MsgPassPrompt:
 				slog.Debug("lily: credentials rejected, server re-prompted")

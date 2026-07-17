@@ -172,6 +172,41 @@ func TestConn_LoginRejected(t *testing.T) {
 	}
 }
 
+// TestConn_LoginViaRedirect: when the user is already logged in from another
+// client, the server takes over that session — printing "*** Redirecting old
+// connection to this port ***" instead of "*** Connected ***" — and then waits
+// at the blurb prompt. Connect must treat the redirect banner as login success;
+// it previously hung there until the login watchdog killed the connection,
+// because the blurb answer can only come from a user still stuck in the auth
+// dialog.
+func TestConn_LoginViaRedirect(t *testing.T) {
+	opt := lilytest.DefaultWorld()
+	opt.RedirectLogin = true
+	fake := lilytest.Start(t, opt)
+
+	conn := NewConn(fake.Addr(), "alice", "password", false, false)
+	t.Cleanup(conn.Close)
+
+	done := make(chan error, 1)
+	go func() { done <- conn.Connect() }()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Connect() hung on redirect login instead of returning success")
+	}
+
+	// The user answers the blurb prompt; the server then syncs as usual and the
+	// connection reaches full readiness.
+	require.NoError(t, conn.Send(""))
+	select {
+	case <-conn.SyncComplete():
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for SyncComplete after redirect login")
+	}
+}
+
 func TestConn_CloseClosesEvents(t *testing.T) {
 	fake := lilytest.Start(t, lilytest.DefaultWorld())
 	conn := connectSynced(t, fake)
