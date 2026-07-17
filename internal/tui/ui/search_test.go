@@ -1,6 +1,11 @@
 package ui
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/charmbracelet/bubbles/textarea"
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 // typeSearch simulates entering incremental search (backward or forward) and
 // typing the pattern one rune at a time via searchRefresh, the same path the
@@ -12,6 +17,122 @@ func typeSearch(m Model, backward bool, pattern string) Model {
 		m = m.searchRefresh()
 	}
 	return m
+}
+
+// TestSearchMatchSpan: the span reported for in-place highlighting must cover
+// the current match, and must report no span for an empty pattern or a failing
+// search (pattern absent from the line at the recorded position).
+func TestSearchMatchSpan(t *testing.T) {
+	line := "this is a test and also a test"
+	m := Model{inputValue: line, inputCursor: len(line)}
+	m = typeSearch(m, true, "TEST") // uppercase: matching is case-insensitive
+
+	start, end, ok := m.searchMatchSpan()
+	wantStart := len("this is a test and also a ")
+	if !ok || start != wantStart || end != wantStart+len("test") {
+		t.Fatalf("searchMatchSpan = (%d, %d, %v), want (%d, %d, true)",
+			start, end, ok, wantStart, wantStart+len("test"))
+	}
+
+	// Extending the pattern so nothing matches leaves the previous line and
+	// position in place; the span must vanish rather than highlight stale text.
+	m.searchBuf += "zzz"
+	m = m.searchRefresh()
+	if _, _, ok := m.searchMatchSpan(); ok {
+		t.Fatalf("failing search still reported a match span")
+	}
+
+	// Empty pattern: nothing to highlight.
+	m2 := Model{inputValue: line, inputCursor: len(line)}.enterSearch(true)
+	if _, _, ok := m2.searchMatchSpan(); ok {
+		t.Fatalf("empty pattern reported a match span")
+	}
+
+	// Outside search mode: never a span.
+	m.searchMode = false
+	if _, _, ok := m.searchMatchSpan(); ok {
+		t.Fatalf("searchMatchSpan reported a span outside search mode")
+	}
+}
+
+// TestCursorMotionEndsSearch: any cursor-movement key during incremental
+// search must end the search, keep the matched line, and apply the motion from
+// the cursor position at the start of the match.
+func TestCursorMotionEndsSearch(t *testing.T) {
+	line := "this is a test and also a test"
+	matchStart := len("this is a test and also a ")
+	newModel := func() Model {
+		m := Model{
+			keys:        NewKeyMap(),
+			input:       textarea.New(),
+			width:       80,
+			height:      24,
+			inputValue:  line,
+			inputCursor: len(line),
+		}
+		return typeSearch(m, true, "test")
+	}
+
+	// The expected cursor for each motion is whatever that key does in normal
+	// mode starting from the match-start position — the spec verbatim.
+	wantCursorFor := func(msg tea.KeyMsg) int {
+		ref := Model{
+			keys:        NewKeyMap(),
+			input:       textarea.New(),
+			width:       80,
+			height:      24,
+			inputValue:  line,
+			inputCursor: matchStart,
+		}
+		upd, _ := ref.handleNormalKey(msg)
+		return upd.(Model).inputCursor
+	}
+
+	for _, tc := range []struct {
+		name string
+		msg  tea.KeyMsg
+	}{
+		{"ctrl+f", tea.KeyMsg{Type: tea.KeyCtrlF}},
+		{"right", tea.KeyMsg{Type: tea.KeyRight}},
+		{"ctrl+b", tea.KeyMsg{Type: tea.KeyCtrlB}},
+		{"left", tea.KeyMsg{Type: tea.KeyLeft}},
+		{"ctrl+a", tea.KeyMsg{Type: tea.KeyCtrlA}},
+		{"ctrl+e", tea.KeyMsg{Type: tea.KeyCtrlE}},
+		{"alt+b", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true}},
+		{"alt+f", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}, Alt: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newModel()
+			if m.inputCursor != matchStart {
+				t.Fatalf("fixture: cursor = %d, want %d (match start)", m.inputCursor, matchStart)
+			}
+			upd, _ := m.handleSearchKey(tc.msg)
+			got := upd.(Model)
+			if got.searchMode {
+				t.Fatalf("%s did not end search mode", tc.name)
+			}
+			if got.inputValue != line {
+				t.Fatalf("%s changed input to %q", tc.name, got.inputValue)
+			}
+			if want := wantCursorFor(tc.msg); got.inputCursor != want {
+				t.Fatalf("%s cursor = %d, want %d (motion from match start)", tc.name, got.inputCursor, want)
+			}
+		})
+	}
+
+	// Non-motion search keys must still be handled by the search: C-r steps to
+	// the previous occurrence instead of ending the search.
+	t.Run("ctrl+r_still_searches", func(t *testing.T) {
+		m := newModel()
+		upd, _ := m.handleSearchKey(tea.KeyMsg{Type: tea.KeyCtrlR})
+		got := upd.(Model)
+		if !got.searchMode {
+			t.Fatalf("C-r ended search mode")
+		}
+		if want := len("this is a "); got.inputCursor != want {
+			t.Fatalf("C-r cursor = %d, want %d (first occurrence)", got.inputCursor, want)
+		}
+	})
 }
 
 // TestReverseSearchFindsRightmostInCurrentLine: typing C-r then a pattern that

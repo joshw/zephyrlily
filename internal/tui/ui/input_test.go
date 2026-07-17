@@ -315,6 +315,103 @@ func TestPasteModeWithEnterKey(t *testing.T) {
 	}
 }
 
+// TestSearchKeysIgnoredInPasteMode: C-r/C-s must not start incremental search
+// while paste mode is active. handleSearchKey bypasses paste handling, so a
+// search begun there left the user unable to move the cursor or toggle paste
+// mode off until the search was dismissed with ESC.
+func TestSearchKeysIgnoredInPasteMode(t *testing.T) {
+	newModel := func(paste bool) Model {
+		return Model{
+			keys:        NewKeyMap(),
+			input:       textarea.New(),
+			width:       80,
+			height:      24,
+			pasteMode:   paste,
+			inputValue:  "abc;def?qrs",
+			inputCursor: len("abc;def?qrs"),
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		msg  tea.KeyMsg
+	}{
+		{"ctrl+r", tea.KeyMsg{Type: tea.KeyCtrlR}},
+		{"ctrl+s", tea.KeyMsg{Type: tea.KeyCtrlS}},
+	} {
+		t.Run(tc.name+"_paste_mode", func(t *testing.T) {
+			upd, _ := newModel(true).handleNormalKey(tc.msg)
+			m := upd.(Model)
+			if m.searchMode {
+				t.Fatalf("%s in paste mode must not enter search mode", tc.name)
+			}
+			if m.inputValue != "abc;def?qrs" {
+				t.Fatalf("%s in paste mode changed input to %q", tc.name, m.inputValue)
+			}
+		})
+		t.Run(tc.name+"_normal_mode", func(t *testing.T) {
+			upd, _ := newModel(false).handleNormalKey(tc.msg)
+			if !upd.(Model).searchMode {
+				t.Fatalf("%s outside paste mode should enter search mode", tc.name)
+			}
+		})
+	}
+}
+
+// TestWordMotionWorksInPasteMode: M-f/M-b arrive as KeyRunes with the Alt flag
+// set, and the paste-mode rune interception must not swallow them as pasted
+// text — they should move the cursor by a word like they do in normal mode.
+func TestWordMotionWorksInPasteMode(t *testing.T) {
+	newModel := func(cursor int) Model {
+		return Model{
+			keys:        NewKeyMap(),
+			input:       textarea.New(),
+			width:       80,
+			height:      24,
+			pasteMode:   true,
+			inputValue:  "foo bar",
+			inputCursor: cursor,
+		}
+	}
+
+	t.Run("alt+b_moves_back_a_word", func(t *testing.T) {
+		upd, _ := newModel(len("foo bar")).handleNormalKey(
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true})
+		m := upd.(Model)
+		if want := len("foo "); m.inputCursor != want {
+			t.Fatalf("M-b in paste mode: cursor = %d, want %d", m.inputCursor, want)
+		}
+		if m.inputValue != "foo bar" {
+			t.Fatalf("M-b in paste mode changed input to %q", m.inputValue)
+		}
+	})
+
+	t.Run("alt+f_moves_forward_a_word", func(t *testing.T) {
+		upd, _ := newModel(0).handleNormalKey(
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}, Alt: true})
+		m := upd.(Model)
+		if want := len("foo"); m.inputCursor != want {
+			t.Fatalf("M-f in paste mode: cursor = %d, want %d", m.inputCursor, want)
+		}
+		if m.inputValue != "foo bar" {
+			t.Fatalf("M-f in paste mode changed input to %q", m.inputValue)
+		}
+	})
+
+	// The ESC-prefix spelling (ESC then 'b' == M-b) must take the same path.
+	t.Run("esc_then_b_moves_back_a_word", func(t *testing.T) {
+		upd, _ := newModel(len("foo bar")).handleNormalKey(tea.KeyMsg{Type: tea.KeyEscape})
+		upd, _ = upd.(Model).handleNormalKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+		m := upd.(Model)
+		if want := len("foo "); m.inputCursor != want {
+			t.Fatalf("ESC b in paste mode: cursor = %d, want %d", m.inputCursor, want)
+		}
+		if m.inputValue != "foo bar" {
+			t.Fatalf("ESC b in paste mode changed input to %q", m.inputValue)
+		}
+	})
+}
+
 // TestMetaPrefixDoesNotSwallowNonRuneKeys reproduces the bug where a stray ESC
 // (left over from a split Alt-word-motion escape sequence) primed metaPrefix
 // and caused the *next* Ctrl-B / Ctrl-F / arrow key to be alt-ified into an

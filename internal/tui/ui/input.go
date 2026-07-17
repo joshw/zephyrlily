@@ -163,8 +163,11 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.debugMode {
 			m.appendDebug(fmt.Sprintf("[paste] keyStr=%q type=%v runes=%q", keyStr, msg.Type, string(msg.Runes)))
 		}
-		// Handle both pasted multi-line text (KeyRunes with multiple chars) and individual keystrokes
-		if msg.Type == tea.KeyRunes {
+		// Handle both pasted multi-line text (KeyRunes with multiple chars) and
+		// individual keystrokes. Alt-modified runes are not pasted text — pastes
+		// never carry the Alt flag — they are M- chords (M-f/M-b word motion,
+		// M-d, …); let them fall through to their normal bindings.
+		if msg.Type == tea.KeyRunes && !msg.Alt {
 			for _, r := range msg.Runes {
 				m = m.pasteRune(r)
 			}
@@ -263,10 +266,12 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.HistoryNext):
 		m = m.historyNext()
 
-	// Search
-	case key.Matches(msg, m.keys.SearchBack):
+	// Search. Disabled in paste mode: handleSearchKey bypasses paste handling
+	// entirely, so cursor movement and the paste-mode toggle would stop working
+	// until the search is dismissed.
+	case key.Matches(msg, m.keys.SearchBack) && !m.pasteMode:
 		m = m.enterSearch(true)
-	case key.Matches(msg, m.keys.SearchForward):
+	case key.Matches(msg, m.keys.SearchForward) && !m.pasteMode:
 		m = m.enterSearch(false)
 
 	// Tab completion
@@ -514,6 +519,18 @@ func (m Model) handleReconnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.metaPrefix = false
 
+	// Any cursor-motion key ends the search, accepting the current match, and
+	// is then processed normally — from the cursor position at the start of
+	// the match (where withSearchResult left it). This must run before the
+	// switch below: M-b/M-f arrive as alt-flagged runes, which the default
+	// case would otherwise append to the search pattern.
+	if key.Matches(msg, m.keys.LineStart) || key.Matches(msg, m.keys.LineEnd) ||
+		key.Matches(msg, m.keys.CharBack) || key.Matches(msg, m.keys.CharForward) ||
+		key.Matches(msg, m.keys.WordBack) || key.Matches(msg, m.keys.WordForward) {
+		m.searchMode = false
+		return m.handleNormalKey(msg)
+	}
+
 	switch msg.String() {
 	case "ctrl+r":
 		m.searchBack = true
@@ -662,6 +679,31 @@ func (m Model) searchRefresh() Model {
 		m = m.withSearchResult(L, pos)
 	}
 	return m
+}
+
+// searchMatchSpan returns the byte range [start, end) of the current match
+// within inputValue, for highlighting it in place. ok is false when there is
+// nothing to highlight: search not active, empty pattern, or a failing search
+// (the pattern no longer matches at the recorded position, which happens when
+// typing a character finds no match and searchRefresh keeps the previous
+// line/position).
+func (m Model) searchMatchSpan() (start, end int, ok bool) {
+	if !m.searchMode || m.searchBuf == "" {
+		return 0, 0, false
+	}
+	start = m.searchPos
+	if start < 0 || start > len(m.inputValue) {
+		return 0, 0, false
+	}
+	searchLower := strings.ToLower(m.searchBuf)
+	if !strings.HasPrefix(strings.ToLower(m.inputValue[start:]), searchLower) {
+		return 0, 0, false
+	}
+	end = start + len(searchLower)
+	if end > len(m.inputValue) {
+		end = len(m.inputValue)
+	}
+	return start, end, true
 }
 
 // searchStep moves to the next match in direction (C-r/C-s repeats), skipping

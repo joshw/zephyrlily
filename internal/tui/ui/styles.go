@@ -59,12 +59,12 @@ var (
 	// Recipient (destination) of an emote — who it was directed at. Defaults to
 	// match emoteBodyStyle so existing displays are unchanged.
 	emoteRecipsStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("6")) // cyan, normal
+				Foreground(lipgloss.Color("6")) // cyan, normal
 
 	// Sender of an emote — whose action it was. Defaults to match emoteBodyStyle
 	// so existing displays are unchanged.
 	emoteSenderStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("6")) // cyan, normal
+				Foreground(lipgloss.Color("6")) // cyan, normal
 
 	// Blurb styles — context-matched to their message type
 	publicBlurbStyle = lipgloss.NewStyle().
@@ -113,4 +113,9 @@ var (
 	cursorStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("7")).
 			Foreground(lipgloss.Color("0"))
+
+	// Incremental-search match, highlighted in place in the input line
+	searchMatchStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("3")). // yellow
+				Foreground(lipgloss.Color("0"))  // black
 )

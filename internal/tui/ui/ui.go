@@ -1388,6 +1388,9 @@ func (m Model) renderInputArea() string {
 	cursor := m.inputCursor
 	inputLen := len(m.inputValue)
 
+	// Active incremental-search match, highlighted in place.
+	matchStart, matchEnd, matchOK := m.searchMatchSpan()
+
 	// Calculate how many lines we'll render
 	visibleLines := m.calculateInputHeight()
 
@@ -1430,6 +1433,8 @@ func (m Model) renderInputArea() string {
 			switch {
 			case j == cursor:
 				sb.WriteString(cursorStyle.Render(ch))
+			case matchOK && j >= matchStart && j < matchEnd:
+				sb.WriteString(searchMatchStyle.Render(ch))
 			case misspelledAt[j]:
 				sb.WriteString(misspelledStyle.Render(ch))
 			default:
@@ -1469,7 +1474,13 @@ func (m Model) inputPromptText() string {
 		if m.searchBack {
 			dir = "reverse-i-search"
 		}
-		return fmt.Sprintf("(%s)`%s':", dir, m.searchBuf)
+		// The match is highlighted in place in the input line, so the prompt
+		// only echoes the pattern when the search is failing and there is no
+		// highlight to show what was typed.
+		if _, _, ok := m.searchMatchSpan(); ok || m.searchBuf == "" {
+			return fmt.Sprintf("(%s):", dir)
+		}
+		return fmt.Sprintf("(failing %s)`%s':", dir, m.searchBuf)
 	}
 	if m.pasteMode {
 		return "Paste:"
