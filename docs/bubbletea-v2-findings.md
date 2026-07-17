@@ -173,6 +173,64 @@ M-p paste + native paste, `%page wheel` toggle, C-z/fg resume repaint,
 resize rewrap anchoring, link click in iTerm2, and a session inside real
 GNU screen 4.00.03 (watch for artifacts from the new startup queries).
 
+## Field testing, round 1 (2026-07-17)
+
+Two issues surfaced in live testing inside GNU screen.
+
+### Status bar invisible until the review started — FIXED
+
+Root cause: the v2 renderer "draws" runs of plain spaces with EL/ECH erases
+after setting the pen (ultraviolet `emitRange`/`canClearWith`), which fills
+with the pen's background **only on terminals with back-color-erase**.
+`canClearWith` checks underline/attrs/links but not background color, and
+assumes BCE unconditionally. GNU screen has BCE off by default, so the
+status bar — a full-width row of blue-background padding — rendered as
+default background: invisible. On a live server the bar is *all* padding
+until `/state` returns (it blocks during the login sync), which is why the
+bar "appeared" only when review output started filling in text.
+
+Evidence: `TestE2E_PTYScreenStatusBarNotBCEReliant` runs the real binary in
+a PTY under `TERM=screen` against the fake stack and caught the renderer
+emitting `\x1b[93;44;1m\x1b[K` (set yellow-on-blue, erase-to-EOL) for the
+bar row.
+
+Fix: `barPad` (ui.go) pads the status bar with U+00A0 NBSP instead of
+spaces. NBSP cells fail `canClearWith`'s `Content == " "` test and the REP
+path's ASCII test, so every padding cell is written explicitly with its
+background. Cost: ~one extra byte per padding cell per full bar repaint.
+Upstream-worthy: `canClearWith` should refuse cells with a non-default
+background unless BCE is known (this is what ncurses does).
+
+### Input line: deleted characters reappearing on wrap — NOT REPRODUCED, GUARDED
+
+Field report: type, backspace a few chars off the end, type until the line
+wraps, and some deleted characters reappeared. Investigation:
+
+- Probed real screen 4.00.03 (via `hardcopy` of attached sessions): it
+  honors the renderer's full `TERM=screen` vocabulary — CHA, ECH, DCH,
+  ICH, CHT, CBT, VPA, SU, SD all execute correctly. The
+  capability-mismatch hypothesis is dead.
+- `TestInputWrapNoResurrectedChars` drives the exact gesture through
+  teatest with `TERM=screen`, then replays the renderer's byte stream
+  through **two** referees: charmbracelet/x/vt (cell-accurate modern
+  emulator) and **real GNU screen 4.00.03** (stream cat'ed inside an
+  attached session, window state dumped via hardcopy). Both show a clean
+  wrap: exact input content, no resurrected cells, NBSP status bar intact.
+
+Harness gotchas worth knowing: teatest's piped input makes the renderer
+assume a cooked tty (`mapNl`), so the x/vt replay must translate `\n` to
+`\r\n` (real screen gets this via its window pty naturally); the renderer's
+capability queries must be drained from the emulator's response pipe or it
+deadlocks; and 4.00.03's `hardcopy` dumps non-Latin1 glyphs as their low
+byte (U+2561 ╡ becomes `a`!), so only the ASCII bottom rows are assertable.
+Residual fidelity gap: live sessions have tty input (`mapNl=false`), which
+selects a slightly different newline strategy than the harness exercises.
+
+If it recurs in the field, note: terminal width, whether the viewport was
+scrolled up, whether spellcheck underlines/search highlight were active on
+the line, and whether the prompt was showing — the harness can then be
+extended to match.
+
 ## Advisability
 
 Migrate. The cost was one day of mechanical work (net −200 LOC). The

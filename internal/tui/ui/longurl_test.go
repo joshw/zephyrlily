@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/joshw/zephyrlily/internal/tui/client"
@@ -12,6 +13,8 @@ const longURL = "https://scontent-iad3-2.xx.fbcdn.net/v/t39.99422-6/747038350_28
 
 // terminalWidth computes the number of display cells a terminal would use for
 // s, using the project's own escSeqLen as ground truth (CSI + OSC aware).
+// Non-escape content is measured per rune (the status bar pads with U+00A0,
+// which is one cell but two bytes).
 func terminalWidth(s string) int {
 	w := 0
 	for i := 0; i < len(s); {
@@ -19,8 +22,9 @@ func terminalWidth(s string) int {
 			i += n
 			continue
 		}
-		i++
-		w++
+		r, size := utf8.DecodeRuneInString(s[i:])
+		w += ansi.StringWidth(string(r))
+		i += size
 	}
 	return w
 }

@@ -1358,7 +1358,7 @@ func (m Model) formatStatusBar() string {
 		// Not enough space - just do left + right
 		padding := ""
 		if leftLen+rightLen < m.width {
-			padding = strings.Repeat(" ", m.width-leftLen-rightLen)
+			padding = barPad(m.width - leftLen - rightLen)
 		}
 		return statusBarStyle.Width(m.width).Render(left + padding + right)
 	}
@@ -1374,8 +1374,23 @@ func (m Model) formatStatusBar() string {
 		rightPad = 0
 	}
 
-	content := left + strings.Repeat(" ", leftPad) + center + strings.Repeat(" ", rightPad) + right
+	content := left + barPad(leftPad) + center + barPad(rightPad) + right
 	return statusBarStyle.Width(m.width).Render(content)
+}
+
+// barPad returns n columns of background-colored padding for the status bar.
+// It uses NBSP (U+00A0) rather than plain spaces: bubbletea v2's renderer
+// "draws" runs of plain spaces with EL/ECH erases and assumes back-color-erase
+// (ultraviolet canClearWith), so on terminals without BCE — GNU screen 4.00.03
+// among them — space padding renders as default background and the bar
+// vanishes. NBSP cells are not erase-optimizable and are always written
+// explicitly with their background. Covered by
+// TestE2E_PTYScreenStatusBarNotBCEReliant.
+func barPad(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.Repeat("\u00a0", n)
 }
 
 // renderInputArea renders the prompt and input with spell checking highlights.
