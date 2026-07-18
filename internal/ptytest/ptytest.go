@@ -11,9 +11,30 @@
 package ptytest
 
 import (
+	"context"
+	"os/exec"
 	"runtime"
 	"strings"
+	"testing"
+	"time"
 )
+
+// RunWithTimeout runs an sh pipeline with a hard timeout so a wedged PTY
+// session fails one test quickly instead of hanging the whole suite until
+// the go test alarm. WaitDelay makes Wait return even while the script
+// process still holds the output pipes open.
+func RunWithTimeout(t *testing.T, timeout time.Duration, pipeline string) ([]byte, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", pipeline)
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("pty pipeline timed out after %s; output:\n%s", timeout, out)
+	}
+	return out, err
+}
 
 // ScriptInvocation returns a shell fragment that runs inner (a shell command
 // line) under a PTY via script(1), capturing terminal output to capture.

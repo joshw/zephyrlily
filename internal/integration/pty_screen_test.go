@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/joshw/zephyrlily/internal/lilytest"
 	"github.com/joshw/zephyrlily/internal/ptytest"
@@ -52,11 +53,11 @@ func TestE2E_PTYScreenStatusBarNotBCEReliant(t *testing.T) {
 
 	capture := filepath.Join(dir, "typescript")
 	// Drive the auth dialog: username, Tab, password, Enter; wait for the
-	// normal UI (status bar) to paint; then double C-c to quit.
-	pipeline := `(sleep 1.5; printf 'alice\tpassword\r'; sleep 3; printf '\x03\x03'; sleep 1) | TERM=screen ` +
+	// normal UI (status bar) to paint; then double C-c to quit. Octal
+	// escapes: dash's printf (Ubuntu /bin/sh) has no \xHH form.
+	pipeline := `(sleep 1.5; printf 'alice\tpassword\r'; sleep 3; printf '\003\003'; sleep 1) | TERM=screen ` +
 		ptytest.ScriptInvocation(capture, "stty rows 24 cols 80; "+bin+" client --proxy "+proxyAddr)
-	cmd := exec.Command("sh", "-c", pipeline)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := ptytest.RunWithTimeout(t, 90*time.Second, pipeline); err != nil {
 		t.Fatalf("pty run: %v\n%s", err, out)
 	}
 

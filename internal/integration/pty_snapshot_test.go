@@ -34,12 +34,12 @@ func TestE2E_PTYDebugSnapshot(t *testing.T) {
 	capture := filepath.Join(dir, "typescript")
 
 	// Log in, run the snapshot command (150ms capture tick + file write need
-	// a beat), then quit with double C-c.
+	// a beat), then quit with double C-c. Octal escapes: dash's printf
+	// (Ubuntu /bin/sh) has no \xHH form.
 	pipeline := `(sleep 1.5; printf 'alice\tpassword\r'; sleep 2; ` +
-		`printf '%s' '%debug snapshot ` + snapPath + `'; printf '\r'; sleep 2; printf '\x03\x03'; sleep 1) | TERM=screen ` +
+		`printf '%s' '%debug snapshot ` + snapPath + `'; printf '\r'; sleep 2; printf '\003\003'; sleep 1) | TERM=screen ` +
 		ptytest.ScriptInvocation(capture, "stty rows 24 cols 80; "+bin+" client --proxy "+proxyAddr)
-	cmd := exec.Command("sh", "-c", pipeline)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := ptytest.RunWithTimeout(t, 90*time.Second, pipeline); err != nil {
 		t.Fatalf("pty run: %v\n%s", err, out)
 	}
 
