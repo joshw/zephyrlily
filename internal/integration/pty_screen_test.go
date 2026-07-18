@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/joshw/zephyrlily/internal/lilytest"
+	"github.com/joshw/zephyrlily/internal/ptytest"
 )
 
 // buildZlilyBinary compiles the real zlily binary into dir for PTY tests.
@@ -52,8 +53,8 @@ func TestE2E_PTYScreenStatusBarNotBCEReliant(t *testing.T) {
 	capture := filepath.Join(dir, "typescript")
 	// Drive the auth dialog: username, Tab, password, Enter; wait for the
 	// normal UI (status bar) to paint; then double C-c to quit.
-	pipeline := `(sleep 1.5; printf 'alice\tpassword\r'; sleep 3; printf '\x03\x03'; sleep 1) | ` +
-		`TERM=screen script -q ` + capture + ` sh -c 'stty rows 24 cols 80; ` + bin + ` client --proxy ` + proxyAddr + `'`
+	pipeline := `(sleep 1.5; printf 'alice\tpassword\r'; sleep 3; printf '\x03\x03'; sleep 1) | TERM=screen ` +
+		ptytest.ScriptInvocation(capture, "stty rows 24 cols 80; "+bin+" client --proxy "+proxyAddr)
 	cmd := exec.Command("sh", "-c", pipeline)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("pty run: %v\n%s", err, out)

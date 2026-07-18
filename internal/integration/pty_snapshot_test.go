@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/joshw/zephyrlily/internal/lilytest"
+	"github.com/joshw/zephyrlily/internal/ptytest"
 )
 
 // TestE2E_PTYDebugSnapshot drives the real zlily binary in a PTY under
@@ -35,8 +36,8 @@ func TestE2E_PTYDebugSnapshot(t *testing.T) {
 	// Log in, run the snapshot command (150ms capture tick + file write need
 	// a beat), then quit with double C-c.
 	pipeline := `(sleep 1.5; printf 'alice\tpassword\r'; sleep 2; ` +
-		`printf '%s' '%debug snapshot ` + snapPath + `'; printf '\r'; sleep 2; printf '\x03\x03'; sleep 1) | ` +
-		`TERM=screen script -q ` + capture + ` sh -c 'stty rows 24 cols 80; ` + bin + ` client --proxy ` + proxyAddr + `'`
+		`printf '%s' '%debug snapshot ` + snapPath + `'; printf '\r'; sleep 2; printf '\x03\x03'; sleep 1) | TERM=screen ` +
+		ptytest.ScriptInvocation(capture, "stty rows 24 cols 80; "+bin+" client --proxy "+proxyAddr)
 	cmd := exec.Command("sh", "-c", pipeline)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("pty run: %v\n%s", err, out)

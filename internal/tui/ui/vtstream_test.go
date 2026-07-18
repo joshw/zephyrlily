@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,30 +18,34 @@ import (
 	"github.com/joshw/zephyrlily/internal/tui/client"
 )
 
-// miniVT is a minimal terminal emulator that tracks cursor position and
-// DECAWM pending-wrap state. It records any physical line wrap (printing past
-// the last column) and any scroll (LF on the bottom row) — either of which
-// desyncs bubbletea's diff renderer from the real screen and produces the
-// vanishing-status-bar symptom.
+// miniVT is a minimal terminal emulator that tracks cursor position, DECAWM
+// pending-wrap state, and DECSTBM scroll margins. It records any physical
+// line wrap (printing past the last column) — autowrap is never intentional
+// for a full-screen diff renderer and desyncs it from the real screen,
+// producing the vanishing-status-bar symptom. Scrolling via LF at the bottom
+// margin is NOT an error: the v2 cursed renderer scrolls deliberately
+// (scroll region + newlines is its cheapest way to shift rows).
 type miniVT struct {
 	width, height int
 	row, col      int
+	top, bot      int // DECSTBM scroll margins, 0-indexed inclusive
 	pendingWrap   bool
 	wraps         []string // context for each wrap event
-	scrolls       []string
 	unknown       []string // CSI finals the emulator doesn't model (would desync tracking)
+}
+
+func newMiniVT(width, height int) *miniVT {
+	return &miniVT{width: width, height: height, bot: height - 1}
 }
 
 func (v *miniVT) printable(r rune, ctx string) {
 	if v.pendingWrap {
 		v.wraps = append(v.wraps, fmt.Sprintf("wrap at row %d printing %q ctx=%s", v.row, r, ctx))
-		v.row++
 		v.col = 0
 		v.pendingWrap = false
-		if v.row >= v.height {
-			v.scrolls = append(v.scrolls, fmt.Sprintf("scroll via wrap ctx=%s", ctx))
-			v.row = v.height - 1
-		}
+		if v.row != v.bot && v.row < v.height-1 {
+			v.row++
+		} // at the bottom margin the region scrolls instead; row stays
 	}
 	if v.col >= v.width-1 {
 		v.col = v.width - 1
@@ -64,12 +69,12 @@ func (v *miniVT) feed(t *testing.T, data []byte) {
 			// bubbletea v2 leaves the output side in cooked mode and its
 			// renderer emits bare \n expecting the tty to map it (tea.go:
 			// mapNl = ttyInput == nil). A real attached terminal behaves the
-			// same way, so column resets here.
+			// same way, so column resets here. LF at the bottom margin
+			// scrolls the region (deliberate renderer optimization); the
+			// cursor stays put. Below a custom region the cursor is pinned.
 			v.col = 0
 			v.pendingWrap = false
-			if v.row == v.height-1 {
-				v.scrolls = append(v.scrolls, fmt.Sprintf("scroll via LF around byte %d: %q", i, clip(s, i)))
-			} else {
+			if v.row != v.bot && v.row < v.height-1 {
 				v.row++
 			}
 			i++
@@ -179,7 +184,19 @@ func (v *miniVT) handleSeq(seq string) {
 		}
 		v.row, v.col = r-1, c-1
 		v.pendingWrap = false
-	case 'r': // DECSTBM: set scroll region, cursor homes
+	case 'r': // DECSTBM: set scroll region (default full screen), cursor homes
+		v.top, v.bot = 0, v.height-1
+		parts := strings.SplitN(body, ";", 2)
+		if len(parts) > 0 && parts[0] != "" {
+			if n, err := strconv.Atoi(parts[0]); err == nil && n >= 1 {
+				v.top = n - 1
+			}
+		}
+		if len(parts) > 1 && parts[1] != "" {
+			if n, err := strconv.Atoi(parts[1]); err == nil && n >= 1 && n <= v.height {
+				v.bot = n - 1
+			}
+		}
 		v.row, v.col = 0, 0
 		v.pendingWrap = false
 	case 'X', 'L', 'M', 'S', 'T', 'P', '@':
@@ -208,8 +225,15 @@ func TestLongURLRendererByteStream(t *testing.T) {
 		m.output = append(m.output, OutputItem{Type: "text", Data: fmt.Sprintf("filler line %d", i)})
 	}
 
+	// Pin TERM: the renderer picks its control-sequence vocabulary and
+	// scroll strategy from the terminal type, so an unpinned environment
+	// (e.g. TERM=dumb on CI) produces a different byte stream than the
+	// developer machine. xterm-256color exercises the full vocabulary.
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(width, height),
-		teatest.WithProgramOptions(tea.WithColorProfile(colorprofile.TrueColor)))
+		teatest.WithProgramOptions(
+			tea.WithColorProfile(colorprofile.TrueColor),
+			tea.WithEnvironment(append(os.Environ(), "TERM=xterm-256color")),
+		))
 
 	// Let the initial frame paint.
 	time.Sleep(200 * time.Millisecond)
@@ -261,15 +285,12 @@ func TestLongURLRendererByteStream(t *testing.T) {
 	}
 	t.Logf("captured %d bytes of renderer output", len(out))
 
-	vt := &miniVT{width: width, height: height}
+	vt := newMiniVT(width, height)
 	vt.feed(t, out)
 	for _, u := range vt.unknown {
 		t.Errorf("miniVT: %s", u)
 	}
 	for _, w := range vt.wraps {
 		t.Errorf("physical wrap: %s", w)
-	}
-	for _, sc := range vt.scrolls {
-		t.Errorf("screen scroll: %s", sc)
 	}
 }

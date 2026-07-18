@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/charmbracelet/x/vt"
+	"github.com/joshw/zephyrlily/internal/ptytest"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 )
 
@@ -152,7 +153,8 @@ func replayThroughRealScreen(t *testing.T, stream []byte, width, height int) {
 	inner := fmt.Sprintf("stty rows %d cols %d; screen -U -S %s sh -c 'cat %s; sleep 15'",
 		height, width, session, streamFile)
 	cmd := exec.Command("sh", "-c",
-		"(sleep 8) | LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color script -q /dev/null sh -c "+shellQuote(inner)+" >/dev/null 2>&1 &")
+		"(sleep 8) | LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color "+
+			ptytest.ScriptInvocation("/dev/null", inner)+" >/dev/null 2>&1 &")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("start screen replay: %v", err)
 	}
@@ -189,7 +191,13 @@ func replayThroughRealScreen(t *testing.T, stream []byte, width, height int) {
 		}
 	}
 	if len(data) == 0 {
-		t.Fatalf("no hardcopy produced from screen session %s", session)
+		// Distinguish "screen can't run here" (CI runners often lack a socket
+		// directory) from "session ran but hardcopy failed" (a real problem).
+		ls, _ := exec.Command("screen", "-ls").CombinedOutput()
+		if !strings.Contains(string(ls), session) {
+			t.Skipf("screen session never started (environment limitation); screen -ls:\n%s", ls)
+		}
+		t.Fatalf("no hardcopy produced from running screen session %s", session)
 	}
 
 	bottom := bottomRows(data)
@@ -202,9 +210,4 @@ func replayThroughRealScreen(t *testing.T, stream []byte, width, height int) {
 	if strings.Count(bottom, "a") != 70 {
 		t.Errorf("REAL GNU screen: want 70 a's on input rows, got %d:\n%s", strings.Count(bottom, "a"), bottom)
 	}
-}
-
-// shellQuote single-quotes s for embedding in an sh command line.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
