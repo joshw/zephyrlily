@@ -76,7 +76,7 @@ func TestWritesReachUnderlyingFile(t *testing.T) {
 	if _, err := w.Write(payload); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(w.File.Name())
+	data, err := os.ReadFile(w.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
