@@ -179,6 +179,13 @@ type Model struct {
 
 	// Logging
 	logChan <-chan logMsg // receives log messages to display
+
+	// Diagnostics for %debug snapshot (snapshot.go). The rings are pointers
+	// so recording survives the value-copies Model goes through on every
+	// Update; the tap exposes the raw byte tail the renderer wrote.
+	rendererTap RendererTap
+	inputEvents *ring
+	msgMeta     *ring
 }
 
 // logMsg carries a severity level and text for display in the TUI output window.
@@ -268,6 +275,8 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		authField:      0,
 		usernameInput:  usernameField,
 		passwordInput:  passwordField,
+		inputEvents:    newRing(inputEventRingCap),
+		msgMeta:        newRing(msgMetaRingCap),
 	}
 }
 
@@ -437,9 +446,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Returning from suspend (C-z / fg). Bubbletea restores the terminal and
 		// re-hides the cursor automatically; force a full clear so any artifacts
 		// left by the foreground process are wiped and the UI repaints cleanly.
+		m.recordEvent("resume")
 		return m, tea.ClearScreen
 
 	case tea.WindowSizeMsg:
+		m.recordEvent("resize %dx%d (was %dx%d)", msg.Width, msg.Height, m.width, m.height)
 		// A width change rewraps the output, so the raw scroll offset no longer
 		// maps to the same message. Anchor on the item currently at the top
 		// (computed at the OLD width, before we mutate m.width) so the view stays
@@ -468,6 +479,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, reportSeenNow(m.client, m.lastSeenID)
 
 	case tea.KeyPressMsg:
+		m.recordKeyEvent(msg)
 		if m.debugKeys {
 			m.appendDebug(fmt.Sprintf("KEY: %s", msg.String()))
 		}
@@ -493,9 +505,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.PasteMsg:
 		// v2 delivers bracketed pastes as a distinct message instead of a
 		// multi-rune KeyMsg; route it by mode (see handlePaste).
+		m.recordEvent("paste len=%d mode=%s", len(msg.Content), m.modeName())
 		return m.handlePaste(msg)
 
 	case tea.MouseWheelMsg:
+		m.recordEvent("wheel button=%d at=%d,%d", msg.Button, msg.X, msg.Y)
 		// Only the output viewport reacts to the wheel; auth/edit modes own the
 		// screen and have no scrollback to page through. mouseWheel gates the
 		// whole feature (off by default; toggled via %page wheel, which flips
@@ -610,6 +624,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case seenTickMsg:
 		return m, reportSeenCmd(m.client, m.lastSeenID)
+
+	case snapshotCaptureMsg:
+		return m, m.captureSnapshot(msg.path)
+
+	case snapshotResultMsg:
+		if msg.err != nil {
+			m.output = append(m.output, OutputItem{Type: "error",
+				Data: "debug snapshot failed: " + msg.err.Error()})
+		} else {
+			m.output = append(m.output, OutputItem{Type: "text",
+				Data: "Debug snapshot written: " + msg.path})
+		}
+		m = m.syncViewportContent()
+		return m, nil
 
 	case initialStateMsg:
 		if msg.err != nil {
@@ -927,6 +955,7 @@ func (m Model) syncViewportContent() Model {
 // handleProxy incorporates a proxy message into the model. It may return a
 // tea.Cmd (e.g. when a forwarded clientcommand toggles mouse-wheel mode).
 func (m Model) handleProxy(msg *api.WSServerMsg) (Model, tea.Cmd) {
+	m.recordMsgMeta("recv type=%s id=%d", msg.Type, msg.ID)
 	var cmd tea.Cmd
 	switch msg.Type {
 	case "text":

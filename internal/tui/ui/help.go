@@ -8,6 +8,20 @@ import (
 
 // tuiHelp holds help topics that are specific to the TUI client.
 var tuiHelp = map[string][]string{
+	"snapshot": {
+		"Write a diagnostic snapshot for bug reports",
+		"",
+		"Usage: %debug snapshot [path]",
+		"",
+		"Writes the TUI's internal state to a file (default:",
+		"~/zlily-debug-<timestamp>.txt): terminal geometry, input-line state,",
+		"recent input events, proxy traffic metadata, the rendered frame, and",
+		"the raw bytes recently sent to the terminal. Attach it to a bug",
+		"report for hard-to-reproduce display issues.",
+		"",
+		"The file contains recent typed input and screen content - review",
+		"before sharing.",
+	},
 	"debugkeys": {
 		"Toggle keypress debugging",
 		"",
@@ -121,6 +135,9 @@ var tuiHelp = map[string][]string{
 		"",
 		"While in debug mode, PgUp / PgDn scroll the right panel independently.",
 		"Press ESC G again to return to the normal view.",
+		"",
+		"See also: %debug snapshot ('%help snapshot') to capture diagnostic",
+		"state to a file for bug reports.",
 	},
 }
 

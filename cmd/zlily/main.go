@@ -25,6 +25,7 @@ import (
 
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
+	"github.com/joshw/zephyrlily/internal/tui/teebuf"
 	"github.com/joshw/zephyrlily/internal/tui/ui"
 	"github.com/joshw/zephyrlily/internal/version"
 )
@@ -209,13 +210,18 @@ func runTUI(proxyAddr string, startupMsgs ...string) {
 	logChan, logger := ui.NewLogger()
 	slog.SetDefault(logger)
 
-	m := ui.New(c, logChan, startupMsgs...)
+	// Tee the renderer's output through a tail buffer so %debug snapshot can
+	// include the exact bytes sent to the terminal. The tee preserves Fd()
+	// so bubbletea still detects the TTY (see package teebuf).
+	tee := teebuf.New(os.Stdout)
+
+	m := ui.New(c, logChan, startupMsgs...).WithRendererTap(tee)
 	// Alt-screen is declared via the View struct in ui.Model.View (bubbletea
 	// v2 has no WithAltScreen option). The v1-era inputguard stdin shim is
 	// gone: v2's input parser buffers escape sequences split across read
 	// boundaries (verified against the original repro), so no interposer is
 	// needed.
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(m, tea.WithOutput(tee))
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("tui: %v", err)
 	}

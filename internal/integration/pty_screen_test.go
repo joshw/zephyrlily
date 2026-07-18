@@ -10,6 +10,18 @@ import (
 	"github.com/joshw/zephyrlily/internal/lilytest"
 )
 
+// buildZlilyBinary compiles the real zlily binary into dir for PTY tests.
+func buildZlilyBinary(t *testing.T, dir string) string {
+	t.Helper()
+	bin := filepath.Join(dir, "zlily")
+	build := exec.Command("go", "build", "-o", bin, "github.com/joshw/zephyrlily/cmd/zlily")
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build zlily: %v\n%s", err, out)
+	}
+	return bin
+}
+
 // bceReliantFill matches an erase operation issued while a colored background
 // is set: SGR containing bg blue (44, the status bar) immediately followed by
 // EL (CSI K / CSI 0K) or ECH (CSI n X). Such fills only paint the background
@@ -35,12 +47,7 @@ func TestE2E_PTYScreenStatusBarNotBCEReliant(t *testing.T) {
 	proxyAddr := startProxy(t, fake)
 
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "zlily")
-	build := exec.Command("go", "build", "-o", bin, "github.com/joshw/zephyrlily/cmd/zlily")
-	build.Env = os.Environ()
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build zlily: %v\n%s", err, out)
-	}
+	bin := buildZlilyBinary(t, dir)
 
 	capture := filepath.Join(dir, "typescript")
 	// Drive the auth dialog: username, Tab, password, Enter; wait for the

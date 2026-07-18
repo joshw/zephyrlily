@@ -226,10 +226,29 @@ byte (U+2561 ╡ becomes `a`!), so only the ASCII bottom rows are assertable.
 Residual fidelity gap: live sessions have tty input (`mapNl=false`), which
 selects a slightly different newline strategy than the harness exercises.
 
-If it recurs in the field, note: terminal width, whether the viewport was
-scrolled up, whether spellcheck underlines/search highlight were active on
-the line, and whether the prompt was showing — the harness can then be
-extended to match.
+If it recurs in the field: run `%debug snapshot` immediately (see below)
+and attach the file, plus note whether the viewport was scrolled up and
+whether spellcheck underlines/search highlight were active on the line.
+
+### `%debug snapshot` — capturing evidence for the next hard bug
+
+`%debug snapshot [path]` (help: `%help snapshot`) writes a diagnostic
+snapshot (default `~/zlily-debug-<timestamp>.txt`) capturing all three
+layers a display bug can hide between: model state (geometry, input line,
+search/paste/history state, recent input events, proxy traffic metadata,
+scrollback layout metadata), the frame the app rendered, and — via a tee on
+stdout (`internal/tui/teebuf`) — the last 256 KiB of raw bytes the renderer
+sent to the terminal. The command forces a full repaint before capturing so
+the byte tail always ends with a complete frame.
+
+Triage a snapshot mechanically with:
+
+    ZLILY_SNAPSHOT=/path/to/file go test ./internal/tui/ui -run TestReplaySnapshot -v
+
+which replays the byte tail through a cell-accurate terminal emulator and
+diffs the resulting screen against the snapshot's own rendered frame,
+reporting divergent rows. The file contains recent typed input and screen
+content; the header says so — review before sharing.
 
 ## Advisability
 

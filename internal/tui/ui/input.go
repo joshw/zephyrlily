@@ -487,6 +487,12 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 // (interactive input) and the "clientcommand" handler (commands forwarded by the
 // proxy from the zlilyStartup memo), so both paths behave identically.
 func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
+	// %debug family (%debug snapshot [path]) — see snapshot.go.
+	if fields := strings.Fields(line); len(fields) > 0 && strings.EqualFold(fields[0], "%debug") {
+		m, out, cmd := m.handleDebugCommand(fields)
+		return m, out, cmd, true
+	}
+
 	// Debug key toggle.
 	if strings.EqualFold(strings.TrimSpace(line), "%set debug keys") {
 		m.debugKeys = !m.debugKeys
