@@ -119,6 +119,19 @@ type Model struct {
 	// Scroll state
 	lastSeenID int64 // highest WSServerMsg.ID whose output has been visible; never decreases
 
+	// processedIDs records every WSServerMsg ID already incorporated into the
+	// model, from either delivery path. The live WebSocket stream and the GET
+	// /events history replay overlap: the socket delivers events from the
+	// moment it connects (including the login-time buffer replay for fresh
+	// sessions), while the history fetch returns everything after the proxy's
+	// stored last-seen ID — which can lag far behind what the socket already
+	// delivered. Without this guard a reattach re-appends the detach review
+	// and anything else in the overlap. A set (not a high-water mark) because
+	// the replay legitimately carries IDs both below and above what has been
+	// seen live. A pointer, like the diagnostic rings, so the recorded state
+	// survives the value-copies Model goes through on every Update.
+	processedIDs *dedupSet
+
 	// Auto-paging: auto-scroll up to one page of output past the anchor, then
 	// pause at -- MORE -- (see syncViewportContent).
 	autoPageAnchor int  // viewport line count at the user's last interaction while at the bottom; -1 = disabled
@@ -277,7 +290,52 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		passwordInput:  passwordField,
 		inputEvents:    newRing(inputEventRingCap),
 		msgMeta:        newRing(msgMetaRingCap),
+		processedIDs:   newDedupSet(),
 	}
+}
+
+// dedupCap bounds the processedIDs set. IDs further behind the newest one than
+// this have fallen out of the scrollback (capped at maxScrollback items), so a
+// re-delivery would no longer be a visible duplicate and their entries can be
+// dropped. 2× leaves headroom for messages that carry an ID but never append
+// an item (non-notify events, prompts).
+const dedupCap = 2 * maxScrollback
+
+// dedupSet tracks which message IDs have been incorporated. Held by pointer in
+// Model (like the diagnostic rings) so updates survive value copies.
+type dedupSet struct {
+	seen  map[int64]bool
+	maxID int64 // highest ID ever recorded; prune floor is maxID-dedupCap
+}
+
+func newDedupSet() *dedupSet { return &dedupSet{seen: make(map[int64]bool)} }
+
+// alreadyProcessed reports whether the message carries an ID already
+// incorporated into the model, recording it otherwise. Messages without an ID
+// (prompts from some paths, keepalives) are never considered duplicates.
+func (d *dedupSet) alreadyProcessed(msg *api.WSServerMsg) bool {
+	if msg.ID == 0 {
+		return false
+	}
+	if d.seen[msg.ID] {
+		return true
+	}
+	d.seen[msg.ID] = true
+	if msg.ID > d.maxID {
+		d.maxID = msg.ID
+	}
+	// Prune rarely and in bulk: entries at least dedupCap behind the newest ID
+	// protect content the scrollback no longer retains. The extra quarter of
+	// slack keeps the O(n) sweep amortized — pruning exactly at the cap would
+	// re-run it on every message once the window filled.
+	if len(d.seen) > dedupCap+dedupCap/4 {
+		for id := range d.seen {
+			if id <= d.maxID-dedupCap {
+				delete(d.seen, id)
+			}
+		}
+	}
+	return false
 }
 
 // Messages for async operations
@@ -603,6 +661,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Drop messages the history replay already incorporated: events that
+		// reach the proxy while GET /events is being served come back in the
+		// replay and on the live stream.
+		if m.processedIDs.alreadyProcessed(msg.msg) {
+			m.recordMsgMeta("drop dup type=%s id=%d", msg.msg.Type, msg.msg.ID)
+			if m.reconnectPrompt {
+				return m, nil
+			}
+			return m, listenCmd(m.client)
+		}
+
 		var proxyCmd tea.Cmd
 		m, proxyCmd = m.handleProxy(msg.msg)
 		m.advanceLastSeenID()
@@ -673,6 +742,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var replayCmds []tea.Cmd
 		for i := range msg.events {
+			// Skip events the live WebSocket stream already delivered. The
+			// replay range starts at the proxy's stored last-seen ID, which
+			// during a reattach lags behind the login output (detach review,
+			// prompts) the socket has been streaming while the state fetch
+			// blocked on the SLCP sync — replaying those duplicated the review.
+			if m.processedIDs.alreadyProcessed(&msg.events[i]) {
+				m.recordMsgMeta("skip replayed type=%s id=%d", msg.events[i].Type, msg.events[i].ID)
+				continue
+			}
+			// A prompt is live interactive state; one arriving via history was
+			// answered (or superseded) before the replay ran, and re-applying
+			// it would resurrect a stale prompt in the input area.
+			if msg.events[i].Type == "prompt" {
+				m.recordMsgMeta("skip replayed prompt id=%d", msg.events[i].ID)
+				continue
+			}
 			var cmd tea.Cmd
 			m, cmd = m.handleProxy(&msg.events[i])
 			if cmd != nil {
