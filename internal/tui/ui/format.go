@@ -306,8 +306,17 @@ func (m Model) renderOutputItem(item OutputItem) []string {
 			if w < 1 {
 				w = 1
 			}
-			wrapped := wordwrap.String(line, w)
-			lines := strings.Split(wrapped, "\n")
+			// Not wordwrap.String: reflow's default '-' breakpoint emits the
+			// hyphen without counting its width, so each hyphen on a line lets
+			// the wrap run one column past the limit — and the viewport
+			// truncates overlong lines, silently clipping the characters that
+			// spilled over ("the new" rendered as "the n"). wrapKeepURLs wraps
+			// with no breakpoints, and charWrapLinkify hard-breaks any token
+			// still wider than the line, so nothing can overflow into the clip.
+			var lines []string
+			for _, wrapped := range strings.Split(wrapKeepURLs(line, w), "\n") {
+				lines = append(lines, charWrapLinkify(wrapped, w)...)
+			}
 			for i := range lines {
 				lines[i] = inputStyle.Render(lines[i])
 			}

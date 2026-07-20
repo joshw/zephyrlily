@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/joshw/zephyrlily/internal/tui/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -212,4 +213,53 @@ func TestFormatEvent_EmoteSeparator(t *testing.T) {
 
 	assert.Equal(t, "> (to beener) Kiwi waves", emote(" waves"))
 	assert.Equal(t, "> (to beener) Kiwi's stuff", emote("'s stuff"))
+}
+
+// The input echo must never wrap wider than the terminal: the viewport
+// truncates overlong lines, silently clipping the spill-over. reflow's default
+// '-' breakpoint emits hyphens without counting their width, so a line
+// containing hyphens ("--", "-zlily") ran past the limit and lost characters
+// at the wrap boundary ("the new" displayed as "the n"). Regression for the
+// 2026-07-19 inputArea snapshot.
+func TestRenderInput_HyphensDoNotOverflowOrLoseText(t *testing.T) {
+	text := `-zlily; the bug-report on "On reconnect, some review is getting eaten" is answered with "Allegedly this is already fixed, but i hadn't released it yet.  New release coming soon." -- was v0.10.1 the new release referred to there?  I installed that version, and when I logged in some of the detach-review seemed to be wrong, but I just paged forward a few times before I thought "wait, what's going on here?".`
+
+	logChan, _ := NewLogger()
+	m := New(client.New(""), logChan)
+	item := OutputItem{Type: "input", Data: text}
+
+	for _, w := range []int{100, 80, 40} {
+		m.width = w
+		lines := m.renderOutputItem(item)
+		require.NotEmpty(t, lines)
+		var visible []string
+		for _, line := range lines {
+			plain := stripStyle(line)
+			assert.LessOrEqualf(t, len(plain), w,
+				"width %d: rendered line overflows and would be clipped: %q", w, plain)
+			visible = append(visible, plain)
+		}
+		joined := strings.Join(visible, " ")
+		assert.Containsf(t, strings.Join(strings.Fields(joined), " "),
+			"was v0.10.1 the new release referred to there?",
+			"width %d: characters lost at a wrap boundary", w)
+	}
+}
+
+// A single unbroken token wider than the terminal must be hard-wrapped rather
+// than left to overflow into the viewport's clip.
+func TestRenderInput_LongTokenHardWraps(t *testing.T) {
+	token := strings.Repeat("x", 95) + "MARKER"
+	logChan, _ := NewLogger()
+	m := New(client.New(""), logChan)
+	m.width = 40
+	lines := m.renderOutputItem(OutputItem{Type: "input", Data: token})
+	require.Greater(t, len(lines), 1)
+	var rejoined string
+	for _, line := range lines {
+		plain := stripStyle(line)
+		assert.LessOrEqual(t, len(plain), 40)
+		rejoined += plain
+	}
+	assert.Equal(t, token, rejoined, "no characters lost when hard-breaking")
 }
