@@ -149,6 +149,39 @@ type Model struct {
 	// run at most once per process: each extra chain would live forever.
 	seenLoopStarted bool
 
+	// forceRedraw requests a full repaint (tea.ClearScreen) after the current
+	// Update call. Set by maybeResizeViewport when the input area shrinks
+	// (viewport grows): confirmed (via forensic replay of a real debug
+	// snapshot, then isolated by elimination across OS/terminal/timing
+	// variants — see snapshotreplay_test.go and
+	// TestGrowBoundaryRendererByteStream — and finally root-caused by reading
+	// mosh's own source) to be a mosh (mobile-shell) bug, not a bug in
+	// bubbletea, ultraviolet, or this app's own rendering. mosh doesn't proxy
+	// raw bytes like ssh; it re-implements its own client-side terminal
+	// emulation (SSP). Display::new_frame's "did the screen scroll?" fast
+	// path matches the new frame's top row against old-frame rows by object
+	// identity, and mosh deliberately shares one blank Row object across many
+	// still-untouched rows (construction, resize, insert_line/delete_line) —
+	// so any screen with more than one indistinguishable blank region
+	// (e.g. sparse scrollback above a bottom UI region that just changed
+	// height) can trip a false "we scrolled" match. mosh then physically
+	// scrolls the real terminal by a bogus amount and re-indexes its own
+	// bookkeeping to match, so it believes rows are already correct and skips
+	// redrawing them — which is why the corruption persists across frames
+	// instead of self-correcting, and why it can manifest as misplaced or
+	// shifted content on an unrelated row. Plain ssh, GNU screen, iTerm2, and
+	// a from-scratch VT100 emulator (vt.Emulator, in this repo's own replay
+	// tooling) all render the exact same bytes correctly — only mosh does
+	// not. The growth direction (input area getting taller) does not need
+	// this: confirmed clean by TestGrowBoundaryRendererByteStream and never
+	// observed by the user in practice. A full repaint sidesteps mosh's bug
+	// — there's nothing to fix here or upstream in bubbletea/ultraviolet;
+	// filed as https://github.com/mobile-shell/mosh/issues/1400, with a
+	// minimal, zlily-independent reproduction. Consumed and cleared by
+	// Update, which wraps update's normal Cmd with tea.ClearScreen when this
+	// is set.
+	forceRedraw bool
+
 	// scrollAnchor is the output-item index to keep at the top of the viewport
 	// across a width-changing resize (which rewraps and invalidates raw line
 	// offsets). -1 means no anchor / use the raw offset. Set by the resize/debug
@@ -495,8 +528,25 @@ func (m Model) Init() tea.Cmd {
 	)
 }
 
-// Update handles messages and user input.
+// Update handles a message and, if the input area shrank this cycle
+// (forceRedraw set by maybeResizeViewport), appends a forced full repaint to
+// sidestep a confirmed mosh terminal-emulation bug on that specific
+// transition (see forceRedraw's doc comment — not a bubbletea/ultraviolet
+// bug, not something wrong with this app's rendering). The actual message
+// handling lives in update; this wrapper exists only to give every return
+// path in that large switch a single place to check the flag, rather than
+// threading it through each one individually.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	newModel, cmd := m.update(msg)
+	nm := newModel.(Model)
+	if nm.forceRedraw {
+		nm.forceRedraw = false
+		cmd = tea.Batch(cmd, tea.ClearScreen)
+	}
+	return nm, cmd
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {

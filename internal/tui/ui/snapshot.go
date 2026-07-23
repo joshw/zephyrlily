@@ -10,9 +10,11 @@ package ui
 //	ZLILY_SNAPSHOT=/path/to/file go test ./internal/tui/ui -run TestReplaySnapshot -v
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -118,6 +120,29 @@ func (m *Model) recordMsgMeta(format string, args ...any) {
 	m.msgMeta.add(fmt.Sprintf(format, args...))
 }
 
+// screenVersion reports the installed GNU screen version when the session
+// looks like it's running inside screen (STY set, or TERM prefixed
+// "screen"). Screen's escape-handling quirks vary by build — an ancient
+// MAXSTR-limited version behaves very differently from a modern one — so
+// diagnosing display corruption needs the actual version on this machine,
+// not an assumption carried over from a past incident on different hardware.
+func screenVersion() (string, bool) {
+	if os.Getenv("STY") == "" && !strings.HasPrefix(os.Getenv("TERM"), "screen") {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// screen -v reliably prints its version banner and exits 1 (it treats -v
+	// as an unrecognized flag on at least some builds) — so a parseable first
+	// line is success regardless of the exit code; only its absence is failure.
+	out, err := exec.CommandContext(ctx, "screen", "-v").CombinedOutput()
+	line := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	if line == "" {
+		return fmt.Sprintf("<detection failed: %v>", err), true
+	}
+	return line, true
+}
+
 // ── snapshot assembly ─────────────────────────────────────────────────────────
 
 // buildSnapshot renders the whole diagnostic snapshot as one text document.
@@ -152,6 +177,9 @@ func buildSnapshot(m Model, rendererTail []byte) string {
 	}
 	_, sshSession := os.LookupEnv("SSH_TTY")
 	fmt.Fprintf(&b, "ssh=%v\n", sshSession)
+	if v, ok := screenVersion(); ok {
+		fmt.Fprintf(&b, "screen=%s\n", v)
+	}
 
 	section("geometry")
 	fmt.Fprintf(&b, "width=%d\nheight=%d\n", m.width, m.height)

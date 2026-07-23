@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/teatest/v2"
+	"github.com/charmbracelet/x/vt"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 )
@@ -285,12 +286,90 @@ func TestLongURLRendererByteStream(t *testing.T) {
 	}
 	t.Logf("captured %d bytes of renderer output", len(out))
 
-	vt := newMiniVT(width, height)
-	vt.feed(t, out)
-	for _, u := range vt.unknown {
+	mvt := newMiniVT(width, height)
+	mvt.feed(t, out)
+	for _, u := range mvt.unknown {
 		t.Errorf("miniVT: %s", u)
 	}
-	for _, w := range vt.wraps {
+	for _, w := range mvt.wraps {
 		t.Errorf("physical wrap: %s", w)
+	}
+}
+
+// TestGrowBoundaryRendererByteStream checks the mirror image of a bug found
+// by forensic replay of a real %debug snapshot: backspacing across the
+// input area's 2-line->1-line boundary could leave content misplaced onto
+// the wrong row, even though renderInputArea()'s own string was proven
+// correct by hand. Eventually root-caused (see forceRedraw in ui.go, and
+// https://github.com/mobile-shell/mosh/issues/1400) to a false-positive
+// scroll-detection heuristic in mosh's Display::new_frame, not a
+// bubbletea/ultraviolet bug — but that took ruling out OS, terminal,
+// styling, and timing first, and this test was part of that: it drives the
+// real renderer (via teatest, not a mock) across the same boundary by typing
+// forward instead of backspacing, confirming the corruption is
+// shrink-direction only, not symmetric across both directions of the same
+// transition.
+func TestGrowBoundaryRendererByteStream(t *testing.T) {
+	const width, height = 89, 26
+
+	logChan, _ := NewLogger()
+	m := New(client.New(""), logChan)
+	m.authMode = false
+
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(width, height),
+		teatest.WithProgramOptions(
+			tea.WithColorProfile(colorprofile.TrueColor),
+			tea.WithEnvironment(append(os.Environ(), "TERM=xterm-256color")),
+		))
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Type 88 'a's: n = len+1 = 89 <= firstWidth(89) -> still a single input
+	// line, mirroring the post-backspace state that showed the shift bug.
+	for i := 0; i < 88; i++ {
+		tm.Send(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// The 89th 'a': n = 90 > firstWidth(89) -> crosses into a second input
+	// line. This is the exact same boundary as the shrink-direction bug,
+	// approached from the opposite side.
+	tm.Send(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	time.Sleep(200 * time.Millisecond)
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("quit: %v", err)
+	}
+	out, err := io.ReadAll(tm.FinalOutput(t, teatest.WithFinalTimeout(5*time.Second)))
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	// tm.Quit()'s shutdown sequence ends with "exit alternate screen buffer"
+	// (\x1b[?1049l), which switches the emulator back to the primary buffer
+	// this fullscreen app never wrote to — leaving the emulator's view blank
+	// if fed the whole stream. Cut it off; we only want the last real frame.
+	if i := strings.Index(string(out), "\x1b[?1049l"); i >= 0 {
+		out = out[:i]
+	}
+	t.Logf("captured %d bytes of renderer output (post shutdown-trim)", len(out))
+
+	em := vt.NewEmulator(width, height)
+	go func() { _, _ = io.Copy(io.Discard, em) }()
+	if _, err := em.Write(out); err != nil {
+		t.Fatalf("emulator write: %v", err)
+	}
+
+	t.Logf("final screen state after crossing 1-line->2-line by typing forward (%dx%d):", width, height)
+	for y := 0; y < height; y++ {
+		var sb strings.Builder
+		for x := 0; x < width; x++ {
+			if c := em.CellAt(x, y); c != nil && c.Content != "" {
+				sb.WriteString(c.Content)
+			} else {
+				sb.WriteByte(' ')
+			}
+		}
+		trimmed := strings.TrimRight(sb.String(), " ")
+		t.Logf("%2d: %q (len=%d, leading-space=%v)", y, trimmed, len(trimmed), strings.HasPrefix(trimmed, " "))
 	}
 }

@@ -25,6 +25,14 @@ func (m Model) maybeResizeViewport() Model {
 		expectedViewportHeight = 1
 	}
 	if currentViewportHeight != expectedViewportHeight {
+		// Growing viewport means the input area is shrinking — see
+		// forceRedraw's doc comment for why that direction specifically
+		// needs a forced full repaint (works around a false-positive
+		// scroll-detection bug in mosh, confirmed not present under
+		// ssh/screen/iTerm2 directly — mobile-shell/mosh#1400).
+		if expectedViewportHeight > currentViewportHeight {
+			m.forceRedraw = true
+		}
 		m = m.updateViewportSize()
 	}
 	return m
