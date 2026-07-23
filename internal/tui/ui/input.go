@@ -331,6 +331,7 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			case ";", ":", ",", "=":
 				m = m.handleExpandKey(s)
 				m.syncTextarea()
+				m = m.maybeResizeViewport()
 				m.armPagerIfAtBottom()
 				return m, nil
 			default:
