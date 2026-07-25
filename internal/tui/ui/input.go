@@ -330,7 +330,13 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.renderEpoch++ // render width changed; item caches are stale
 		m = m.updateViewportSize()
 	case key.Matches(msg, m.keys.Redraw):
-		// Bubbletea handles redraw automatically
+		// Force a full repaint to wipe any garbled terminal state (e.g. after
+		// screen reattach or terminal glitches) — mirrors the tea.ClearScreen
+		// used on ResumeMsg in ui.go.
+		m.syncTextarea()
+		m = m.maybeResizeViewport()
+		m.armPagerIfAtBottom()
+		return m, tea.ClearScreen
 
 	default:
 		// Handle intelligent expand keys
