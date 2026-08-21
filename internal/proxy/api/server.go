@@ -19,6 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/joshw/zephyrlily/internal/cmdarg"
 	"github.com/joshw/zephyrlily/internal/lily"
 	"github.com/joshw/zephyrlily/internal/proxy/commands"
 	"github.com/joshw/zephyrlily/internal/slcp"
@@ -873,24 +874,28 @@ func (sess *Session) dispatchInput(text string, emit func(*WSServerMsg)) error {
 func (sess *Session) dispatchLine(line string, emit func(*WSServerMsg)) error {
 	if strings.HasPrefix(line, "%") {
 		fields := strings.Fields(line)
-		var cmd string
+		// cmd keeps the user's spelling (it is trimmed off the raw line below);
+		// name is folded so command names match case-insensitively.
+		var cmd, name string
 		if len(fields) > 0 {
 			cmd = fields[0]
+			name = cmdarg.Fold(cmd)
 		}
 		respond := func(lines []string) {
 			emit(&WSServerMsg{Type: "commandresult", Data: CommandResultData{CmdID: 0, Lines: lines}})
 		}
 		switch {
-		case cmd == "%startup":
+		case name == "%startup":
 			return sess.replayStartup(emit, true)
-		case cmd == "%alias":
+		case name == "%alias":
 			sess.aliases.HandleCommand(fields[1:], respond)
-		case cmd == "%after" || cmd == "%every" || cmd == "%cron":
-			sess.cron.HandleCommand(strings.TrimPrefix(cmd, "%"), fields[1:], respond)
-		case cmd == "%on":
-			// %on needs quote-aware parsing, so pass the raw remainder.
+		case name == "%after" || name == "%every" || name == "%cron":
+			sess.cron.HandleCommand(strings.TrimPrefix(name, "%"), fields[1:], respond)
+		case name == "%on":
+			// %on needs quote-aware parsing, so pass the raw remainder. Trim the
+			// command as the user spelled it, not the folded name.
 			sess.on.HandleCommand(strings.TrimSpace(strings.TrimPrefix(line, cmd)), sess.conn.State(), respond)
-		case cmd == "%sync":
+		case name == "%sync":
 			// Request a fresh entity sync: the server re-sends the full
 			// %SLCP-SYNC START…END block, which the proxy re-applies to rebuild
 			// its entity database without reconnecting.
@@ -898,7 +903,7 @@ func (sess *Session) dispatchLine(line string, emit func(*WSServerMsg)) error {
 				return err
 			}
 			respond([]string{"Requested a fresh SLCP sync."})
-		case commands.IsRegistered(cmd):
+		case commands.IsRegistered(name):
 			commands.Execute(sess.conn.State(), line, respond)
 		default:
 			// A client-only command (e.g. %style) — forward for local execution.

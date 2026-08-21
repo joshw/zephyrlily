@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/joshw/zephyrlily/internal/cmdarg"
 	"github.com/joshw/zephyrlily/internal/lily"
 	"github.com/joshw/zephyrlily/internal/slcp"
 )
@@ -112,13 +113,13 @@ func (o *OnTable) HandleCommand(raw string, state *lily.State, respond func(line
 	args := tokenize(raw)
 
 	// %on / %on list — list current handlers.
-	if len(args) == 0 || (len(args) == 1 && args[0] == "list") {
+	if len(args) == 0 || (len(args) == 1 && cmdarg.Is(args[0], "list")) {
 		respond(o.list())
 		return
 	}
 
 	// %on clear <id>
-	if args[0] == "clear" {
+	if cmdarg.Is(args[0], "clear") {
 		if len(args) != 2 {
 			respond([]string{onUsage})
 			return
@@ -132,10 +133,12 @@ func (o *OnTable) HandleCommand(raw string, state *lily.State, respond func(line
 		return
 	}
 
-	h := &onHandler{event: strings.ToLower(args[0])}
+	h := &onHandler{event: cmdarg.Fold(args[0])}
 	i := 1
-	for i < len(args) && onKeywords[args[i]] {
-		kw := args[i]
+	// Filter keywords match case-insensitively; the values that follow them do
+	// not — a "like" regexp in particular changes meaning when lowercased.
+	for i < len(args) && onKeywords[cmdarg.Fold(args[i])] {
+		kw := cmdarg.Fold(args[i])
 		i++
 		if i >= len(args) {
 			respond([]string{onUsage})
@@ -174,7 +177,7 @@ func (o *OnTable) HandleCommand(raw string, state *lily.State, respond func(line
 			h.random = n
 		case "once":
 			// Allow "once a <interval>" and "once every <interval>".
-			if args[i] == "a" || args[i] == "every" {
+			if cmdarg.Any(args[i], "a", "every") {
 				i++
 				if i >= len(args) {
 					respond([]string{onUsage})

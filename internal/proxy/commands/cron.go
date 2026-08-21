@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/joshw/zephyrlily/internal/cmdarg"
 )
 
 func init() {
@@ -50,8 +52,9 @@ func init() {
 	RegisterHelp(HelpTopic{Name: "every", Text: cronHelp})
 }
 
-// intervalRe matches an interval spec: digits with an optional s/m/h/d suffix.
-var intervalRe = regexp.MustCompile(`^(\d+)([smhd]?)$`)
+// intervalRe matches an interval spec: digits with an optional s/m/h/d suffix,
+// in either case ("5m" and "5M" are the same interval).
+var intervalRe = regexp.MustCompile(`(?i)^(\d+)([smhd]?)$`)
 
 // parseInterval parses a tlily-style time interval (e.g. "30", "30s", "5m",
 // "2h", "1d") into a Duration. It reports false if the text is not a valid
@@ -66,7 +69,7 @@ func parseInterval(s string) (time.Duration, bool) {
 		return 0, false
 	}
 	unit := time.Second
-	switch m[2] {
+	switch cmdarg.Fold(m[2]) {
 	case "m":
 		unit = time.Minute
 	case "h":
@@ -125,7 +128,7 @@ func (c *CronTable) HandleCommand(kind string, args []string, respond func(lines
 	}
 
 	// cancel / delete <id> ... (accepted for any of the three commands).
-	if args[0] == "cancel" || args[0] == "delete" {
+	if cmdarg.Any(args[0], "cancel", "delete") {
 		respond(c.cancel(args[1:]))
 		return
 	}
@@ -135,8 +138,8 @@ func (c *CronTable) HandleCommand(kind string, args []string, respond func(lines
 	// An explicit after/every keyword overrides the default and is required for
 	// %cron (which has no repeat default of its own).
 	hadKeyword := false
-	if args[0] == "after" || args[0] == "every" {
-		repeat = args[0] == "every"
+	if cmdarg.Any(args[0], "after", "every") {
+		repeat = cmdarg.Is(args[0], "every")
 		args = args[1:]
 		hadKeyword = true
 	}

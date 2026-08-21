@@ -9,6 +9,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/joshw/zephyrlily/internal/cmdarg"
 )
 
 // styleDescriptor tracks a user-editable style: the live lipgloss vars it drives
@@ -305,13 +306,13 @@ func handleStyleCommand(args []string) []string {
 		"       %style all default           restore every style to its default",
 	}
 
-	if len(args) == 0 || args[0] == "list" {
+	if len(args) == 0 || cmdarg.Is(args[0], "list") {
 		return renderStyleTable()
 	}
 
 	// %style all default
-	if args[0] == "all" {
-		if len(args) == 2 && args[1] == "default" {
+	if cmdarg.Is(args[0], "all") {
+		if len(args) == 2 && cmdarg.Is(args[1], "default") {
 			for _, d := range styleList {
 				d.resetStyle()
 			}
@@ -320,19 +321,21 @@ func handleStyleCommand(args []string) []string {
 		return usage
 	}
 
-	name := args[0]
-	d, ok := styleByName[name]
+	// Style names are a closed set (all lowercase), so they match
+	// case-insensitively; d.name is the canonical spelling to echo back.
+	d, ok := styleByName[cmdarg.Fold(args[0])]
 	if !ok {
-		return append([]string{"Unknown style: " + name, "Valid styles:"},
+		return append([]string{"Unknown style: " + args[0], "Valid styles:"},
 			"  "+strings.Join(styleNames(), ", "))
 	}
+	name := d.name
 
 	// %style <name> -> show just that style
 	if len(args) == 1 {
 		return []string{styleHeader(), styleRow(d)}
 	}
 
-	switch args[1] {
+	switch attr := cmdarg.Fold(args[1]); attr {
 	case "default":
 		d.resetStyle()
 		return []string{name + " reset to default."}
@@ -344,12 +347,12 @@ func handleStyleCommand(args []string) []string {
 			return usage
 		}
 		tok := args[2]
-		if tok == "default" {
-			d.resetAttr(args[1])
-			return []string{fmt.Sprintf("%s %s reset to default.", name, args[1])}
+		if cmdarg.Is(tok, "default") {
+			d.resetAttr(attr)
+			return []string{fmt.Sprintf("%s %s reset to default.", name, attr)}
 		}
 		var okSet bool
-		if args[1] == "fg" {
+		if attr == "fg" {
 			okSet = d.setFg(tok)
 		} else {
 			okSet = d.setBg(tok)
@@ -358,26 +361,21 @@ func handleStyleCommand(args []string) []string {
 			return []string{"Invalid color: " + tok,
 				"Use 0-255, a name (red, cyan, brightyellow, ...), #rrggbb, or none."}
 		}
-		return []string{fmt.Sprintf("%s %s set to %s.", name, args[1], canonicalToken(tok))}
+		return []string{fmt.Sprintf("%s %s set to %s.", name, attr, canonicalToken(tok))}
 	case "bold", "underline":
 		if len(args) != 3 {
 			return usage
 		}
-		var on bool
-		switch strings.ToLower(args[2]) {
-		case "on":
-			on = true
-		case "off":
-			on = false
-		default:
-			return []string{"Usage: %style " + name + " " + args[1] + " on|off"}
+		on, ok := cmdarg.OnOff(args[2])
+		if !ok {
+			return []string{"Usage: %style " + name + " " + attr + " on|off"}
 		}
-		if args[1] == "bold" {
+		if attr == "bold" {
 			d.setBold(on)
 		} else {
 			d.setUnderline(on)
 		}
-		return []string{fmt.Sprintf("%s %s %s.", name, args[1], onOff(on))}
+		return []string{fmt.Sprintf("%s %s %s.", name, attr, onOff(on))}
 	}
 
 	return usage

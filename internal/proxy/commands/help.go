@@ -3,6 +3,7 @@ package commands
 import (
 	"strings"
 
+	"github.com/joshw/zephyrlily/internal/cmdarg"
 	"github.com/joshw/zephyrlily/internal/lily"
 )
 
@@ -30,7 +31,8 @@ func handleHelp(state *lily.State, args []string, respond func(lines []string)) 
 		// Strip % prefix if present
 		topic = strings.TrimPrefix(topic, "%")
 
-		helpTopic := GetHelp(topic)
+		// Topic names are a closed set, so they match case-insensitively.
+		helpTopic := GetHelp(cmdarg.Fold(topic))
 		if helpTopic != nil {
 			respond(helpTopic.Text)
 		} else {

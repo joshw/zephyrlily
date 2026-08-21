@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/joshw/zephyrlily/internal/cmdarg"
 )
 
 func init() {
@@ -19,7 +21,9 @@ func init() {
 			"  %alias clear <alias>",
 			"  %alias list [<alias>]",
 			"",
-			"<alias> must contain only A-Z, a-z, 0-9 and _.",
+			"<alias> must contain only A-Z, a-z, 0-9 and _. Alias names are not",
+			"case sensitive: they are stored in lower case, so %greet, %Greet and",
+			"%GREET all invoke the same alias.",
 			"You cannot alias \"clear\" or \"list\".",
 			"",
 			"Supports the following special characters in <commands>:",
@@ -42,9 +46,13 @@ var aliasNameRe = regexp.MustCompile(`^\w+$`)
 var aliasInvokeRe = regexp.MustCompile(`^%(\S+)\s*(.*)$`)
 
 // AliasTable holds per-session command aliases. It is safe for concurrent use.
+//
+// Alias names are stored folded to lowercase so that invoking an alias is
+// case-insensitive, matching built-in command names: %greet, %Greet and %GREET
+// all resolve to the same alias. Expansion templates keep their case.
 type AliasTable struct {
 	mu      sync.Mutex
-	aliases map[string]string // alias name -> expansion template
+	aliases map[string]string // folded alias name -> expansion template
 }
 
 // NewAliasTable returns an empty alias table.
@@ -56,13 +64,13 @@ func NewAliasTable() *AliasTable {
 // "%alias"; respond receives the output lines.
 func (a *AliasTable) HandleCommand(args []string, respond func(lines []string)) {
 	// No args, or "list" alone: list everything.
-	if len(args) == 0 || (len(args) == 1 && args[0] == "list") {
+	if len(args) == 0 || (len(args) == 1 && cmdarg.Is(args[0], "list")) {
 		respond(a.listAll())
 		return
 	}
 
-	switch args[0] {
-	case "clear":
+	switch {
+	case cmdarg.Is(args[0], "clear"):
 		if len(args) < 2 {
 			respond([]string{"(Usage: %alias clear <alias>)"})
 			return
@@ -70,16 +78,18 @@ func (a *AliasTable) HandleCommand(args []string, respond func(lines []string)) 
 		respond(a.clear(args[1:]))
 		return
 
-	case "list":
+	case cmdarg.Is(args[0], "list"):
 		respond(a.listSome(args[1:]))
 		return
 	}
 
-	name := args[0]
-	if !aliasNameRe.MatchString(name) {
+	if !aliasNameRe.MatchString(args[0]) {
 		respond([]string{"(First argument to %alias must be in set [A-Za-z0-9_])"})
 		return
 	}
+	// Mixed-case names are accepted but stored folded, so what is echoed here is
+	// what will actually resolve when the alias is invoked.
+	name := cmdarg.Fold(args[0])
 
 	// Just a name with no expansion: show that one alias.
 	if len(args) == 1 {
@@ -103,7 +113,7 @@ func (a *AliasTable) Expand(line string) ([]string, bool) {
 	if m == nil {
 		return nil, false
 	}
-	name := m[1]
+	name := cmdarg.Fold(m[1])
 	// Never expand %alias itself, so alias management is always reachable.
 	if name == "alias" {
 		return nil, false
@@ -157,7 +167,8 @@ func (a *AliasTable) listSome(names []string) []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var lines []string
-	for _, name := range names {
+	for _, raw := range names {
+		name := cmdarg.Fold(raw)
 		if expansion, ok := a.aliases[name]; ok {
 			lines = append(lines, name+": "+expansion)
 		} else {
@@ -172,7 +183,8 @@ func (a *AliasTable) clear(names []string) []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var lines []string
-	for _, name := range names {
+	for _, raw := range names {
+		name := cmdarg.Fold(raw)
 		delete(a.aliases, name)
 		lines = append(lines, "(%"+name+" is now unaliased.)")
 	}

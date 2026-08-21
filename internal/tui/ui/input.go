@@ -8,6 +8,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/joshw/zephyrlily/internal/cmdarg"
 	"github.com/joshw/zephyrlily/internal/tui/ascify"
 )
 
@@ -598,13 +599,13 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 // proxy from the zlilyStartup memo), so both paths behave identically.
 func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
 	// %debug family (%debug snapshot [path]) — see snapshot.go.
-	if fields := strings.Fields(line); len(fields) > 0 && strings.EqualFold(fields[0], "%debug") {
+	if fields := strings.Fields(line); len(fields) > 0 && cmdarg.Is(fields[0], "%debug") {
 		m, out, cmd := m.handleDebugCommand(fields)
 		return m, out, cmd, true
 	}
 
 	// Debug key toggle.
-	if strings.EqualFold(strings.TrimSpace(line), "%set debug keys") {
+	if cmdarg.Is(strings.TrimSpace(line), "%set debug keys") {
 		m.debugKeys = !m.debugKeys
 		state := "off"
 		if m.debugKeys {
@@ -615,15 +616,19 @@ func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
 
 	// %mouse [on|off] controls mouse reporting: wheel scrolling of the viewport
 	// and click-to-position in the input line.
-	if fields := strings.Fields(line); len(fields) > 0 && strings.EqualFold(fields[0], "%mouse") {
+	if fields := strings.Fields(line); len(fields) > 0 && cmdarg.Is(fields[0], "%mouse") {
 		var lines []string
+		on, ok := false, false
+		if len(fields) == 2 {
+			on, ok = cmdarg.OnOff(fields[1])
+		}
 		switch {
-		case len(fields) == 2 && strings.EqualFold(fields[1], "on"):
+		case ok && on:
 			m.mouseEnabled = true
 			// Copied, not aliased: these lines are handed to the caller to
 			// append into the scrollback, and mouseOnNotice is a package global.
 			lines = append([]string(nil), mouseOnNotice...)
-		case len(fields) == 2 && strings.EqualFold(fields[1], "off"):
+		case ok && !on:
 			m.mouseEnabled = false
 			lines = []string{"Mouse mode: off (native click-drag selection restored)"}
 		case len(fields) == 1:
@@ -635,21 +640,18 @@ func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
 	}
 
 	// %page toggle for the viewport pager.
-	if fields := strings.Fields(line); len(fields) > 0 && fields[0] == "%page" {
+	if fields := strings.Fields(line); len(fields) > 0 && cmdarg.Is(fields[0], "%page") {
 		var msg string
+		on, ok := false, false
+		if len(fields) == 2 {
+			on, ok = cmdarg.OnOff(fields[1])
+		}
 		switch {
-		case len(fields) == 2 && strings.EqualFold(fields[1], "off"):
-			m.pagerEnabled = false
-			msg = "Viewport pager: off"
-		case len(fields) == 2 && strings.EqualFold(fields[1], "on"):
-			m.pagerEnabled = true
-			msg = "Viewport pager: on"
+		case ok:
+			m.pagerEnabled = on
+			msg = "Viewport pager: " + onOff(on)
 		case len(fields) == 1:
-			state := "on"
-			if !m.pagerEnabled {
-				state = "off"
-			}
-			msg = "Viewport pager: " + state
+			msg = "Viewport pager: " + onOff(m.pagerEnabled)
 		default:
 			msg = "Usage: %page on|off"
 		}

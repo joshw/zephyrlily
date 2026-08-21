@@ -23,6 +23,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/joshw/zephyrlily/internal/cmdarg"
 )
 
 // RendererTap provides the tail of raw bytes written to the terminal. It is
@@ -282,7 +283,7 @@ var debugUsage = []string{
 // repaint reach the terminal (and the tee), a snapshotCaptureMsg triggers
 // the actual capture in Update (see the case in ui.go).
 func (m Model) handleDebugCommand(fields []string) (Model, []string, tea.Cmd) {
-	if len(fields) < 2 || !strings.EqualFold(fields[1], "snapshot") {
+	if len(fields) < 2 || !cmdarg.Is(fields[1], "snapshot") {
 		return m, debugUsage, nil
 	}
 

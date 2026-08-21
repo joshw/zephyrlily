@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/joshw/zephyrlily/internal/cmdarg"
 	"github.com/joshw/zephyrlily/internal/lily"
 )
 
@@ -59,9 +60,9 @@ func handleDebug(state *lily.State, args []string, respond func(lines []string))
 
 	var out []string
 
-	showDiscs := sub == "discs" || sub == "all"
-	showUsers := sub == "users" || sub == "all"
-	showGroups := sub == "groups" || sub == "all"
+	showDiscs := cmdarg.Any(sub, "discs", "all")
+	showUsers := cmdarg.Any(sub, "users", "all")
+	showGroups := cmdarg.Any(sub, "groups", "all")
 
 	if !showDiscs && !showUsers && !showGroups {
 		respond([]string{

@@ -35,6 +35,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/joshw/zephyrlily/internal/cmdarg"
 	"github.com/joshw/zephyrlily/internal/lily"
 )
 
@@ -86,9 +87,9 @@ func ListHelp() []HelpTopic {
 }
 
 // IsRegistered reports whether name (including the leading %) is a proxy command
-// handled by this package.
+// handled by this package. Command names are matched case-insensitively.
 func IsRegistered(name string) bool {
-	_, ok := Registry[name]
+	_, ok := Registry[cmdarg.Fold(name)]
 	return ok
 }
 
@@ -103,9 +104,9 @@ func Execute(state *lily.State, cmd string, respond func(lines []string)) {
 	command := parts[0]
 	args := parts[1:]
 
-	handler, ok := Registry[command]
+	handler, ok := Registry[cmdarg.Fold(command)]
 	if !ok {
-		// Unknown command
+		// Unknown command — echo it back as the user spelled it.
 		respond([]string{"Unknown client command: " + command + " (try %help)"})
 		return
 	}

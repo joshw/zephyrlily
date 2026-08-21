@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/joshw/zephyrlily/internal/cmdarg"
 )
 
 // tuiHelp holds help topics that are specific to the TUI client.
@@ -167,14 +168,16 @@ func (m Model) handleLocalCommand(line string) (localOutput []string, handled bo
 	if len(parts) == 0 {
 		return nil, false, nil
 	}
-	command := parts[0]
+	// Command names and their subcommands match case-insensitively; the
+	// arguments after them (memo names, edit targets) keep their case.
+	command := cmdarg.Fold(parts[0])
 	args := parts[1:]
 
 	// Intercept Lily /info set and /memo set
-	if command == "/info" && len(args) > 0 && args[0] == "set" {
+	if command == "/info" && len(args) > 0 && cmdarg.Is(args[0], "set") {
 		return []string{"Use %info edit [target] to edit your info."}, true, nil
 	}
-	if command == "/memo" && len(args) > 0 && args[0] == "set" {
+	if command == "/memo" && len(args) > 0 && cmdarg.Is(args[0], "set") {
 		return []string{"Use %memo edit [target] <name> to edit a memo."}, true, nil
 	}
 
@@ -187,7 +190,7 @@ func (m Model) handleLocalCommand(line string) (localOutput []string, handled bo
 		if len(args) == 0 {
 			return tuiHelpSummary(), false, nil
 		}
-		topic := args[0]
+		topic := cmdarg.Fold(args[0])
 		if topic == "keys" {
 			return m.keys.KeyBindingHelp(), true, nil
 		}
@@ -197,7 +200,7 @@ func (m Model) handleLocalCommand(line string) (localOutput []string, handled bo
 		return nil, false, nil
 
 	case "%info":
-		if len(args) == 0 || args[0] != "edit" {
+		if len(args) == 0 || !cmdarg.Is(args[0], "edit") {
 			return nil, false, nil
 		}
 		target := "me"
@@ -208,7 +211,7 @@ func (m Model) handleLocalCommand(line string) (localOutput []string, handled bo
 		return nil, true, m.fetchContentCmd(meta)
 
 	case "%memo":
-		if len(args) == 0 || args[0] != "edit" {
+		if len(args) == 0 || !cmdarg.Is(args[0], "edit") {
 			return nil, false, nil
 		}
 		editArgs := args[1:]

@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 	"strings"
+
+	"github.com/joshw/zephyrlily/internal/cmdarg"
 )
 
 // spellUsage is the one-line usage string shown for malformed %spell commands.
@@ -14,11 +16,13 @@ var spellUsage = []string{
 // the caller re-renders the input area so highlighting updates immediately.
 // Returns the lines to display.
 func (s *SpellChecker) HandleCommand(args []string) []string {
-	if len(args) == 0 || args[0] == "list" {
+	if len(args) == 0 || cmdarg.Is(args[0], "list") {
 		return s.statusLines()
 	}
 
-	switch args[0] {
+	// The subcommand matches case-insensitively; the words that follow it do
+	// not — they are echoed back verbatim in the confirmation lines.
+	switch action := cmdarg.Fold(args[0]); action {
 	case "on":
 		s.SetEnabled(true)
 		return []string{"Spell checking on."}
@@ -33,7 +37,7 @@ func (s *SpellChecker) HandleCommand(args []string) []string {
 		if len(words) == 0 {
 			return spellUsage
 		}
-		return s.applyWords(args[0], words)
+		return s.applyWords(action, words)
 	}
 
 	return spellUsage
