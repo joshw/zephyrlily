@@ -63,6 +63,14 @@ func (c *Client) HasToken() bool {
 	return c.token != ""
 }
 
+// Token returns the proxy session token from the last successful Auth (empty
+// before authenticating). It identifies the proxy-side session, which callers
+// need because message IDs are only meaningful within one session: a token
+// change means a fresh session whose ID counter restarted.
+func (c *Client) Token() string {
+	return c.token
+}
+
 // Auth authenticates against the proxy and stores the session token.
 func (c *Client) Auth(username, password string) error {
 	body, _ := json.Marshal(api.AuthRequest{Username: username, Password: password})

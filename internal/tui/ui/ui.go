@@ -132,6 +132,13 @@ type Model struct {
 	// survives the value-copies Model goes through on every Update.
 	processedIDs *dedupSet
 
+	// sessionToken is the proxy session token that lastSeenID, processedIDs and
+	// the IDs stored on output items all belong to. The proxy numbers messages
+	// from a per-session counter that restarts at 1, and a reconnect always
+	// builds a new session, so a token change invalidates every one of them —
+	// see resetSessionIDs.
+	sessionToken string
+
 	// Auto-paging: auto-scroll up to one page of output past the anchor, then
 	// pause at -- MORE -- (see syncViewportContent).
 	autoPageAnchor int  // viewport line count at the user's last interaction while at the bottom; -1 = disabled
@@ -392,6 +399,10 @@ type seenTickMsg struct{}
 type authResultMsg struct {
 	username string
 	password string
+	// token is the proxy session token the login returned. The model compares it
+	// with the token it is already tracking to tell a fresh proxy session from a
+	// re-attach to the existing one (see Model.sessionToken).
+	token string
 	// newClient is set when the result came from a reconnect (a fresh client was
 	// created); the model swaps to it. It is nil for the initial login, which
 	// authenticates the model's existing client in place.
@@ -468,7 +479,7 @@ func attemptAuthCmd(c *client.Client, username, password string) tea.Cmd {
 		if err := c.Connect(); err != nil {
 			return authResultMsg{username: username, password: password, err: err}
 		}
-		return authResultMsg{username: username, password: password, err: nil}
+		return authResultMsg{username: username, password: password, token: c.Token(), err: nil}
 	}
 }
 
@@ -498,7 +509,7 @@ func listenLogCmd(logChan <-chan logMsg) tea.Cmd {
 func reconnectCmd(c *client.Client) tea.Cmd {
 	return func() tea.Msg {
 		nc, err := c.Reconnect()
-		return authResultMsg{newClient: nc, err: err}
+		return authResultMsg{newClient: nc, token: nc.Token(), err: err}
 	}
 }
 
@@ -684,6 +695,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.authenticated = true
 		m.authInProgress = false
 		m.reconnectPrompt = false
+		// A reconnect hands back a brand-new proxy session (the old one is torn
+		// down the moment the Lily socket closes), and its message IDs start
+		// over from 1. Adopting its ID space is what lets the login output
+		// through; without it the blurb and review prompts read as duplicates of
+		// the dead session's traffic and the reconnect looks like it hung.
+		if msg.token != m.sessionToken {
+			m.sessionToken = msg.token
+			m.resetSessionIDs()
+		}
 		// Run the identical post-login sequence (state fetch, history replay,
 		// startup memo) for both initial login and reconnect.
 		cmds := []tea.Cmd{
@@ -1240,6 +1260,27 @@ func (m Model) computeLastSeenID() int64 {
 func (m *Model) advanceLastSeenID() {
 	if id := m.computeLastSeenID(); id > m.lastSeenID {
 		m.lastSeenID = id
+	}
+}
+
+// resetSessionIDs drops the message-ID bookkeeping that is only meaningful
+// inside a single proxy session, and is called when the model adopts a new one.
+// The proxy assigns IDs from a per-session counter that restarts at 1, so
+// carrying the previous session's state across a reconnect breaks the new
+// session two ways: processedIDs reports its opening messages — the "enter a
+// blurb" and "review now?" prompts among them — as already-seen duplicates and
+// drops them, and lastSeenID, sitting far above anything the new session has
+// sent, reports the whole login as read. Scrollback itself survives the
+// reconnect, but the IDs on those items are stale too: computeLastSeenID takes
+// the maximum over the visible ones, so leaving them set would re-inflate
+// lastSeenID on the very next message.
+func (m *Model) resetSessionIDs() {
+	m.processedIDs = newDedupSet()
+	m.lastSeenID = 0
+	m.storedLastSeenID = 0
+	m.needsPositionRestore = false
+	for i := range m.output {
+		m.output[i].ID = 0
 	}
 }
 
