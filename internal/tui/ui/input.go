@@ -1156,6 +1156,10 @@ func (m Model) downcaseWord() Model {
 // rules: a run of whitespace (space, tab, CR, or LF) collapses to a single
 // space, and any other rune is inserted verbatim. pasteEatBuf/pasteEatFlag
 // carry the run state across calls, so callers must feed runes in order.
+//
+// Whitespace directly inside a double-quoted region is dropped rather than
+// collapsed, so typing an opening quote, pasting text padded with spaces, and
+// typing the closing quote yields "text" and not " text ".
 func (m Model) pasteRune(r rune) Model {
 	if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
 		// Whitespace: emit one space for the run, then eat the rest.
@@ -1166,13 +1170,39 @@ func (m Model) pasteRune(r rune) Model {
 			m.pasteEatFlag = true
 			return m
 		}
+		if before := m.inputValue[:m.inputCursor]; strings.HasSuffix(before, `"`) && insideQuote(before) {
+			// Run starts right after an opening quote: eat all of it.
+			m.pasteEatBuf = true
+			m.pasteEatFlag = true
+			return m
+		}
 		m.pasteEatBuf = true
 		return m.insertString(" ")
+	}
+	// A closing quote right after a collapsed run: take the space back. The
+	// run's space is the last byte inserted, so dropping it is safe here.
+	if isDoubleQuote(r) && m.pasteEatBuf {
+		if before := m.inputValue[:m.inputCursor]; strings.HasSuffix(before, " ") && insideQuote(before) {
+			m.inputValue = before[:len(before)-1] + m.inputValue[m.inputCursor:]
+			m.inputCursor--
+		}
 	}
 	// Non-whitespace: end any whitespace run and insert.
 	m.pasteEatFlag = false
 	m.pasteEatBuf = false
 	return m.insertString(string(r))
+}
+
+// insideQuote reports whether s ends inside a double-quoted region, i.e. it
+// holds an odd number of quotes so the next `"` closes rather than opens one.
+func insideQuote(s string) bool {
+	return strings.Count(s, `"`)%2 == 1
+}
+
+// isDoubleQuote reports whether r is a double quote, including the curly forms
+// ascify folds into `"` on the way into the input buffer.
+func isDoubleQuote(r rune) bool {
+	return r == '"' || r == '\u201C' || r == '\u201D'
 }
 
 // insertString inserts s at the cursor position, converting Unicode to ASCII.
