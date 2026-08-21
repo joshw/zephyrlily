@@ -12,7 +12,6 @@ import (
 
 	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
@@ -62,6 +61,16 @@ type OutputItem struct {
 // trimmed once exceeded so a long-lived session's memory stays bounded.
 const maxScrollback = 10000
 
+// scrollbackSlack is how far past the cap the scrollback is allowed to run
+// before a trim. Trimming copies the retained items to a fresh slice, so
+// trimming one item per message — which is what a session sitting at the cap
+// does forever — would put an O(scrollback) memmove back on the path of every
+// incoming message, the very thing the incremental sync exists to remove.
+// Dropping a block at a time amortizes that to a fraction of one item's cost
+// per message, at the price of holding a few hundred extra items. Same
+// bulk-eviction reasoning as dedupCap's pruning below.
+const scrollbackSlack = maxScrollback / 16
+
 // maxDebugMsgs caps the debug-pane transcript lines for the same reason.
 const maxDebugMsgs = 2000
 
@@ -74,8 +83,20 @@ type Model struct {
 	width  int
 	height int
 
-	// Output area - using bubbles/viewport
-	viewport viewport.Model
+	// Output area (see scrollview.go for why this is not bubbles/viewport)
+	viewport scrollView
+
+	// syncedItems/syncedEpoch record what the viewport's line content already
+	// reflects: the number of leading output items whose rendered lines have
+	// been appended to it, and the render epoch they were rendered at. An
+	// item's lines never change once rendered — items are only appended at the
+	// end and trimmed from the front, and nothing rewrites the Data of one
+	// already in the scrollback — so as long as these two agree with the
+	// model, syncViewportContent has only the newest items left to append.
+	// A mismatch (epoch bumped by a width/debug-split/whoami change, or the
+	// item count going backwards) falls back to rebuilding the whole thing.
+	syncedItems int
+	syncedEpoch int
 
 	// Input area - using bubbles/textarea for display
 	input textarea.Model
@@ -122,7 +143,7 @@ type Model struct {
 	debugMode     bool
 	debugKeys     bool     // log every key event to debugMsgs
 	debugMsgs     []string // raw JSON messages
-	debugViewport viewport.Model
+	debugViewport scrollView
 
 	// Scroll state
 	lastSeenID int64 // highest WSServerMsg.ID whose output has been visible; never decreases
@@ -253,6 +274,13 @@ type Model struct {
 	rendererTap RendererTap
 	inputEvents *ring
 	msgMeta     *ring
+
+	// perf times how long each class of event takes to handle, bucketed by
+	// wall-clock window so a snapshot shows whether responsiveness has been
+	// degrading over the session's life (see perf.go). A pointer for the same
+	// reason as the rings, and additionally because View — which records the
+	// render timing — may run on a different goroutine than Update.
+	perf *perfMetrics
 }
 
 // logMsg carries a severity level and text for display in the TUI output window.
@@ -344,6 +372,7 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		passwordInput:  passwordField,
 		inputEvents:    newRing(inputEventRingCap),
 		msgMeta:        newRing(msgMetaRingCap),
+		perf:           newPerfMetrics(),
 		processedIDs:   newDedupSet(),
 	}
 }
@@ -568,8 +597,17 @@ func (m Model) Init() tea.Cmd {
 // path in that large switch a single place to check the flag, rather than
 // threading it through each one individually.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	start := time.Now()
 	newModel, cmd := m.update(msg)
 	nm := newModel.(Model)
+	// Time the whole handling of this message, then take a gauge sample if one
+	// is due. Sampling after recording keeps its (rate-limited) cost out of the
+	// latency it would otherwise inflate.
+	done := time.Now()
+	nm.perf.record(m.perfCategory(msg), done.Sub(start))
+	if nm.perf.dueForSample(done) {
+		nm.perf.sample(nm.perfGauge())
+	}
 	if nm.forceRedraw {
 		nm.forceRedraw = false
 		cmd = tea.Batch(cmd, tea.ClearScreen)
@@ -965,14 +1003,20 @@ func (m Model) updateViewportSize() Model {
 	wasAtBottom := m.viewport.AtBottom()
 	oldYOffset := m.viewport.YOffset()
 
-	m.viewport = viewport.New(viewport.WithWidth(viewportWidth), viewport.WithHeight(viewportHeight))
-	m.viewport.Style = lipgloss.NewStyle()
+	// Resize in place rather than replacing the view. A height change (the
+	// common case: the input area grew or shrank by a line) leaves every
+	// rendered line still valid, so keeping the content spares the rebuild
+	// that a fresh view would force. A width change invalidates the lines
+	// themselves, but that path has already bumped renderEpoch, which makes
+	// the sync below rebuild them anyway.
+	m.viewport.SetWidth(viewportWidth)
+	m.viewport.SetHeight(viewportHeight)
 
 	if m.debugMode {
 		debugWasAtBottom := m.debugViewport.AtBottom()
 		debugOldYOffset := m.debugViewport.YOffset()
-		m.debugViewport = viewport.New(viewport.WithWidth(m.width-viewportWidth-1), viewport.WithHeight(viewportHeight))
-		m.debugViewport.Style = lipgloss.NewStyle()
+		m.debugViewport.SetWidth(m.width - viewportWidth - 1)
+		m.debugViewport.SetHeight(viewportHeight)
 		// Sync debug content and restore position
 		m.debugViewport.SetContent(strings.Join(m.debugMsgs, "\n"))
 		if debugWasAtBottom {
@@ -1123,6 +1167,9 @@ func (m Model) inputTotalLines() int {
 
 // syncViewportContent updates viewport with rendered output.
 func (m Model) syncViewportContent() Model {
+	start := time.Now()
+	defer func() { m.perf.record(perfSync, time.Since(start)) }()
+
 	// Capture follow state before trimming/SetContent: adding lines leaves
 	// YOffset unchanged, so AtBottom() would read false afterwards even if we
 	// were following the bottom a moment ago.
@@ -1132,22 +1179,21 @@ func (m Model) syncViewportContent() Model {
 	// Trim scrollback beyond the cap, shifting the scroll state up by the
 	// dropped lines so the view (and the pager anchor) stays on the same
 	// content instead of jumping.
-	if over := len(m.output) - maxScrollback; over > 0 {
+	if over := len(m.output) - maxScrollback; over > scrollbackSlack {
 		dropped := 0
 		for i := 0; i < over; i++ {
 			dropped += len(m.renderItem(i))
 		}
 		// Copy to a fresh slice so the trimmed items can be collected.
 		m.output = append([]OutputItem(nil), m.output[over:]...)
+		m.syncedItems = max(m.syncedItems-over, 0)
 		prevLines -= dropped
 		if prevLines < 0 {
 			prevLines = 0
 		}
-		if off := m.viewport.YOffset() - dropped; off > 0 {
-			m.viewport.SetYOffset(off)
-		} else {
-			m.viewport.SetYOffset(0)
-		}
+		// TrimTop drops the same lines from the view and carries the offset up
+		// with them; anything a rebuild below would redo is harmless.
+		m.viewport.TrimTop(dropped)
 		if m.autoPageAnchor >= 0 {
 			m.autoPageAnchor -= dropped
 			if m.autoPageAnchor < 0 {
@@ -1156,11 +1202,25 @@ func (m Model) syncViewportContent() Model {
 		}
 	}
 
-	var lines []string
-	for i := range m.output {
-		lines = append(lines, m.renderItem(i)...)
+	// Append only what the view has not seen. Rebuilding every line on every
+	// message is what made a long session sluggish: the cost grew with the
+	// scrollback, so each incoming message occupied the update loop for longer
+	// and keystrokes waited behind it (docs/responsiveness-findings.md).
+	if m.syncedEpoch != m.renderEpoch || m.syncedItems > len(m.output) {
+		var lines []string
+		for i := range m.output {
+			lines = append(lines, m.renderItem(i)...)
+		}
+		m.viewport.SetLines(lines)
+		m.syncedEpoch = m.renderEpoch
+	} else if m.syncedItems < len(m.output) {
+		var lines []string
+		for i := m.syncedItems; i < len(m.output); i++ {
+			lines = append(lines, m.renderItem(i)...)
+		}
+		m.viewport.AppendLines(lines)
 	}
-	m.viewport.SetContent(strings.Join(lines, "\n"))
+	m.syncedItems = len(m.output)
 
 	totalLines := m.viewport.TotalLineCount()
 
@@ -1397,7 +1457,10 @@ func (m *Model) restorePosition() {
 
 // View renders the full TUI.
 func (m Model) View() tea.View {
-	v := tea.NewView(m.viewContent())
+	start := time.Now()
+	content := m.viewContent()
+	m.perf.record(perfRender, time.Since(start))
+	v := tea.NewView(content)
 	v.AltScreen = true
 	// The terminal cursor stays hidden (v.Cursor nil): every mode draws its
 	// own virtual cursor inside the content string.

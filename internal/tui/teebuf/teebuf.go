@@ -27,10 +27,12 @@ const DefaultTail = 256 * 1024
 type Writer struct {
 	*os.File
 
-	mu   sync.Mutex
-	ring []byte // fixed capacity buffer
-	pos  int    // next write position in ring
-	full bool   // ring has wrapped at least once
+	mu     sync.Mutex
+	ring   []byte // fixed capacity buffer
+	pos    int    // next write position in ring
+	full   bool   // ring has wrapped at least once
+	writes uint64 // total Write calls forwarded
+	bytes  uint64 // total bytes forwarded
 }
 
 // New wraps f (typically os.Stdout) retaining a DefaultTail-sized tail.
@@ -52,6 +54,8 @@ func (w *Writer) Write(p []byte) (int, error) {
 func (w *Writer) record(p []byte) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.writes++
+	w.bytes += uint64(len(p))
 	// Only the last len(ring) bytes of p can survive anyway.
 	if len(p) > len(w.ring) {
 		p = p[len(p)-len(w.ring):]
@@ -67,6 +71,16 @@ func (w *Writer) record(p []byte) {
 	if w.pos == 0 && len(p) > 0 {
 		w.full = true
 	}
+}
+
+// Written reports how many writes, and how many bytes in total, have been
+// forwarded to the terminal. The TUI's responsiveness metrics sample it: a
+// session whose per-frame output has grown is one whose keystrokes cost more
+// to echo, which matters most over a slow link (see internal/tui/ui/perf.go).
+func (w *Writer) Written() (writes, bytes uint64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writes, w.bytes
 }
 
 // Tail returns a copy of the retained output tail, oldest bytes first.

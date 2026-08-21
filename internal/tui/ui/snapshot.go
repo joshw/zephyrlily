@@ -206,6 +206,11 @@ func buildSnapshot(m Model, rendererTail []byte) string {
 		m.completionActive, m.completionToken, m.completionFore)
 	fmt.Fprintf(&b, "killring len=%d lastkill=%v\n", len(m.killRing), m.lastKill)
 
+	section("responsiveness")
+	for _, line := range m.perf.report() {
+		b.WriteString(line + "\n")
+	}
+
 	section("recent input events (oldest first)")
 	for _, e := range m.inputEvents.entries() {
 		fmt.Fprintf(&b, "%s %s\n", e.when.Format("15:04:05.000"), e.desc)
@@ -274,6 +279,8 @@ var debugUsage = []string{
 	"  reports. Default path: ~/zlily-debug-<timestamp>.txt",
 	"  The file includes recent typed input and screen content - review",
 	"  before sharing.",
+	"Usage: %debug perf",
+	"  Prints how responsive this session has been over its lifetime.",
 }
 
 // handleDebugCommand implements %debug and its subcommands. The snapshot is
@@ -283,7 +290,20 @@ var debugUsage = []string{
 // repaint reach the terminal (and the tee), a snapshotCaptureMsg triggers
 // the actual capture in Update (see the case in ui.go).
 func (m Model) handleDebugCommand(fields []string) (Model, []string, tea.Cmd) {
-	if len(fields) < 2 || !cmdarg.Is(fields[1], "snapshot") {
+	if len(fields) < 2 {
+		return m, debugUsage, nil
+	}
+
+	// %debug perf prints the responsiveness metrics into the scrollback. The
+	// same table goes into every snapshot; having it available live is what
+	// lets a slowdown be watched as it develops, rather than only autopsied
+	// after the fact.
+	if cmdarg.Is(fields[1], "perf") {
+		m.recordEvent("perf report requested")
+		return m, m.perf.report(), nil
+	}
+
+	if !cmdarg.Is(fields[1], "snapshot") {
 		return m, debugUsage, nil
 	}
 
