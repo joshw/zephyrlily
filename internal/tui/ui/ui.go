@@ -343,6 +343,12 @@ type dedupSet struct {
 
 func newDedupSet() *dedupSet { return &dedupSet{seen: make(map[int64]bool)} }
 
+// seenID reports whether an ID has already been incorporated, without recording
+// it. ID 0 (messages that carry none) is never "seen".
+func (d *dedupSet) seenID(id int64) bool {
+	return id != 0 && d.seen[id]
+}
+
 // alreadyProcessed reports whether the message carries an ID already
 // incorporated into the model, recording it otherwise. Messages without an ID
 // (prompts from some paths, keepalives) are never considered duplicates.
@@ -790,6 +796,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.events) > 0 {
 			slog.Info(fmt.Sprintf("loaded %d events from history (proxy buffer: %d)", len(msg.events), msg.state.EventBufSize))
 		}
+		// The replay below drops prompt events wholesale, so Lily's pending
+		// prompt comes from the /state snapshot instead — but only one this
+		// client never received live. A prompt it did receive live is already
+		// applied (if still unanswered) or was deliberately cleared by
+		// submitLine (if answered), and re-applying that one is exactly the
+		// stale "asked me twice" prompt left standing in the input area.
+		//
+		// This must precede the replay: alreadyProcessed records each ID as it
+		// goes, so after the loop every replayed ID — including the prompt's —
+		// reads as seen whether or not it ever arrived live.
+		if msg.state.Prompt != "" && !m.processedIDs.seenID(msg.state.PromptID) {
+			m.recordMsgMeta("apply state prompt id=%d", msg.state.PromptID)
+			m.prompt = msg.state.Prompt
+		}
+
 		var replayCmds []tea.Cmd
 		for i := range msg.events {
 			// Skip events the live WebSocket stream already delivered. The
@@ -803,7 +824,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// A prompt is live interactive state; one arriving via history was
 			// answered (or superseded) before the replay ran, and re-applying
-			// it would resurrect a stale prompt in the input area.
+			// it would resurrect a stale prompt in the input area. Dropping
+			// every replayed prompt is safe because a prompt that is genuinely
+			// still pending was taken from the /state snapshot above.
 			if msg.events[i].Type == "prompt" {
 				m.recordMsgMeta("skip replayed prompt id=%d", msg.events[i].ID)
 				continue

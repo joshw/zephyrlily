@@ -108,6 +108,58 @@ func TestHistoryReplay_SkipsStalePrompts(t *testing.T) {
 	assert.Equal(t, "-> ", m.prompt)
 }
 
+// Because the replay skips prompt events, the /state snapshot is what carries
+// Lily's pending prompt. It must reinstate one this client never received live,
+// and must not reinstate one it did: /state can be serialised on the proxy just
+// before the user's answer clears it there, and re-applying that is the stale
+// "asked me twice" prompt.
+func TestInitialState_PromptAppliedOnlyWhenUnseen(t *testing.T) {
+	t.Run("unseen prompt is applied", func(t *testing.T) {
+		m := newDedupModel(t)
+		upd, _ := m.Update(initialStateMsg{
+			state: &api.StateResponse{
+				Whoami: "#1603", Server: "RPI", EventBufSize: 2,
+				Prompt: "Please enter a blurb ", PromptID: 7,
+			},
+			events: []api.WSServerMsg{
+				{ID: 7, Type: "prompt", Data: "Please enter a blurb "},
+				textMsg(8, "welcome"),
+			},
+		})
+		m = upd.(Model)
+		assert.Equal(t, "Please enter a blurb ", m.prompt,
+			"a prompt the WebSocket never delivered must be recovered from /state")
+		assert.Equal(t, []int64{8}, textIDs(m), "non-prompt history must still be replayed")
+	})
+
+	t.Run("prompt already seen live is not reinstated", func(t *testing.T) {
+		m := newDedupModel(t)
+		// Delivered live, then answered: submitLine clears the prompt.
+		upd, _ := m.Update(serverEventMsg{msg: &api.WSServerMsg{
+			ID: 7, Type: "prompt", Data: "Please enter a blurb "}})
+		m = upd.(Model)
+		require.Equal(t, "Please enter a blurb ", m.prompt)
+		// %page is a client-local command, so this exercises submitLine's prompt
+		// clearing without needing a live connection to send the line over.
+		m, _ = m.submitLine("%page")
+		require.Equal(t, "", m.prompt)
+
+		// /state still reports it (read before the answer reached the proxy).
+		upd, _ = m.Update(initialStateMsg{
+			state: &api.StateResponse{
+				Whoami: "#1603", Server: "RPI", EventBufSize: 2,
+				Prompt: "Please enter a blurb ", PromptID: 7,
+			},
+			events: []api.WSServerMsg{
+				{ID: 7, Type: "prompt", Data: "Please enter a blurb "},
+				textMsg(8, "welcome"),
+			},
+		})
+		m = upd.(Model)
+		assert.Equal(t, "", m.prompt, "an answered prompt must not be reinstated from /state")
+	})
+}
+
 // The dedup set must stay bounded over a long session: entries further behind
 // the newest ID than the scrollback retains are pruned, while recent IDs keep
 // suppressing duplicates.

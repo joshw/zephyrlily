@@ -61,6 +61,8 @@ Fetch this once after authentication, before opening the WebSocket.
   "server":        "rpi.lily.org",
   "last_seen_id":  142,
   "event_buf_size": 500,
+  "prompt":        "You were detached, do you wish to review now? (Y/n)",
+  "prompt_id":     143,
   "entities": [
     {
       "handle":   "#850",
@@ -86,6 +88,25 @@ Fetch this once after authentication, before opening the WebSocket.
   ]
 }
 ```
+
+**Pending prompt**
+
+`prompt` is the `%prompt` Lily is currently waiting on, and `prompt_id` the `id`
+of the WebSocket message that carried it. Both are omitted when no prompt is
+pending. The proxy clears them as soon as a line is forwarded to Lily, since at
+the protocol level that line is what answers the prompt. (A `%`-command the
+proxy or client handles locally never reaches Lily, so it leaves the prompt
+standing.)
+
+This snapshot — not the `/events` history — is the authoritative source for a
+pending prompt. A client should **ignore `"prompt"` messages arriving in the
+`/events` replay**: a replayed prompt has normally already been answered, and
+re-applying it leaves a stale prompt in the input area (the user sees the same
+question twice, and typing at the second one is treated as ordinary input).
+Apply `prompt` from this snapshot instead, and only when `prompt_id` is an id
+the client has not already received on the WebSocket — a prompt it did receive
+live is either already displayed or was deliberately cleared when the user
+answered it.
 
 **Entity kinds**
 
@@ -161,7 +182,7 @@ Every message has the shape:
 | `"text"` | `{"text": "…"}` | A raw unformatted text line from the server |
 | `"commandresult"` | `{"cmd_id": N, "lines": […]}` | Buffered output from a `/command` (sent as one block) |
 | `"clientcommand"` | `{"text": "…"}` | A client-only command (e.g. `%style`) the proxy forwarded for the client to execute locally — typically replayed from the user's `zlilyStartup` memo on login. See [Client-only commands](#client-only-commands-clientcommand). |
-| `"prompt"` | `"text of prompt"` | The current input prompt string |
+| `"prompt"` | `"text of prompt"` | The current input prompt string. Ignore these when they arrive in the `/events` replay rather than live; see [Pending prompt](#get-state--initial-state-snapshot). |
 | `"error"` | `"description"` | A proxy-generated error (e.g. keepalive timeout, disconnection) |
 
 #### `EventData` (type `"event"`)

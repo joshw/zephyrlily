@@ -20,6 +20,14 @@ type StateResponse struct {
 	Entities     []EntityJSON `json:"entities"`
 	LastSeenID   int64        `json:"last_seen_id"`
 	EventBufSize int          `json:"event_buf_size"`
+
+	// Prompt is the %prompt Lily is currently waiting on ("" if none), and
+	// PromptID the ID of the message that carried it. Prompts are reported here
+	// rather than being picked up from the /events replay: a replayed prompt has
+	// usually already been answered, so clients skip those and rely on this
+	// snapshot for one they never received live.
+	Prompt   string `json:"prompt,omitempty"`
+	PromptID int64  `json:"prompt_id,omitempty"`
 }
 
 // EventsResponse is returned by GET /events.

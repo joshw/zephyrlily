@@ -86,6 +86,16 @@ type Session struct {
 	// Written by fanOut, read by runKeepalive. Zero until the first pong arrives.
 	lastPongReceivedAt atomic.Int64
 
+	// The %prompt Lily is currently waiting on, and the ID of the message that
+	// carried it; empty once answered. This is live interactive state, not
+	// history, so /state reports it separately: a client that attaches after
+	// the prompt was published would otherwise never learn about it, because
+	// clients deliberately ignore prompts arriving in the /events replay (a
+	// replayed prompt has normally been answered already).
+	promptMu      sync.Mutex
+	currentPrompt string
+	promptID      int64
+
 	// Fetch coordination: an HTTP handler sets fetchResultCh before sending
 	// the fetch command to Lily; fanOut routes the first command result that
 	// arrives while the channel is set back through it instead of broadcasting.
@@ -98,6 +108,30 @@ type Session struct {
 	// the %export_file OKAY/ERROR message back through the channel.
 	storeMu       sync.Mutex
 	storeResultCh chan string
+}
+
+// setPrompt records the prompt Lily is now waiting on, along with the ID of the
+// message that carried it so clients can tell it apart from one they already saw.
+func (sess *Session) setPrompt(text string, id int64) {
+	sess.promptMu.Lock()
+	sess.currentPrompt, sess.promptID = text, id
+	sess.promptMu.Unlock()
+}
+
+// clearPrompt retires the pending prompt. Called when a line is forwarded to
+// Lily: at the protocol level that line is what answers the prompt.
+func (sess *Session) clearPrompt() {
+	sess.promptMu.Lock()
+	sess.currentPrompt, sess.promptID = "", 0
+	sess.promptMu.Unlock()
+}
+
+// pendingPrompt returns the unanswered prompt and the ID of the message that
+// delivered it, or ("", 0) if Lily is not waiting on one.
+func (sess *Session) pendingPrompt() (string, int64) {
+	sess.promptMu.Lock()
+	defer sess.promptMu.Unlock()
+	return sess.currentPrompt, sess.promptID
 }
 
 // cmdCapture accumulates the output lines of one leafed command (between
@@ -392,6 +426,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	eventBufSize := len(sess.eventBuf)
 	sess.eventBufMu.RUnlock()
 
+	prompt, promptID := sess.pendingPrompt()
 	resp := StateResponse{
 		Whoami:       st.Whoami,
 		Version:      st.Version,
@@ -399,6 +434,8 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		Entities:     make([]EntityJSON, 0, len(entities)),
 		LastSeenID:   sess.lastSeenID.Load(),
 		EventBufSize: eventBufSize,
+		Prompt:       prompt,
+		PromptID:     promptID,
 	}
 	for _, e := range entities {
 		j := entityToJSON(e)
@@ -591,6 +628,13 @@ func (s *Server) fanOut(sess *Session) {
 			continue
 		}
 		sess.publish(wsMsg)
+
+		// Recorded after publish, which is what assigns the message its ID.
+		if wsMsg.Type == "prompt" {
+			if text, ok := wsMsg.Data.(string); ok {
+				sess.setPrompt(text, wsMsg.ID)
+			}
+		}
 
 		// Evaluate %on triggers against notification events.
 		if msg.Type == slcp.MsgNotify {
@@ -862,7 +906,10 @@ func (sess *Session) dispatchLine(line string, emit func(*WSServerMsg)) error {
 		}
 		return nil
 	}
-	// Plain text — forward to Lily.
+	// Plain text — forward to Lily. This line answers any prompt Lily was
+	// waiting on; a %-command handled above does not reach Lily, so it leaves
+	// the prompt standing.
+	sess.clearPrompt()
 	return sess.conn.Send(line)
 }
 
