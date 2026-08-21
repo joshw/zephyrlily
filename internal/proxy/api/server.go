@@ -895,6 +895,11 @@ func (sess *Session) dispatchLine(line string, emit func(*WSServerMsg)) error {
 			// %on needs quote-aware parsing, so pass the raw remainder. Trim the
 			// command as the user spelled it, not the folded name.
 			sess.on.HandleCommand(strings.TrimSpace(strings.TrimPrefix(line, cmd)), sess.conn.State(), respond)
+		case name == "%echo":
+			// %echo prints its argument verbatim, so it too takes the raw
+			// remainder: a Registry handler only sees Fields-split args, which
+			// would squeeze out any spacing the user wrote.
+			commands.Echo(strings.TrimSpace(strings.TrimPrefix(line, cmd)), respond)
 		case name == "%sync":
 			// Request a fresh entity sync: the server re-sends the full
 			// %SLCP-SYNC START…END block, which the proxy re-applies to rebuild

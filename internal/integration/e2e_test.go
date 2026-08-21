@@ -275,3 +275,37 @@ func TestE2E_BufferedBurstDeliveredCompletely(t *testing.T) {
 		}
 	}
 }
+
+// TestE2E_Echo covers the two uses %echo exists for: labelling output from a
+// zlilyStartup memo, and printing a line locally without sending it to Lily.
+func TestE2E_Echo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping teatest end-to-end test in -short mode")
+	}
+
+	opt := lilytest.DefaultWorld()
+	opt.CommandReplies["/memo me zlilyStartup"] = []string{"* %echo STARTUP BANNER"}
+	c, fake := startStackWith(t, opt)
+	tm := startUI(t, c)
+
+	// Replayed from the memo at login, printed rather than sent upstream.
+	waitForOutput(t, tm, "STARTUP BANNER")
+
+	// Typed by hand, printed verbatim: interior spacing survives.
+	tm.Type("%echo one   two")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	waitForOutput(t, tm, "one   two")
+
+	// Nothing %echo prints reaches Lily. A plain send after it acts as a fence:
+	// the wire preserves order, so if MARKER arrives without the echoed text
+	// having come through first, the echo was handled locally.
+	require.NoError(t, c.Send("%echo NOTSENT"))
+	require.NoError(t, c.Send("MARKER"))
+	for {
+		got := <-fake.Commands
+		require.NotContains(t, got, "NOTSENT", "%%echo text was forwarded to Lily")
+		if got == "MARKER" {
+			break
+		}
+	}
+}

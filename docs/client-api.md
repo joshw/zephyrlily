@@ -363,6 +363,7 @@ Commands sent over the WebSocket with `text` starting with `%` are handled by th
 | `%version` | Proxy version |
 | `%whoami` | Your handle and display name |
 | `%server` | Connected server name and version |
+| `%echo <text>` | Echo `<text>` back as a `commandresult`, verbatim |
 | `%alias` | Define / list / clear command aliases (see below) |
 | `%debug` | Inspect proxy-side state |
 | `%debug discs` | List all discussions with membership status |
