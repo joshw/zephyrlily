@@ -133,7 +133,15 @@ func Fetch(ctx context.Context, rawURL string) (Preview, error) {
 	// works and far cheaper than the page: Reddit's markup carries nothing at
 	// all, and YouTube's carries its tags behind most of a megabyte.
 	if endpoint, ok := oEmbedEndpoint(u.Hostname()); ok {
-		if p, err := fetchOEmbed(ctx, endpoint, u.String()); err == nil {
+		p, err := fetchOEmbed(ctx, endpoint, u.String(), UserAgent)
+		if err != nil && refusedIdentity(err) {
+			// The endpoint turned us away for who we said we were. It gates on
+			// the same allowlist the markup does, so the crawler identity is
+			// worth spending here too — without it there is no way to reach an
+			// oEmbed-only site at all from an address it refuses.
+			p, err = fetchOEmbed(ctx, endpoint, u.String(), CrawlerUserAgent)
+		}
+		if err == nil {
 			return p, nil
 		}
 		// Retired endpoint, rate limit, or a URL this provider does not
@@ -141,6 +149,16 @@ func Fetch(ctx context.Context, rawURL string) (Preview, error) {
 	}
 
 	p, err := fetchPage(ctx, u, UserAgent)
+	if refusedIdentity(err) {
+		// Refused outright rather than answered thinly. That is the same
+		// allowlist speaking, one step earlier than the case below: there is no
+		// page to judge, so any answer the crawler identity gets is better than
+		// the error we are holding.
+		if alt, altErr := fetchPage(ctx, u, CrawlerUserAgent); altErr == nil {
+			return alt, nil
+		}
+		return p, err
+	}
 	if err != nil || !worthRetryingAsCrawler(p) {
 		return p, err
 	}
@@ -151,6 +169,28 @@ func Fetch(ctx context.Context, rawURL string) (Preview, error) {
 		return alt, nil
 	}
 	return p, nil
+}
+
+// refusedIdentity reports whether err is a host declining to serve us for who
+// we claimed to be, rather than a failure to reach it at all.
+//
+// Only these two codes qualify. A 403 is what an allowlisting site returns to a
+// User-Agent it does not know — Reddit answers it to this client's own name and
+// to a current Chrome string alike, while serving "Twitterbot" normally, so the
+// crawler identity is the only thing that gets a preview from an address it
+// gates. A 429 is the same allowlist metering rather than refusing, and known
+// crawlers are commonly counted against their own quota.
+//
+// 401 is deliberately absent: it asks for credentials we do not have and never
+// will, so a second request under another name is pure noise. Nothing else is
+// included either — a 404 or a 500 says the same thing to every caller, and
+// retrying it would just double the traffic for every broken link previewed.
+func refusedIdentity(err error) bool {
+	var se *StatusError
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.Code == http.StatusForbidden || se.Code == http.StatusTooManyRequests
 }
 
 // worthRetryingAsCrawler reports whether a page published nothing curated for

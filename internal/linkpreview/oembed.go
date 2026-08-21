@@ -58,14 +58,19 @@ func oEmbedEndpoint(host string) (string, bool) {
 	return "", false
 }
 
-// fetchOEmbed asks endpoint to describe target.
-func fetchOEmbed(ctx context.Context, endpoint, target string) (Preview, error) {
+// fetchOEmbed asks endpoint to describe target under the given identity.
+//
+// The identity is a parameter rather than always UserAgent because these
+// endpoints sit behind the same crawler allowlist as the markup they stand in
+// for: a host that answers 403 to this client's own name answers it here too,
+// and for an oEmbed-only site that leaves nothing else to fall back to.
+func fetchOEmbed(ctx context.Context, endpoint, target, userAgent string) (Preview, error) {
 	q := url.Values{"url": {target}, "format": {"json"}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+q.Encode(), nil)
 	if err != nil {
 		return Preview{}, err
 	}
-	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := client.Do(req)

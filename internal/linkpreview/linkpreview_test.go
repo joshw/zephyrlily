@@ -347,3 +347,81 @@ func TestFetchEscalatesToCrawlerUserAgent(t *testing.T) {
 		}
 	})
 }
+
+// A site that refuses a stranger outright, rather than answering it thinly, is
+// also retried as a crawler. This is the same allowlist as the case above
+// speaking one step earlier — Reddit answers 403 to this client's own name and
+// to a browser string alike, while serving "Twitterbot" normally — and without
+// the escalation there is no first answer to fall back on, only the error.
+func TestFetchEscalatesWhenRefused(t *testing.T) {
+	const full = `<html><head><meta property="og:title" content="Jeep chick!!!"></head>`
+
+	for _, code := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			var seen []string
+			srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+				ua := r.Header.Get("User-Agent")
+				seen = append(seen, ua)
+				if !strings.Contains(ua, "Twitterbot") {
+					http.Error(w, "no", code)
+					return
+				}
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				_, _ = fmt.Fprint(w, full)
+			})
+
+			p, err := fetch(t, srv.URL)
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			if got := p.Summary(0); got != "Jeep chick!!!" {
+				t.Errorf("Summary = %q, want the markup the crawler was given", got)
+			}
+			if len(seen) != 2 {
+				t.Fatalf("made %d requests %v, want 2", len(seen), seen)
+			}
+			if seen[0] != UserAgent {
+				t.Errorf("first request went out as %q, want to ask as ourselves first", seen[0])
+			}
+			if seen[1] != CrawlerUserAgent {
+				t.Errorf("retry went out as %q, want %q", seen[1], CrawlerUserAgent)
+			}
+		})
+	}
+
+	// A status that says the same thing to every caller is not about who we
+	// are, so spending a second request on it would just double the traffic
+	// for every broken link previewed.
+	for _, code := range []int{
+		http.StatusNotFound,
+		http.StatusUnauthorized,
+		http.StatusInternalServerError,
+	} {
+		t.Run("not retried: "+http.StatusText(code), func(t *testing.T) {
+			var n int
+			srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+				n++
+				http.Error(w, "no", code)
+			})
+			_, err := fetch(t, srv.URL)
+			var se *StatusError
+			if !errors.As(err, &se) || se.Code != code {
+				t.Fatalf("Fetch error = %v, want a StatusError of %d", err, code)
+			}
+			if n != 1 {
+				t.Errorf("made %d requests, want 1", n)
+			}
+		})
+	}
+
+	t.Run("both identities refused surfaces the error", func(t *testing.T) {
+		srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "no", http.StatusForbidden)
+		})
+		_, err := fetch(t, srv.URL)
+		var se *StatusError
+		if !errors.As(err, &se) || se.Code != http.StatusForbidden {
+			t.Fatalf("Fetch error = %v, want the 403 reported", err)
+		}
+	})
+}

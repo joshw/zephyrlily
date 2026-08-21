@@ -167,3 +167,76 @@ func hostOf(t *testing.T, rawURL string) string {
 	}
 	return host
 }
+
+// An endpoint sits behind the same crawler allowlist as the markup it stands in
+// for, so a 403 there is retried under the crawler identity rather than falling
+// through. For an oEmbed-only site the fall-through leads nowhere: its page is
+// the empty shell the endpoint exists to avoid.
+func TestFetchOEmbedEscalatesWhenRefused(t *testing.T) {
+	var seen []string
+	var pageHits int
+	page := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		pageHits++
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, `<html><head><title>Reddit</title></head><body>`)
+	})
+	api := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		ua := r.Header.Get("User-Agent")
+		seen = append(seen, ua)
+		if !strings.Contains(ua, "Twitterbot") {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"title":"Jeep chick!!!","provider_name":"reddit"}`)
+	})
+	withEndpoint(t, hostOf(t, page.URL), api.URL)
+
+	p, err := fetch(t, page.URL)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got := p.Summary(0); got != "Jeep chick!!!" {
+		t.Errorf("Summary = %q, want the endpoint's answer", got)
+	}
+	if p.Field != FieldOEmbed {
+		t.Errorf("Field = %q, want %q", p.Field, FieldOEmbed)
+	}
+	if pageHits != 0 {
+		t.Errorf("fetched the page %d times, want 0 — the endpoint answered", pageHits)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("made %d endpoint requests %v, want 2", len(seen), seen)
+	}
+	if seen[0] != UserAgent {
+		t.Errorf("first request went out as %q, want to ask as ourselves first", seen[0])
+	}
+	if seen[1] != CrawlerUserAgent {
+		t.Errorf("retry went out as %q, want %q", seen[1], CrawlerUserAgent)
+	}
+}
+
+// A 404 from the endpoint is a retired API rather than a refusal, so it still
+// falls straight through to the page without a wasted second request.
+func TestFetchOEmbedDoesNotEscalateOnGone(t *testing.T) {
+	var apiHits int
+	page := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, `<html><head><meta property="og:title" content="From the page"></head>`)
+	})
+	api := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		apiHits++
+		http.Error(w, "gone", http.StatusNotFound)
+	})
+	withEndpoint(t, hostOf(t, page.URL), api.URL)
+
+	p, err := fetch(t, page.URL)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got := p.Summary(0); got != "From the page" {
+		t.Errorf("Summary = %q, want the page's own title", got)
+	}
+	if apiHits != 1 {
+		t.Errorf("made %d endpoint requests, want 1", apiHits)
+	}
+}
