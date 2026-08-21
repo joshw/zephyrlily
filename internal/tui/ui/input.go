@@ -7,6 +7,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/joshw/zephyrlily/internal/tui/ascify"
 )
 
@@ -14,6 +15,86 @@ import (
 func (m *Model) syncTextarea() {
 	m.input.SetValue(m.inputValue)
 	m.input.SetCursorColumn(m.inputCursor)
+}
+
+// inputTopRow returns the screen row (0-based, from the top of the frame) where
+// the input area's first line is drawn. Both viewNormal and viewWithDebug lay
+// the frame out the same way: the viewport, then a one-line status bar, then
+// the input area.
+func (m Model) inputTopRow() int {
+	return m.viewport.Height() + 1 // +1 for the status bar
+}
+
+// inputPromptRenderWidth returns the columns the prompt actually occupies on
+// input line 0. This is deliberately not inputPromptDisplayWidth: that one adds
+// a column beyond the prompt text when computing the wrap width, so line 0
+// leaves a blank cell at the right edge rather than starting the input one
+// column further in. Column-to-byte mapping has to follow what renderInputArea
+// draws, which is the prompt text and then the input bytes immediately after.
+func (m Model) inputPromptRenderWidth() int {
+	return lipgloss.Width(m.inputPromptText())
+}
+
+// inputHitTest maps a mouse cell to a byte offset in inputValue. ok is false
+// when the cell falls outside the input area, or on the prompt itself.
+//
+// It inverts renderInputArea's layout using the same inputLineStart /
+// inputLineEnd geometry, so a click lands on exactly the byte drawn in that
+// cell. A click past the end of the text on a line clamps to the end of that
+// line's content, and a click below the last line of text clamps to the end of
+// the input — the usual editor behaviour.
+func (m Model) inputHitTest(x, y int) (int, bool) {
+	lineIdx := y - m.inputTopRow()
+	if lineIdx < 0 || lineIdx >= m.calculateInputHeight() {
+		return 0, false
+	}
+
+	col := x
+	if lineIdx == 0 {
+		col -= m.inputPromptRenderWidth()
+		if col < 0 {
+			// On the prompt: put the cursor at the start of the line rather
+			// than swallowing the click.
+			col = 0
+		}
+	}
+	if col < 0 {
+		col = 0
+	}
+
+	offset := m.inputLineStart(lineIdx) + col
+	if end := m.inputLineEnd(lineIdx); offset > end {
+		offset = end
+	}
+	if offset > len(m.inputValue) {
+		offset = len(m.inputValue)
+	}
+	return offset, true
+}
+
+// handleInputClick moves the cursor to the clicked cell of the input area.
+// It reports whether the click was consumed.
+func (m Model) handleInputClick(x, y int) (Model, bool) {
+	// Hit-test against the geometry as currently rendered, before anything
+	// below changes the prompt (and with it the first line's width).
+	offset, ok := m.inputHitTest(x, y)
+	if !ok {
+		return m, false
+	}
+
+	// Clicking into the text during an incremental search accepts the current
+	// match and leaves search mode, the same as Enter: the click says the user
+	// is done searching and wants to edit the line they landed on. Leaving
+	// search mode active instead would send their next keystroke to the search
+	// pattern rather than to the cursor position they just chose.
+	m.searchMode = false
+
+	m.inputCursor = offset
+	// A cursor move breaks a kill sequence, exactly as the keyboard motions do,
+	// so a following C-k starts a fresh kill instead of appending to the ring.
+	m.lastKill = false
+	m.syncTextarea()
+	return m, true
 }
 
 // maybeResizeViewport updates viewport if input height changed.
@@ -329,6 +410,20 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.debugMode = !m.debugMode
 		m.renderEpoch++ // render width changed; item caches are stale
 		m = m.updateViewportSize()
+	case key.Matches(msg, m.keys.MouseMode):
+		// The key toggle is the quick escape hatch for grabbing a selection:
+		// off, drag, on. It stays terse because it is meant to be used in
+		// pairs — '%mouse on' prints the full copy/paste notice.
+		m.mouseEnabled = !m.mouseEnabled
+		note := "Mouse mode: " + onOff(m.mouseEnabled)
+		if m.mouseEnabled {
+			note += " (M-m toggles; '%help mouse' for copy/paste notes)"
+		} else {
+			note += " (M-m toggles; click-drag selection works normally)"
+		}
+		m.output = append(m.output, OutputItem{Type: "command", Data: []string{note}})
+		m = m.syncViewportContent()
+
 	case key.Matches(msg, m.keys.Redraw):
 		// Force a full repaint to wipe any garbled terminal state (e.g. after
 		// screen reattach or terminal glitches) — mirrors the tea.ClearScreen
@@ -495,7 +590,7 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 }
 
 // applyLocalCommand handles a command line the client interprets itself (one the
-// proxy does not own): %set debug keys, %page and its variants, and the commands
+// proxy does not own): %set debug keys, %page, %mouse, and the commands
 // dispatched by handleLocalCommand (%style, %spell, %help, %info/%memo edit). It
 // returns the updated model, output lines to display, an optional tea.Cmd, and
 // whether the line was recognised as a local command. It is shared by submitLine
@@ -518,33 +613,29 @@ func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
 		return m, []string{"Key debug logging: " + state}, nil, true
 	}
 
+	// %mouse [on|off] controls mouse reporting: wheel scrolling of the viewport
+	// and click-to-position in the input line.
+	if fields := strings.Fields(line); len(fields) > 0 && strings.EqualFold(fields[0], "%mouse") {
+		var lines []string
+		switch {
+		case len(fields) == 2 && strings.EqualFold(fields[1], "on"):
+			m.mouseEnabled = true
+			// Copied, not aliased: these lines are handed to the caller to
+			// append into the scrollback, and mouseOnNotice is a package global.
+			lines = append([]string(nil), mouseOnNotice...)
+		case len(fields) == 2 && strings.EqualFold(fields[1], "off"):
+			m.mouseEnabled = false
+			lines = []string{"Mouse mode: off (native click-drag selection restored)"}
+		case len(fields) == 1:
+			lines = []string{"Mouse mode: " + onOff(m.mouseEnabled)}
+		default:
+			lines = []string{"Usage: %mouse on|off"}
+		}
+		return m, lines, nil, true
+	}
+
 	// %page toggle for the viewport pager.
 	if fields := strings.Fields(line); len(fields) > 0 && fields[0] == "%page" {
-		// %page wheel [on|off] controls mouse-wheel scrolling of the viewport.
-		if len(fields) >= 2 && strings.EqualFold(fields[1], "wheel") {
-			var lines []string
-			var cmd tea.Cmd
-			switch {
-			case len(fields) == 3 && strings.EqualFold(fields[2], "on"):
-				// v2 mouse handling is declarative: View() reports MouseMode from
-				// m.mouseWheel, so no enable/disable command is needed here.
-				m.mouseWheel = true
-				lines = append([]string{"Mouse-wheel scrolling: on"}, mouseWheelWarning...)
-			case len(fields) == 3 && strings.EqualFold(fields[2], "off"):
-				m.mouseWheel = false
-				lines = []string{"Mouse-wheel scrolling: off"}
-			case len(fields) == 2:
-				state := "off"
-				if m.mouseWheel {
-					state = "on"
-				}
-				lines = []string{"Mouse-wheel scrolling: " + state}
-			default:
-				lines = []string{"Usage: %page wheel on|off"}
-			}
-			return m, lines, cmd, true
-		}
-
 		var msg string
 		switch {
 		case len(fields) == 2 && strings.EqualFold(fields[1], "off"):
@@ -560,7 +651,7 @@ func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
 			}
 			msg = "Viewport pager: " + state
 		default:
-			msg = "Usage: %page on|off|wheel"
+			msg = "Usage: %page on|off"
 		}
 		return m, []string{msg}, nil, true
 	}

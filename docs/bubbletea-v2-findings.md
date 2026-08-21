@@ -108,8 +108,8 @@ Structural changes:
   `viewContent() string`; `View()` wraps it and **declares** alt-screen,
   cursor (nil — every mode draws its own virtual cursor), and mouse mode.
   `tea.WithAltScreen`, `tea.HideCursor`, `tea.EnableMouseCellMotion`/
-  `tea.DisableMouse` all disappeared; `%page wheel` now just flips
-  `m.mouseWheel` and `View()` reports the matching `MouseMode`.
+  `tea.DisableMouse` all disappeared; `%mouse` (and M-m) now just flip
+  `m.mouseEnabled` and `View()` reports the matching `MouseMode`.
 - **Paste**: v2 delivers bracketed pastes as `tea.PasteMsg` instead of
   multi-rune KeyMsgs. New `handlePaste` (input.go) routes by mode: auth/
   editor textareas take the message natively; search appends to the
@@ -169,7 +169,7 @@ the same raw OSC8 write the file already used elsewhere).
 
 **Remaining for interactive testing** (needs a live terminal / Lily login):
 real login, wheel-scroll burst in anger (the original inputguard trigger),
-M-p paste + native paste, `%page wheel` toggle, C-z/fg resume repaint,
+M-p paste + native paste, `%mouse` toggle, C-z/fg resume repaint,
 resize rewrap anchoring, link click in iTerm2, and a session inside real
 GNU screen 4.00.03 (watch for artifacts from the new startup queries).
 

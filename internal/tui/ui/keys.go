@@ -14,6 +14,7 @@ type KeyMap struct {
 	Redraw    key.Binding
 	DebugMode key.Binding
 	PasteMode key.Binding
+	MouseMode key.Binding
 
 	// Pager/viewport navigation
 	PageUp       key.Binding
@@ -85,6 +86,10 @@ func NewKeyMap() KeyMap {
 		PasteMode: key.NewBinding(
 			key.WithKeys("alt+p"),
 			key.WithHelp("M-p", "toggle paste mode"),
+		),
+		MouseMode: key.NewBinding(
+			key.WithKeys("alt+m"),
+			key.WithHelp("M-m", "toggle mouse mode"),
 		),
 
 		// Pager/viewport navigation
@@ -244,7 +249,7 @@ func (k KeyMap) ShortHelp() []key.Binding {
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		// Application
-		{k.Quit, k.Redraw, k.DebugMode, k.PasteMode},
+		{k.Quit, k.Redraw, k.DebugMode, k.PasteMode, k.MouseMode},
 		// Navigation
 		{k.PageUp, k.PageDown, k.ScrollUp, k.ScrollDown, k.GotoTop, k.GotoBottom},
 		// Cursor
@@ -269,6 +274,7 @@ func (k KeyMap) KeyBindingHelp() []string {
 		"  C-l         redraw screen",
 		"  M-g         toggle debug view",
 		"  M-p         toggle paste mode",
+		"  M-m         toggle mouse mode (see '%help mouse')",
 		"",
 		"Viewport Navigation:",
 		"  PgUp, M-v   page up",

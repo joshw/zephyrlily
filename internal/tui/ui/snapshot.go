@@ -226,9 +226,9 @@ func buildSnapshot(m Model, rendererTail []byte) string {
 	}
 
 	section("scrollback metadata")
-	fmt.Fprintf(&b, "items=%d renderepoch=%d lastseenid=%d autopageanchor=%d pager=%v wheel=%v scrollanchor=%d\n",
+	fmt.Fprintf(&b, "items=%d renderepoch=%d lastseenid=%d autopageanchor=%d pager=%v mouse=%v scrollanchor=%d\n",
 		len(m.output), m.renderEpoch, m.lastSeenID, m.autoPageAnchor,
-		m.pagerEnabled, m.mouseWheel, m.scrollAnchor)
+		m.pagerEnabled, m.mouseEnabled, m.scrollAnchor)
 	start := len(m.output) - 30
 	if start < 0 {
 		start = 0

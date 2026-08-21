@@ -24,17 +24,25 @@ import (
 // mouseWheelLines is how many output lines one wheel notch scrolls.
 const mouseWheelLines = 3
 
-// mouseWheelWarning is printed when wheel scrolling is enabled. Enabling mouse
-// reporting makes the terminal forward clicks to the app, which pre-empts its
-// native click-drag text selection; each terminal exposes a modifier to bypass
-// reporting and select normally.
-var mouseWheelWarning = []string{
-	"Warning: this captures the mouse, so click-drag text selection no longer",
-	"works normally. To select/copy text, hold a bypass modifier while dragging:",
+// mouseOnNotice is printed whenever mouse mode is switched on by %mouse.
+// Turning on mouse reporting makes the terminal forward wheel and click events
+// to the app, which pre-empts its own click-drag text selection — there is no
+// way to have both, so the notice spells out the two ways back to a working
+// copy/paste. Each terminal exposes a different modifier to bypass reporting
+// and select natively; M-m is the escape hatch for anyone whose terminal is not
+// listed, or who would rather not learn which modifier theirs uses.
+var mouseOnNotice = []string{
+	"Mouse mode: on (wheel scrolls the output; click moves the input cursor)",
+	"",
+	"This captures the mouse, so click-drag text selection no longer works",
+	"normally. To select and copy text, either hold a bypass modifier while",
+	"dragging:",
 	"  - most terminals (xterm, GNOME Terminal, Windows Terminal): Shift",
 	"  - iTerm2: Option (⌥)",
 	"  - macOS Terminal.app: Fn (or Shift)",
-	"Use '%page wheel off' to restore normal selection.",
+	"or press M-m to toggle mouse mode off, select as usual, then M-m again.",
+	"",
+	"Put '%mouse on' in your zlilyStartup memo to have it on at every login.",
 }
 
 type OutputItem struct {
@@ -143,7 +151,13 @@ type Model struct {
 	// pause at -- MORE -- (see syncViewportContent).
 	autoPageAnchor int  // viewport line count at the user's last interaction while at the bottom; -1 = disabled
 	pagerEnabled   bool // false = never pause; scroll straight to bottom (%page off)
-	mouseWheel     bool // mouse-wheel scrolling of the viewport (%page wheel); off by default
+	// mouseEnabled gates mouse reporting as a whole (%mouse / M-m; off by
+	// default): wheel scrolling of the viewport and click-to-position in the
+	// input line both ride on it, because both need the terminal to forward
+	// mouse events — which costs native click-drag selection (see
+	// mouseOnNotice). It stays a command as well as a key binding so that
+	// '%mouse on' can go in a zlilyStartup memo.
+	mouseEnabled bool
 
 	// renderEpoch versions the per-item render cache. It is bumped whenever
 	// something that affects how items render changes: the window width, the
@@ -633,13 +647,41 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recordEvent("paste len=%d mode=%s", len(msg.Content), m.modeName())
 		return m.handlePaste(msg)
 
+	case tea.MouseClickMsg:
+		m.recordEvent("click button=%d at=%d,%d", msg.Button, msg.X, msg.Y)
+		// Left-click in the input area moves the cursor to that cell. Like the
+		// wheel, this needs the terminal to report mouse events, which is only
+		// requested while m.mouseEnabled is set (%mouse on / M-m) — see
+		// mouseOnNotice for why that is off by default. Auth and edit modes
+		// own the whole screen and have their own input widgets, so the input
+		// area's geometry does not apply there.
+		if !m.mouseEnabled || m.authMode || m.editMode || m.reconnectPrompt ||
+			msg.Button != tea.MouseLeft {
+			return m, nil
+		}
+		// The completion popup owns the cursor position while it is open; let
+		// the click dismiss it first so the move applies to the real input.
+		if m.completionActive {
+			m = m.hideCompletionPopup()
+		}
+		moved, ok := m.handleInputClick(msg.X, msg.Y)
+		if !ok {
+			return m, nil
+		}
+		m = moved
+		// Leaving an incremental search swaps the search prompt back out, which
+		// changes the first line's width and so can change the input height.
+		m = m.maybeResizeViewport()
+		m.armPagerIfAtBottom()
+		return m, nil
+
 	case tea.MouseWheelMsg:
 		m.recordEvent("wheel button=%d at=%d,%d", msg.Button, msg.X, msg.Y)
 		// Only the output viewport reacts to the wheel; auth/edit modes own the
-		// screen and have no scrollback to page through. mouseWheel gates the
-		// whole feature (off by default; toggled via %page wheel, which flips
-		// m.mouseWheel — View() reports the matching MouseMode declaratively).
-		if !m.mouseWheel || m.authMode || m.editMode {
+		// screen and have no scrollback to page through. mouseEnabled gates the
+		// whole feature (off by default; toggled via %mouse or M-m, which flip
+		// m.mouseEnabled — View() reports the matching MouseMode declaratively).
+		if !m.mouseEnabled || m.authMode || m.editMode {
 			return m, nil
 		}
 		switch msg.Button {
@@ -1031,6 +1073,40 @@ func (m Model) inputFirstLineWidth() int {
 	return w
 }
 
+// inputLineStart returns the byte offset of inputValue where display line k of
+// the input area begins. Line 0 holds the bytes that fit beside the prompt;
+// every later line spans a full terminal width. The input area wraps by byte
+// offset rather than display width, so these are the same units the renderer,
+// the height calculation, and the hit test all work in.
+func (m Model) inputLineStart(k int) int {
+	if k <= 0 {
+		return 0
+	}
+	return m.inputFirstLineWidth() + (k-1)*m.inputWrapWidth()
+}
+
+// inputLineEnd returns the exclusive byte offset where display line k ends,
+// clamped to the length of the input.
+func (m Model) inputLineEnd(k int) int {
+	end := m.inputFirstLineWidth()
+	if k > 0 {
+		end += k * m.inputWrapWidth()
+	}
+	if end > len(m.inputValue) {
+		end = len(m.inputValue)
+	}
+	return end
+}
+
+// inputWrapWidth returns the columns available on continuation lines (2..n),
+// which carry no prompt and so span the full terminal width.
+func (m Model) inputWrapWidth() int {
+	if m.width < 1 {
+		return 1
+	}
+	return m.width
+}
+
 // inputTotalLines returns total display lines needed for input, including cursor.
 func (m Model) inputTotalLines() int {
 	if m.width <= 0 {
@@ -1041,10 +1117,7 @@ func (m Model) inputTotalLines() int {
 	if n <= firstWidth {
 		return 1
 	}
-	rw := m.width
-	if rw < 1 {
-		rw = 1
-	}
+	rw := m.inputWrapWidth()
 	return 1 + (n-firstWidth+rw-1)/rw
 }
 
@@ -1328,7 +1401,7 @@ func (m Model) View() tea.View {
 	v.AltScreen = true
 	// The terminal cursor stays hidden (v.Cursor nil): every mode draws its
 	// own virtual cursor inside the content string.
-	if m.mouseWheel && !m.authMode && !m.editMode {
+	if m.mouseEnabled && !m.authMode && !m.editMode {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	return v
@@ -1563,7 +1636,14 @@ func (m Model) formatStatusBar() string {
 		now := time.Now()
 		timeStr := fmt.Sprintf("%02d:%02d", now.Hour(), now.Minute())
 
-		right = server + " | " + userState + " | " + timeStr
+		// [M] marks mouse mode as active, so the reason click-drag selection
+		// is not behaving is visible rather than something to remember.
+		mouse := ""
+		if m.mouseEnabled {
+			mouse = "[M] | "
+		}
+
+		right = server + " | " + userState + " | " + mouse + timeStr
 	}
 
 	// MORE indicator centered when not at bottom
@@ -1640,10 +1720,7 @@ func (m Model) renderInputArea() string {
 	}
 
 	firstWidth := m.inputFirstLineWidth()
-	rw := m.width
-	if rw < 1 {
-		rw = 1
-	}
+	rw := m.inputWrapWidth()
 
 	cursor := m.inputCursor
 	inputLen := len(m.inputValue)
@@ -1654,28 +1731,6 @@ func (m Model) renderInputArea() string {
 	// Calculate how many lines we'll render
 	visibleLines := m.calculateInputHeight()
 
-	// lineStart returns byte offset where line k begins
-	lineStart := func(k int) int {
-		if k == 0 {
-			return 0
-		}
-		return firstWidth + (k-1)*rw
-	}
-
-	// lineEnd returns byte offset where line k ends (exclusive)
-	lineEnd := func(k int) int {
-		var end int
-		if k == 0 {
-			end = firstWidth
-		} else {
-			end = firstWidth + k*rw
-		}
-		if end > inputLen {
-			end = inputLen
-		}
-		return end
-	}
-
 	var lines []string
 	for lineIdx := 0; lineIdx < visibleLines; lineIdx++ {
 		var sb strings.Builder
@@ -1684,8 +1739,8 @@ func (m Model) renderInputArea() string {
 			sb.WriteString(promptRendered)
 		}
 
-		start := lineStart(lineIdx)
-		end := lineEnd(lineIdx)
+		start := m.inputLineStart(lineIdx)
+		end := m.inputLineEnd(lineIdx)
 
 		for j := start; j < end; {
 			_, size := utf8.DecodeRuneInString(m.inputValue[j:])
