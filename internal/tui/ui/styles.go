@@ -114,6 +114,12 @@ var (
 			Background(lipgloss.Color("7")).
 			Foreground(lipgloss.Color("0"))
 
+	// Link preview ghost text, drawn after a URL in the input line. Gray so it
+	// reads as annotation rather than as text the user typed — it is not part
+	// of the message until Tab accepts it.
+	linkPreviewStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("8")) // gray
+
 	// Incremental-search match, highlighted in place in the input line
 	searchMatchStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("3")). // yellow

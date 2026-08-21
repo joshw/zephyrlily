@@ -58,6 +58,7 @@ var styleList = []*styleDescriptor{
 	{name: "log-prefix", ptrs: []*lipgloss.Style{&logPrefixStyle}},
 	{name: "misspelled", ptrs: []*lipgloss.Style{&misspelledStyle}},
 	{name: "cursor", ptrs: []*lipgloss.Style{&cursorStyle}},
+	{name: "link-preview", ptrs: []*lipgloss.Style{&linkPreviewStyle}},
 }
 
 var styleByName = map[string]*styleDescriptor{}

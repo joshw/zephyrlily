@@ -180,6 +180,19 @@ type Model struct {
 	// '%mouse on' can go in a zlilyStartup memo.
 	mouseEnabled bool
 
+	// Link previews: gray ghost text drawn after a URL in the input line,
+	// summarising the page it points at. See linkpreview.go for why the text is
+	// held here rather than spliced into inputValue.
+	//
+	// The maps are shared across the value-copies Model goes through on every
+	// Update, which is what we want: linkPreviewCache is a session-lifetime memo
+	// of what each URL resolved to, and linkPreviewPending must be seen by every
+	// copy or one URL would be fetched once per keystroke.
+	linkPreviewOn        bool                // %linkpreview toggle
+	linkPreviewCache     map[string]string   // url -> summary ("" = nothing worth showing)
+	linkPreviewPending   map[string]bool     // url -> fetch in flight
+	linkPreviewDismissed map[previewKey]bool // previews backspaced away on this line
+
 	// renderEpoch versions the per-item render cache. It is bumped whenever
 	// something that affects how items render changes: the window width, the
 	// debug split (which halves the render width), or the whoami identity.
@@ -364,6 +377,7 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		searchIdx:      -1,
 		autoPageAnchor: -1,
 		pagerEnabled:   true,
+		linkPreviewOn:  true,
 		scrollAnchor:   -1,
 		renderEpoch:    1, // 1 so zero-valued item caches (epoch 0) read as stale
 		authMode:       !c.HasToken(),
@@ -374,6 +388,9 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		msgMeta:        newRing(msgMetaRingCap),
 		perf:           newPerfMetrics(),
 		processedIDs:   newDedupSet(),
+
+		linkPreviewCache:   make(map[string]string),
+		linkPreviewPending: make(map[string]bool),
 	}
 }
 
@@ -654,6 +671,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.advanceLastSeenID()
 		return m, reportSeenNow(m.client, m.lastSeenID)
+
+	case linkPreviewResultMsg:
+		// A preview landing does not touch inputValue, so nothing about the
+		// message being composed changes — but the input area may now need an
+		// extra line for the ghost text, so the viewport is re-measured.
+		m = m.applyPreviewResult(msg)
+		m = m.maybeResizeViewport()
+		return m, nil
 
 	case tea.KeyPressMsg:
 		m.recordKeyEvent(msg)
@@ -1136,10 +1161,21 @@ func (m Model) inputLineEnd(k int) int {
 	if k > 0 {
 		end += k * m.inputWrapWidth()
 	}
-	if end > len(m.inputValue) {
-		end = len(m.inputValue)
+	if n := m.inputDisplayLen(); end > n {
+		end = n
 	}
 	return end
+}
+
+// inputDisplayLen returns the byte length of the input line as drawn, including
+// any preview text woven into it. The input area's geometry is all in these
+// display bytes, so a preview wraps and grows the area like typed text.
+func (m Model) inputDisplayLen() int {
+	n := len(m.inputValue)
+	for _, g := range m.ghosts() {
+		n += len(g.text)
+	}
+	return n
 }
 
 // inputWrapWidth returns the columns available on continuation lines (2..n),
@@ -1157,7 +1193,7 @@ func (m Model) inputTotalLines() int {
 		return 1
 	}
 	firstWidth := m.inputFirstLineWidth()
-	n := len(m.inputValue) + 1 // +1 reserves cell for cursor
+	n := m.inputDisplayLen() + 1 // +1 reserves cell for cursor
 	if n <= firstWidth {
 		return 1
 	}
@@ -1785,11 +1821,21 @@ func (m Model) renderInputArea() string {
 	firstWidth := m.inputFirstLineWidth()
 	rw := m.inputWrapWidth()
 
-	cursor := m.inputCursor
-	inputLen := len(m.inputValue)
+	// Draw over the display string — inputValue with preview text woven in —
+	// and carry the cursor across into its coordinates. Everything below is in
+	// display bytes; inOff tracks the matching offset in inputValue so the
+	// spell-check lookup, which is indexed by what the user actually typed,
+	// stays aligned across the ghost text it must skip.
+	gs := m.ghosts()
+	display, ghostSpans := m.inputDisplay()
+	cursor := toDisplay(gs, m.inputCursor)
+	inputLen := len(display)
 
 	// Active incremental-search match, highlighted in place.
 	matchStart, matchEnd, matchOK := m.searchMatchSpan()
+	if matchOK {
+		matchStart, matchEnd = toDisplay(gs, matchStart), toDisplay(gs, matchEnd)
+	}
 
 	// Calculate how many lines we'll render
 	visibleLines := m.calculateInputHeight()
@@ -1805,20 +1851,52 @@ func (m Model) renderInputArea() string {
 		start := m.inputLineStart(lineIdx)
 		end := m.inputLineEnd(lineIdx)
 
+		// Offset in inputValue matching display offset start, for misspelledAt.
+		inOff := toInput(gs, start)
+
+		spanIdx := 0
 		for j := start; j < end; {
-			_, size := utf8.DecodeRuneInString(m.inputValue[j:])
-			ch := m.inputValue[j : j+size]
+			// Advance past ghost spans this byte has already cleared.
+			for spanIdx < len(ghostSpans) && j >= ghostSpans[spanIdx].end {
+				spanIdx++
+			}
+			inGhost := spanIdx < len(ghostSpans) && ghostSpans[spanIdx].contains(j)
+
+			// Emit a whole run of preview text in one styled chunk instead of
+			// an escape pair per character. The other in-place styles here mark
+			// a word or a search hit; a preview is a sentence, and per-rune
+			// styling would put a kilobyte of escapes on the wire for every
+			// keystroke — which is both slow on a remote link and exactly the
+			// shape of output that overruns screen's escape buffer.
+			if inGhost && j != cursor {
+				runEnd := min(ghostSpans[spanIdx].end, end)
+				if cursor > j && cursor < runEnd {
+					runEnd = cursor // the cursor cell is drawn on its own below
+				}
+				sb.WriteString(linkPreviewStyle.Render(display[j:runEnd]))
+				j = runEnd
+				continue
+			}
+
+			_, size := utf8.DecodeRuneInString(display[j:])
+			ch := display[j : j+size]
+
 			switch {
 			case j == cursor:
 				sb.WriteString(cursorStyle.Render(ch))
+			case inGhost:
+				sb.WriteString(linkPreviewStyle.Render(ch))
 			case matchOK && j >= matchStart && j < matchEnd:
 				sb.WriteString(searchMatchStyle.Render(ch))
-			case misspelledAt[j]:
+			case inOff < len(misspelledAt) && misspelledAt[inOff]:
 				sb.WriteString(misspelledStyle.Render(ch))
 			default:
 				sb.WriteString(ch)
 			}
 			j += size
+			if !inGhost {
+				inOff += size
+			}
 		}
 
 		// Cursor at end of this line or past end of input

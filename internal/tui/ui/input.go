@@ -63,10 +63,18 @@ func (m Model) inputHitTest(x, y int) (int, bool) {
 		col = 0
 	}
 
+	// The geometry above is in display bytes, which include any preview text
+	// woven into the line; map back to inputValue so the caller gets an offset
+	// it can set the cursor to. A click on preview text lands at the end of the
+	// URL it describes, since the preview occupies no position of its own.
 	offset := m.inputLineStart(lineIdx) + col
 	if end := m.inputLineEnd(lineIdx); offset > end {
 		offset = end
 	}
+	if n := m.inputDisplayLen(); offset > n {
+		offset = n
+	}
+	offset = toInput(m.ghosts(), offset)
 	if offset > len(m.inputValue) {
 		offset = len(m.inputValue)
 	}
@@ -330,7 +338,14 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Editing
 	case key.Matches(msg, m.keys.DeleteBack):
-		m = m.deleteBack()
+		// With the cursor at the end of a previewed URL, Backspace takes the
+		// preview away rather than a character of the URL. A second Backspace
+		// then edits the URL as usual.
+		if dismissed, ok := m.dismissPreviewAtCursor(); ok {
+			m = dismissed
+		} else {
+			m = m.deleteBack()
+		}
 	case key.Matches(msg, m.keys.DeleteForward):
 		m = m.deleteForward()
 	case key.Matches(msg, m.keys.DeleteWord):
@@ -368,9 +383,15 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.SearchForward) && !m.pasteMode:
 		m = m.enterSearch(false)
 
-	// Tab completion
+	// Tab accepts every showing link preview, turning the gray text into real
+	// input. Only when there is none does it fall through to completion — so a
+	// pending preview shadows Tab-complete for exactly as long as it is shown.
 	case key.Matches(msg, m.keys.TabComplete):
-		m = m.tabComplete()
+		if accepted, ok := m.acceptPreviews(); ok {
+			m = accepted
+		} else {
+			m = m.tabComplete()
+		}
 
 	// Viewport navigation
 	case key.Matches(msg, m.keys.PageUp):
@@ -440,10 +461,7 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			switch s := msg.Text; s {
 			case ";", ":", ",", "=":
 				m = m.handleExpandKey(s)
-				m.syncTextarea()
-				m = m.maybeResizeViewport()
-				m.armPagerIfAtBottom()
-				return m, nil
+				return m.inputChanged(false)
 			default:
 				m = m.insertString(s)
 			}
@@ -452,10 +470,21 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	return m.inputChanged(false)
+}
+
+// inputChanged is the tail every input-editing path runs: resync the textarea,
+// give the viewport back any room the input area no longer needs, and start
+// preview fetches for URLs that have become complete.
+//
+// force is for paste, where the whole text arrived at once; typed input leaves
+// it false so that a URL is only fetched once something follows it.
+func (m Model) inputChanged(force bool) (tea.Model, tea.Cmd) {
 	m.syncTextarea()
 	m = m.maybeResizeViewport()
 	m.armPagerIfAtBottom()
-	return m, nil
+	m, cmds := m.previewCmds(force)
+	return m, tea.Batch(cmds...)
 }
 
 // handlePaste routes bracketed-paste text by mode. v1 delivered pastes as
@@ -487,19 +516,13 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		for _, r := range text {
 			m = m.pasteRune(r)
 		}
-		m.syncTextarea()
-		m = m.maybeResizeViewport()
-		m.armPagerIfAtBottom()
-		return m, nil
+		return m.inputChanged(true)
 	default:
 		// Same insertion path a v1 multi-rune KeyMsg took. Unlike typed input,
 		// a pasted ";"/":" must not trigger expand — v2's split makes that
 		// distinction possible.
 		m = m.insertString(text)
-		m.syncTextarea()
-		m = m.maybeResizeViewport()
-		m.armPagerIfAtBottom()
-		return m, nil
+		return m.inputChanged(true)
 	}
 }
 
@@ -551,6 +574,7 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 	m.inputCursor = 0
 	m.input.SetValue("")
 	m.prompt = ""
+	m = m.resetPreviewsForNewLine()
 
 	// The input has collapsed back to a single line; reclaim the freed space
 	// for the viewport now so the layout doesn't stay expanded until the next
@@ -656,6 +680,13 @@ func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
 			msg = "Usage: %page on|off"
 		}
 		return m, []string{msg}, nil, true
+	}
+
+	// %linkpreview [on|off] controls the gray page summaries offered after a
+	// URL in the input line.
+	if fields := strings.Fields(line); len(fields) > 0 && cmdarg.Is(fields[0], "%linkpreview") {
+		m, lines := m.handleLinkPreviewCommand(fields)
+		return m, lines, nil, true
 	}
 
 	out, handled, asyncCmd := m.handleLocalCommand(line)
