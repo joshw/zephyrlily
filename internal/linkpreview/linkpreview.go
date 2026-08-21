@@ -175,7 +175,7 @@ func fetchPage(ctx context.Context, u *url.URL, userAgent string) (Preview, erro
 	if err != nil {
 		return Preview{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return Preview{}, &StatusError{Code: resp.StatusCode}

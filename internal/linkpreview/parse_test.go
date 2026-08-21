@@ -16,7 +16,7 @@ func fixture(t *testing.T, name string) Preview {
 	if err != nil {
 		t.Fatalf("open fixture: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return newPreview("https://example.test/page", parseHead(f))
 }
 
@@ -110,7 +110,7 @@ func TestParseHeadStopsAtBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open fixture: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	m := parseHead(f)
 	if got := m.tags["og:description"]; got != "Head tags without an explicit head element." {

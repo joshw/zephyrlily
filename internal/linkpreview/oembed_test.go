@@ -60,14 +60,14 @@ func TestFetchPrefersOEmbed(t *testing.T) {
 	page := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		pageHits++
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<html><head><meta property="og:title" content="From the page"></head>`)
+		_, _ = fmt.Fprint(w, `<html><head><meta property="og:title" content="From the page"></head>`)
 	})
 
 	var gotQuery string
 	api := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.Query().Get("url")
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"title":"Jeep chick!!!","provider_name":"reddit","author_name":"someone"}`)
+		_, _ = fmt.Fprint(w, `{"title":"Jeep chick!!!","provider_name":"reddit","author_name":"someone"}`)
 	})
 	withEndpoint(t, hostOf(t, page.URL), api.URL)
 
@@ -106,18 +106,18 @@ func TestFetchFallsBackWhenOEmbedFails(t *testing.T) {
 	}, {
 		name: "unparseable json",
 		handler: func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, `<html>not json at all`)
+			_, _ = fmt.Fprint(w, `<html>not json at all`)
 		},
 	}, {
 		name: "well formed but describes nothing",
 		handler: func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, `{"provider_name":"reddit","title":"   "}`)
+			_, _ = fmt.Fprint(w, `{"provider_name":"reddit","title":"   "}`)
 		},
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			page := serve(t, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				fmt.Fprint(w, `<html><head><meta property="og:title" content="From the page"></head>`)
+				_, _ = fmt.Fprint(w, `<html><head><meta property="og:title" content="From the page"></head>`)
 			})
 			api := serve(t, tc.handler)
 			withEndpoint(t, hostOf(t, page.URL), api.URL)
@@ -141,7 +141,7 @@ func TestOEmbedSendsUserAgent(t *testing.T) {
 	got := make(chan string, 1)
 	api := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		got <- r.Header.Get("User-Agent")
-		fmt.Fprint(w, `{"title":"A title"}`)
+		_, _ = fmt.Fprint(w, `{"title":"A title"}`)
 	})
 	page := serve(t, func(w http.ResponseWriter, r *http.Request) {})
 	withEndpoint(t, hostOf(t, page.URL), api.URL)

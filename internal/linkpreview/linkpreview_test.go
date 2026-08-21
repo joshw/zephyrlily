@@ -23,7 +23,7 @@ func serveFile(t *testing.T, name, ctype string) *httptest.Server {
 	}
 	return serve(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", ctype)
-		w.Write(body)
+		_, _ = w.Write(body)
 	})
 }
 
@@ -99,7 +99,7 @@ func TestFetchNonHTML(t *testing.T) {
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		served = true
 		w.Header().Set("Content-Type", "application/pdf")
-		w.Write([]byte("%PDF-1.7\n"))
+		_, _ = w.Write([]byte("%PDF-1.7\n"))
 	})
 
 	p, err := fetch(t, srv.URL+"/docs/report.pdf")
@@ -122,11 +122,11 @@ func TestFetchNonHTML(t *testing.T) {
 func TestFetchCapsBodySize(t *testing.T) {
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<html><head><meta property="og:description" content="Before the flood.">`)
+		_, _ = fmt.Fprint(w, `<html><head><meta property="og:description" content="Before the flood.">`)
 		// Far more than maxBody, and never closed by the handler.
 		chunk := strings.Repeat("<!-- padding -->", 1024)
 		for i := 0; i < 4*maxBody/len(chunk); i++ {
-			fmt.Fprint(w, chunk)
+			_, _ = fmt.Fprint(w, chunk)
 		}
 	})
 
@@ -148,7 +148,7 @@ func TestFetchRedirects(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, `<html><head><title>Arrived</title></head></html>`)
+			_, _ = fmt.Fprint(w, `<html><head><title>Arrived</title></head></html>`)
 		})
 
 		p, err := fetch(t, srv.URL+"/start")
@@ -248,7 +248,7 @@ func TestFetchSendsUserAgent(t *testing.T) {
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		got <- r.Header.Get("User-Agent")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, "<html><head></head></html>")
+		_, _ = fmt.Fprint(w, "<html><head></head></html>")
 	})
 
 	if _, err := fetch(t, srv.URL); err != nil {
@@ -275,10 +275,10 @@ func TestFetchEscalatesToCrawlerUserAgent(t *testing.T) {
 			seen = append(seen, ua)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			if strings.Contains(ua, "Twitterbot") {
-				fmt.Fprint(w, full)
+				_, _ = fmt.Fprint(w, full)
 				return
 			}
-			fmt.Fprint(w, shell)
+			_, _ = fmt.Fprint(w, shell)
 		})
 
 		p, err := fetch(t, srv.URL)
@@ -304,7 +304,7 @@ func TestFetchEscalatesToCrawlerUserAgent(t *testing.T) {
 		srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 			n++
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, full)
+			_, _ = fmt.Fprint(w, full)
 		})
 		if _, err := fetch(t, srv.URL); err != nil {
 			t.Fatalf("Fetch: %v", err)
@@ -317,7 +317,7 @@ func TestFetchEscalatesToCrawlerUserAgent(t *testing.T) {
 	t.Run("retry that adds nothing keeps the first answer", func(t *testing.T) {
 		srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, `<html><head><title>Plain Old Page</title></head><body>`)
+			_, _ = fmt.Fprint(w, `<html><head><title>Plain Old Page</title></head><body>`)
 		})
 		p, err := fetch(t, srv.URL)
 		if err != nil {
@@ -336,7 +336,7 @@ func TestFetchEscalatesToCrawlerUserAgent(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, `<html><head><title>Still Useful</title></head><body>`)
+			_, _ = fmt.Fprint(w, `<html><head><title>Still Useful</title></head><body>`)
 		})
 		p, err := fetch(t, srv.URL)
 		if err != nil {
