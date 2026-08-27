@@ -503,8 +503,8 @@ func hardcopyCmd(path string) tea.Cmd {
 }
 
 // hardcopyRows normalises a screen dump or a rendered frame into comparable
-// rows: no styling, and no NBSP padding (the status bar pads with U+00A0,
-// which screen writes back as a plain space).
+// rows: no styling, and no NBSP padding, in either of the two spellings the
+// two sides use for it.
 //
 // Genuinely blank rows are kept. Trimming them away would be convenient and
 // would blind the comparison to the exact thing it is looking for: a terminal
@@ -513,13 +513,23 @@ func hardcopyCmd(path string) tea.Cmd {
 // exists to catch. Only the empty string left over from a trailing newline is
 // dropped, since that is a split artifact rather than a row.
 func hardcopyRows(s string) []string {
+	// Normalise NBSP before anything else touches the bytes. The status bar
+	// pads with U+00A0, and the two sides spell it differently: zlily's frame
+	// carries proper UTF-8 (0xC2 0xA0) while screen's hardcopy writes a bare
+	// 0xA0 byte. Only replacing the UTF-8 form left the bare bytes for
+	// ansi.Strip to discard as invalid UTF-8, so a status bar that matched
+	// perfectly came back as "JoshRPI | here" against "Josh    RPI | here" —
+	// a mismatch reported on a healthy screen. The UTF-8 form goes first, so
+	// that the single-byte pass cannot bisect it and leave a stray 0xC2.
+	s = strings.ReplaceAll(s, "\u00a0", " ")
+	s = strings.ReplaceAll(s, "\xa0", " ")
 	lines := strings.Split(ansi.Strip(s), "\n")
 	if n := len(lines); n > 0 && lines[n-1] == "" {
 		lines = lines[:n-1]
 	}
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
-		out = append(out, strings.TrimRight(strings.ReplaceAll(line, "\u00a0", " "), " \t"))
+		out = append(out, strings.TrimRight(line, " \t"))
 	}
 	return out
 }
