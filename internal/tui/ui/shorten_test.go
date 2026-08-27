@@ -432,6 +432,57 @@ func TestPreviewTarget(t *testing.T) {
 	})
 }
 
+// Accept a preview, then shorten the URL under it, and the preview must not be
+// offered a second time: the accepted copy is still in the line, and the
+// carried-over summary would otherwise reappear beside it under a new key.
+func TestShortenDoesNotReofferAnAcceptedPreview(t *testing.T) {
+	const (
+		summary = "More than 150 dead after floodwaters wipe out villages"
+		short   = "https://da.gd/XFG5L"
+	)
+	line := "read " + shortenTestURL
+	m := shortenModel(line, len(line))
+	m.linkPreviewOn = true
+	m.linkPreviewCache = map[string]string{shortenTestURL: summary}
+
+	// Tab: the ghost becomes real text.
+	m, ok := m.acceptPreviews()
+	require.True(t, ok, "the preview should have been available to accept")
+	require.Contains(t, m.inputValue, "("+summary+")")
+	require.Empty(t, m.ghosts(), "an accepted preview should stop showing")
+
+	// M-s: the URL is replaced, and its preview follows it to the short link.
+	m = m.applyShortenResult(shortenResultMsg{url: shortenTestURL, short: short})
+	require.Contains(t, m.inputValue, short)
+	require.Equal(t, summary, m.linkPreviewCache[short], "the preview should have carried over")
+
+	// The text is already in the line, so there is nothing left to offer.
+	assert.Empty(t, m.ghosts(), "the accepted preview must not be offered again under the short URL")
+	display, spans := m.inputDisplay()
+	assert.Equal(t, m.inputValue, display, "nothing should be spliced in for drawing")
+	assert.Empty(t, spans)
+	assert.Equal(t, 1, strings.Count(display, "("+summary+")"), "the summary should appear exactly once")
+}
+
+// The carry-over still works when the preview was never accepted -- that is the
+// whole point of it, and the duplicate check must not disable it.
+func TestShortenStillOffersAnUnacceptedPreview(t *testing.T) {
+	const (
+		summary = "Nepal flash flooding - live updates"
+		short   = "https://da.gd/XFG5L"
+	)
+	line := "read " + shortenTestURL
+	m := shortenModel(line, len(line))
+	m.linkPreviewOn = true
+	m.linkPreviewCache = map[string]string{shortenTestURL: summary}
+
+	m = m.applyShortenResult(shortenResultMsg{url: shortenTestURL, short: short})
+
+	ghosts := m.ghosts()
+	require.Len(t, ghosts, 1, "an unaccepted preview should follow the URL to its short form")
+	assert.Contains(t, ghosts[0].text, summary)
+}
+
 // The reminder exists for people who have not met M-s, so it fires the first
 // time a URL turns up in the line they are composing, and then never again.
 func TestShortenHint(t *testing.T) {

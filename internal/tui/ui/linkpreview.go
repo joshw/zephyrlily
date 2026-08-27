@@ -149,9 +149,33 @@ func (m Model) ghosts() []ghost {
 		if summary == "" {
 			g.text, g.placeholder = " ("+noPreviewText+")", true
 		}
+		if alreadyOffered(m.inputValue, g.text) {
+			// Nothing left to offer: this text is in the line already.
+			continue
+		}
 		out = append(out, g)
 	}
 	return out
+}
+
+// alreadyOffered reports whether the line already carries this preview's text,
+// in which case there is nothing to offer and the ghost is not drawn.
+//
+// The dismissal set does not cover this on its own, because it is keyed by URL
+// and the text can outlive the URL it came from. Accepting a preview and then
+// shortening the URL is the case that showed it up: the accepted "(Title)" stays
+// in the line while the URL under it is replaced by a short one, which is a
+// different key with the same summary carried over — so the line ended up
+// offering "(Title)" a second time, right next to the copy the user had already
+// taken.
+//
+// The whole line is searched rather than the text just after the URL, because
+// that is not where the accepted copy ends up: shortening leaves the bracketed
+// host between the URL and its preview.
+func alreadyOffered(line, ghostText string) bool {
+	// Matched without the leading space, so that a preview whose spacing was
+	// edited after being accepted still counts as present.
+	return strings.Contains(line, strings.TrimPrefix(ghostText, " "))
 }
 
 // inputDisplay returns the input line as it should be drawn — inputValue with

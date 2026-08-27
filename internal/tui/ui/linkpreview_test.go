@@ -9,6 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/joshw/zephyrlily/internal/linkpreview"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // previewModel builds a model with previews already resolved, as if the fetches
@@ -26,6 +28,40 @@ func previewModel(value string, cursor int, cache map[string]string) Model {
 		linkPreviewOn:    true,
 		linkPreviewCache: cache,
 	}
+}
+
+// A preview is an offer of text. If the line already carries that text, there
+// is nothing to offer, whichever URL it happens to be sitting under.
+func TestPreviewNotOfferedWhenTextIsAlreadyPresent(t *testing.T) {
+	const summary = "Some Article Title"
+
+	t.Run("present after the url", func(t *testing.T) {
+		m := previewModel("https://a.co ("+summary+")", 0, map[string]string{"https://a.co": summary})
+		assert.Empty(t, m.ghosts())
+	})
+
+	t.Run("present further along the line", func(t *testing.T) {
+		// Where shortening leaves it: the bracketed host sits in between.
+		m := previewModel("https://a.co [example.com] ("+summary+")", 0,
+			map[string]string{"https://a.co": summary})
+		assert.Empty(t, m.ghosts())
+	})
+
+	t.Run("present with edited spacing", func(t *testing.T) {
+		m := previewModel("https://a.co("+summary+")", 0, map[string]string{"https://a.co": summary})
+		assert.Empty(t, m.ghosts())
+	})
+
+	t.Run("absent, so still offered", func(t *testing.T) {
+		m := previewModel("https://a.co (Something Else)", 0, map[string]string{"https://a.co": summary})
+		require.Len(t, m.ghosts(), 1)
+		assert.Contains(t, m.ghosts()[0].text, summary)
+	})
+
+	t.Run("a placeholder is not repeated either", func(t *testing.T) {
+		m := previewModel("https://a.co ("+noPreviewText+")", 0, map[string]string{"https://a.co": ""})
+		assert.Empty(t, m.ghosts(), "the placeholder text is already in the line")
+	})
 }
 
 func TestInputURLSpans(t *testing.T) {
