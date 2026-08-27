@@ -9,11 +9,32 @@ package teebuf
 import (
 	"os"
 	"sync"
+	"time"
 )
 
 // DefaultTail is the retained tail size. Big enough for many full frames at
 // typical terminal sizes; small enough to be an unremarkable memory cost.
 const DefaultTail = 256 * 1024
+
+// maxWriteRecords bounds the retained write pattern. Each record is a few
+// bytes, and a session that exceeds this has long since wrapped the byte ring
+// too.
+const maxWriteRecords = 8192
+
+// WriteRecord is one Write call: how far into the session it happened and how
+// many bytes it carried.
+//
+// The boundaries matter as much as the bytes. The renderer emits one write per
+// frame, and a replay that re-slices the same bytes at different offsets is a
+// different stimulus to anything downstream that syncs per frame — mosh's
+// state-sync protocol above all, which coalesces by write. A replay chunked at
+// a fixed size delivers every byte faithfully and still fails to reproduce a
+// frame-boundary-sensitive fault, which is exactly what happened before this
+// was recorded.
+type WriteRecord struct {
+	At time.Duration // since the first write
+	N  int           // bytes in this write
+}
 
 // Writer wraps a terminal output file, forwarding writes unchanged while
 // keeping the most recent Write bytes in a fixed-size ring.
@@ -33,6 +54,10 @@ type Writer struct {
 	full   bool   // ring has wrapped at least once
 	writes uint64 // total Write calls forwarded
 	bytes  uint64 // total bytes forwarded
+
+	start   time.Time     // first write, the origin for WriteRecord.At
+	records []WriteRecord // write pattern, oldest first, capped
+	dropped int           // records discarded once the cap was reached
 }
 
 // New wraps f (typically os.Stdout) retaining a DefaultTail-sized tail.
@@ -56,6 +81,17 @@ func (w *Writer) record(p []byte) {
 	defer w.mu.Unlock()
 	w.writes++
 	w.bytes += uint64(len(p))
+	now := time.Now()
+	if w.start.IsZero() {
+		w.start = now
+	}
+	if len(w.records) >= maxWriteRecords {
+		// Drop the oldest, matching the byte ring: what survives is the tail.
+		copy(w.records, w.records[1:])
+		w.records = w.records[:len(w.records)-1]
+		w.dropped++
+	}
+	w.records = append(w.records, WriteRecord{At: now.Sub(w.start), N: len(p)})
 	// Only the last len(ring) bytes of p can survive anyway.
 	if len(p) > len(w.ring) {
 		p = p[len(p)-len(w.ring):]
@@ -81,6 +117,18 @@ func (w *Writer) Written() (writes, bytes uint64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.writes, w.bytes
+}
+
+// Writes returns the retained write pattern, oldest first, and how many
+// records were dropped to stay within the cap.
+//
+// A replay that honours these reproduces the renderer's own frame boundaries
+// and pacing; one that does not is delivering the same bytes as a different
+// stimulus.
+func (w *Writer) Writes() ([]WriteRecord, int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]WriteRecord(nil), w.records...), w.dropped
 }
 
 // Tail returns a copy of the retained output tail, oldest bytes first.

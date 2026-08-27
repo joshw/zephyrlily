@@ -31,22 +31,53 @@ The renderer edits the input line using insert mode (IRM, `ESC[4h` / `ESC[4l`)
 a byte stream and is the shape of the symptom: one edit displacing several
 characters.
 
+## What the first replay attempt showed
+
+Replaying the bytes over the same iTerm2 -> mosh -> screen path that fails
+live **did not reproduce it**. The input line came out complete.
+
+That is informative rather than disappointing. The bytes were delivered
+byte-for-byte, so the fault does not live in the byte sequence alone: it
+depends on something the capture was not preserving. The most likely candidate,
+and the one now fixed, is the write boundaries. The renderer emits one write
+per frame -- that session was **10K in 84 writes**, ~124 bytes each -- while the
+replay sliced at a fixed 40 bytes, turning 84 writes into 261 and splitting
+frames apart. Anything downstream that syncs per frame, and mosh's state-sync
+protocol most of all, coalesces on exactly those boundaries.
+
+`%debug snapshot` now records the write pattern (`ms,bytes` per write) and
+`replay.sh` reproduces it. **The bundled `shrink-capture.bin` predates that and
+has no `.writes` file**, so it replays as fixed chunks and is not expected to
+reproduce. Take a fresh snapshot to get a faithful one.
+
 ## Running it
 
-Resize the window to **exactly 80x25** — the capture is a recording of an 80x25
-session, and at any other size every absolute cursor move lands somewhere else
-and the result means nothing. The script checks and refuses otherwise.
+Capture a fresh failure, then extract and replay:
 
 ```sh
-./replay.sh
+# on the machine running zlily: reproduce, then press M-x (not the command --
+# it would clear the input line), before resizing or pressing C-l
+./extract.py ~/zlily-debug-YYYYMMDD-HHMMSS.txt /tmp/repro
+cd /tmp/repro && /path/to/replay.sh capture.bin
 ```
+
+`extract.py` writes `capture.bin` and `capture.bin.writes`. If it warns that
+there is no usable write pattern, the snapshot came from a build before that
+was recorded and the replay will not be faithful.
+
+
+
+Either way, resize the window to **exactly 80x25** — the capture is a recording
+of an 80x25 session, and at any other size every absolute cursor move lands
+somewhere else and the result means nothing. The script checks and refuses
+otherwise.
 
 Watch the bottom line. It should read 72 letters (`abcdefghijkl` six times)
 followed by `AAABBB`, 78 characters in all. Anything shorter, or with gaps, is
 the bug.
 
-No zlily, no lily server, and no typing required: this is a recording of the
-real failing session's terminal output.
+No zlily, no lily server, and no typing required: this is a recording of a real
+failing session's terminal output.
 
 ## The matrix worth running
 

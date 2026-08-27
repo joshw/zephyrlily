@@ -27,12 +27,20 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 	"github.com/joshw/zephyrlily/internal/cmdarg"
+	"github.com/joshw/zephyrlily/internal/tui/teebuf"
 )
 
 // RendererTap provides the tail of raw bytes written to the terminal. It is
 // implemented by teebuf.Writer; a nil tap simply omits the byte-tail section.
 type RendererTap interface {
 	Tail() []byte
+}
+
+// writePatternTap is the optional half of RendererTap: where the writes fell.
+// Optional so that a tap supplying only bytes (the tests') still satisfies
+// RendererTap.
+type writePatternTap interface {
+	Writes() ([]teebuf.WriteRecord, int)
 }
 
 // WithRendererTap returns the model with the renderer output tap attached.
@@ -385,6 +393,29 @@ func buildSnapshot(m Model, rendererTail []byte) string {
 	section("rendered frame (quoted lines)")
 	for _, line := range strings.Split(m.viewContent(), "\n") {
 		fmt.Fprintf(&b, "%s\n", strconv.Quote(line))
+	}
+
+	// Where the renderer's writes fell, and when. Replaying the bytes without
+	// this re-slices them at different offsets, which is a different stimulus
+	// to anything downstream that syncs per frame — and a replay chunked at a
+	// fixed size has already been observed to deliver every byte faithfully
+	// and still not reproduce the fault.
+	section("renderer write pattern (ms,bytes per write; oldest first)")
+	if tap, ok := m.rendererTap.(writePatternTap); ok && m.rendererTap != nil {
+		recs, dropped := tap.Writes()
+		if dropped > 0 {
+			fmt.Fprintf(&b, "(%d earlier writes dropped; the byte tail is correspondingly partial)\n", dropped)
+		}
+		var total int
+		for _, r := range recs {
+			total += r.N
+		}
+		fmt.Fprintf(&b, "writes=%d bytes=%d\n", len(recs), total)
+		for _, r := range recs {
+			fmt.Fprintf(&b, "%d,%d\n", r.At.Milliseconds(), r.N)
+		}
+	} else {
+		b.WriteString("(tap does not record write boundaries)\n")
 	}
 
 	section("renderer output tail (base64)")
