@@ -225,6 +225,17 @@ type Model struct {
 	// run at most once per process: each extra chain would live forever.
 	seenLoopStarted bool
 
+	// cursorReport is the terminal's own answer to a cursor-position query
+	// (DSR/CPR), recorded so %debug snapshot can print where the terminal
+	// thinks the cursor is rather than only where this app thinks it left it.
+	cursorReport cursorReport
+
+	// snapshotHardcopy holds GNU screen's dump of the live display for the
+	// snapshot currently being assembled, captured before the pre-snapshot
+	// repaint; snapshotHardcopyErr is why there is none.
+	snapshotHardcopy    string
+	snapshotHardcopyErr string
+
 	// forceRedraw requests a full repaint (tea.ClearScreen) after the current
 	// Update call. Set by maybeResizeViewport when the input area shrinks
 	// (viewport grows): confirmed (via forensic replay of a real debug
@@ -911,6 +922,25 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case snapshotCaptureMsg:
 		return m, m.captureSnapshot(msg.path)
+
+	case snapshotHardcopyMsg:
+		// The terminal has been measured; now repaint and capture our own side.
+		m.snapshotHardcopy = msg.text
+		if msg.err != nil {
+			m.snapshotHardcopyErr = msg.err.Error()
+		}
+		return m, tea.Sequence(
+			func() tea.Msg { return tea.ClearScreen() },
+			tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
+				return snapshotCaptureMsg{path: msg.path}
+			}),
+		)
+
+	case tea.CursorPositionMsg:
+		// Answer to a cursor-position query. Only %debug snapshot asks, so this
+		// is cheap to keep around and is read while assembling the snapshot.
+		m.cursorReport = cursorReport{x: msg.X, y: msg.Y, at: time.Now(), ok: true}
+		return m, nil
 
 	case snapshotResultMsg:
 		if msg.err != nil {

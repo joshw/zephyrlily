@@ -12,6 +12,7 @@ package ui
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/term"
 	"github.com/joshw/zephyrlily/internal/cmdarg"
 )
 
@@ -144,6 +146,81 @@ func screenVersion() (string, bool) {
 	return line, true
 }
 
+// ttySize reports the terminal size as the kernel has it, which is not
+// necessarily the size the model believes.
+//
+// The model's width/height come from the resize events bubbletea delivers. If
+// one is ever missed — a SIGWINCH lost between screen, ssh and this process —
+// the app keeps laying out for a size the terminal no longer has, and every
+// row it addresses is off by the difference. That failure is invisible from
+// inside the model, which is exactly why the snapshot has to ask the kernel
+// separately rather than print its own belief twice.
+func ttySize() (w, h int, err error) {
+	return term.GetSize(os.Stdout.Fd())
+}
+
+// errNotInScreen reports that there is no screen session to ask.
+var errNotInScreen = errors.New("not running inside GNU screen (STY unset)")
+
+// screenHardcopy asks GNU screen to dump what is actually on its display.
+//
+// This is the one piece of evidence every previous display-bug investigation
+// lacked. A snapshot records what this app *sent*; replaying those bytes only
+// ever shows what a correct terminal *would* do with them. Neither says what
+// the user was looking at, so every round ended at "the bytes look fine" with
+// the actual divergence unmeasured. screen keeps its own model of the display
+// and will write it to a file on request, which closes that gap on exactly the
+// setup where these bugs keep happening.
+//
+// It must run BEFORE the snapshot's repaint. The repaint is what fixes the
+// corruption; capturing after it would faithfully record a healthy screen
+// every time. See the ordering note on the %debug snapshot command.
+func screenHardcopy() (string, error) {
+	sty := os.Getenv("STY")
+	if sty == "" {
+		return "", errNotInScreen
+	}
+
+	// A unique name, reserved and then removed: screen creates the file
+	// itself, so polling for its existence is what tells us the command was
+	// carried out rather than silently dropped.
+	f, err := os.CreateTemp("", "zlily-hardcopy-*.txt")
+	if err != nil {
+		return "", fmt.Errorf("temp file: %w", err)
+	}
+	path := f.Name()
+	_ = f.Close()
+	_ = os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	args := []string{"-S", sty}
+	// screen exports the window number; naming it explicitly means the dump is
+	// of this app's own window rather than whichever one happens to be current.
+	if win := os.Getenv("WINDOW"); win != "" {
+		args = append(args, "-p", win)
+	}
+	args = append(args, "-X", "hardcopy", path)
+
+	out, err := exec.CommandContext(ctx, "screen", args...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("screen -X hardcopy: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+
+	// -X returns as soon as the command is queued, so the file appears a moment
+	// later, if at all.
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(path); err == nil {
+			return string(b), nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return "", fmt.Errorf("screen accepted the command but wrote no file within 1.5s")
+}
+
 // ── snapshot assembly ─────────────────────────────────────────────────────────
 
 // buildSnapshot renders the whole diagnostic snapshot as one text document.
@@ -184,6 +261,18 @@ func buildSnapshot(m Model, rendererTail []byte) string {
 
 	section("geometry")
 	fmt.Fprintf(&b, "width=%d\nheight=%d\n", m.width, m.height)
+	// The kernel's size next to the model's. These must agree; if they do not,
+	// the app has been laying out for a terminal that is not there, and every
+	// row it addressed was off by the difference — which is the first thing to
+	// check on any "it drew in the wrong place" report.
+	if tw, th, err := ttySize(); err != nil {
+		fmt.Fprintf(&b, "tty size=<unavailable: %v>\n", err)
+	} else if tw != m.width || th != m.height {
+		fmt.Fprintf(&b, "tty size=%dx%d  *** MISMATCH: model believes %dx%d ***\n",
+			tw, th, m.width, m.height)
+	} else {
+		fmt.Fprintf(&b, "tty size=%dx%d (agrees with the model)\n", tw, th)
+	}
 	fmt.Fprintf(&b, "viewport width=%d height=%d yoffset=%d totallines=%d atbottom=%v\n",
 		m.viewport.Width(), m.viewport.Height(), m.viewport.YOffset(),
 		m.viewport.TotalLineCount(), m.viewport.AtBottom())
@@ -193,6 +282,19 @@ func buildSnapshot(m Model, rendererTail []byte) string {
 	}
 	fmt.Fprintf(&b, "inputheight=%d firstlinewidth=%d prompt=%q debugmode=%v\n",
 		m.calculateInputHeight(), m.inputFirstLineWidth(), m.inputPromptText(), m.debugMode)
+	// Where the terminal itself says the cursor is, asked before the
+	// pre-snapshot repaint. The renderer tracks the cursor by dead reckoning
+	// from the sequences it emits; if the terminal disagrees, every subsequent
+	// relative movement lands somewhere other than intended, which is how a
+	// display gets stuck drawing over one row.
+	switch {
+	case !m.cursorReport.ok:
+		b.WriteString("cursor report=<no answer from terminal>\n")
+	default:
+		fmt.Fprintf(&b, "cursor report=row %d col %d (1-based; measured %s before this snapshot)\n",
+			m.cursorReport.y+1, m.cursorReport.x+1,
+			time.Since(m.cursorReport.at).Round(time.Millisecond))
+	}
 
 	section("input state")
 	fmt.Fprintf(&b, "inputvalue=%q\n", m.inputValue)
@@ -243,6 +345,23 @@ func buildSnapshot(m Model, rendererTail []byte) string {
 		it := m.output[i]
 		fmt.Fprintf(&b, "item[%d] type=%s id=%d cachedlines=%d cacheepoch=%d\n",
 			i, it.Type, it.ID, len(it.cache), it.cacheEpoch)
+	}
+
+	// What the terminal had on screen, captured before this snapshot's repaint.
+	// It sits immediately above the rendered frame on purpose: the two are the
+	// same screen as the terminal has it and as this app believes it, and any
+	// display bug is a difference between them.
+	section("screen hardcopy (what GNU screen has on its display, pre-repaint)")
+	switch {
+	case m.snapshotHardcopy != "":
+		b.WriteString(m.snapshotHardcopy)
+		if !strings.HasSuffix(m.snapshotHardcopy, "\n") {
+			b.WriteString("\n")
+		}
+	case m.snapshotHardcopyErr != "":
+		fmt.Fprintf(&b, "(unavailable: %s)\n", m.snapshotHardcopyErr)
+	default:
+		b.WriteString("(not captured)\n")
 	}
 
 	section("rendered frame (quoted lines)")
@@ -320,12 +439,47 @@ func (m Model) handleDebugCommand(fields []string) (Model, []string, tea.Cmd) {
 	}
 
 	m.recordEvent("snapshot requested path=%s", path)
+
+	// Order matters here, and it is the opposite of what looks natural.
+	//
+	// Everything that measures the TERMINAL runs first, while the screen is
+	// still in whatever state prompted the snapshot: the cursor-position query
+	// and screen's hardcopy of the live display. Only then comes the repaint,
+	// and only after that is the model's own frame captured.
+	//
+	// Repainting first would be tidier and would destroy the evidence. A full
+	// repaint is precisely the thing that clears this class of corruption — it
+	// is how the user recovers from it — so a hardcopy taken afterwards would
+	// faithfully record a healthy screen on every single report, and the one
+	// measurement that distinguishes "the terminal disagrees with us" from "our
+	// bytes were wrong" would always come back clean.
+	//
+	// The cursor query is asynchronous: it goes out now and its answer arrives
+	// as a tea.CursorPositionMsg while the hardcopy is still running, which is
+	// what gives it time to land before anything is written.
+	m.cursorReport = cursorReport{}
+	m.snapshotHardcopy, m.snapshotHardcopyErr = "", ""
 	return m, nil, tea.Sequence(
-		func() tea.Msg { return tea.ClearScreen() },
-		tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
-			return snapshotCaptureMsg{path: path}
-		}),
+		func() tea.Msg { return tea.RequestCursorPosition() },
+		hardcopyCmd(path),
 	)
+}
+
+// hardcopyCmd captures the live display off the UI goroutine — it shells out to
+// screen and waits for a file, neither of which belongs in Update.
+func hardcopyCmd(path string) tea.Cmd {
+	return func() tea.Msg {
+		text, err := screenHardcopy()
+		return snapshotHardcopyMsg{path: path, text: text, err: err}
+	}
+}
+
+// snapshotHardcopyMsg carries the pre-repaint display dump back into Update,
+// which then repaints and captures the model's own state.
+type snapshotHardcopyMsg struct {
+	path string
+	text string
+	err  error
 }
 
 // captureSnapshot assembles the snapshot from the current model (called from
@@ -352,4 +506,13 @@ type snapshotCaptureMsg struct{ path string }
 type snapshotResultMsg struct {
 	path string
 	err  error
+}
+
+// cursorReport is the terminal's answer to a cursor-position query, with when
+// it was measured — the age matters, because a report taken after a repaint
+// says nothing about the state that prompted the snapshot.
+type cursorReport struct {
+	x, y int // 0-based, as bubbletea reports them
+	at   time.Time
+	ok   bool
 }

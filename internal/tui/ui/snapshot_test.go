@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,4 +162,129 @@ func extractBase64Section(t *testing.T, snap string) string {
 		t.Fatal("unterminated renderer tail section")
 	}
 	return strings.ReplaceAll(strings.TrimSpace(body), "\n", "")
+}
+
+// The kernel's terminal size is printed next to the model's, and a
+// disagreement is called out rather than left for the reader to spot: a size
+// desync means every row the app addressed was off by the difference.
+func TestSnapshotReportsTTYSizeAgainstModel(t *testing.T) {
+	m := newSnapshotModel(t)
+
+	// Under `go test` stdout is not a terminal, so the size is unavailable —
+	// which must be said plainly rather than silently omitted or guessed.
+	snap := buildSnapshot(m, nil)
+	if !strings.Contains(snap, "tty size=") {
+		t.Fatal("geometry section should always report the tty size, even when it cannot be read")
+	}
+	if !strings.Contains(snap, "unavailable") {
+		t.Errorf("with no tty, the size line should say so; got:\n%s", geometryOf(t, snap))
+	}
+
+	// The mismatch wording is what a reader scans for, so pin it.
+	for _, want := range []string{"MISMATCH", "model believes"} {
+		if !strings.Contains(mismatchTemplate, want) {
+			t.Errorf("the mismatch line should contain %q", want)
+		}
+	}
+}
+
+// mismatchTemplate mirrors the format string used for a size disagreement, so
+// the test fails if the wording a reader greps for is changed.
+const mismatchTemplate = "tty size=%dx%d  *** MISMATCH: model believes %dx%d ***\n"
+
+func geometryOf(t *testing.T, snap string) string {
+	t.Helper()
+	i := strings.Index(snap, "== geometry ==")
+	if i < 0 {
+		return snap
+	}
+	rest := snap[i:]
+	if j := strings.Index(rest, "\n== "); j > 0 {
+		return rest[:j]
+	}
+	return rest
+}
+
+func TestSnapshotReportsCursorPosition(t *testing.T) {
+	t.Run("no answer from the terminal", func(t *testing.T) {
+		m := newSnapshotModel(t)
+		snap := buildSnapshot(m, nil)
+		if !strings.Contains(snap, "cursor report=<no answer from terminal>") {
+			t.Errorf("an unanswered query should be reported, not omitted:\n%s", geometryOf(t, snap))
+		}
+	})
+
+	t.Run("answered", func(t *testing.T) {
+		m := newSnapshotModel(t)
+		upd, _ := m.update(tea.CursorPositionMsg{X: 4, Y: 22})
+		m = upd.(Model)
+		if !m.cursorReport.ok {
+			t.Fatal("a CursorPositionMsg should be recorded")
+		}
+		snap := buildSnapshot(m, nil)
+		// Reported 1-based, because that is how the terminal's own escape
+		// sequences count and how every other row/col in a bug report reads.
+		if !strings.Contains(snap, "cursor report=row 23 col 5") {
+			t.Errorf("cursor should be reported 1-based; got:\n%s", geometryOf(t, snap))
+		}
+	})
+}
+
+func TestSnapshotIncludesScreenHardcopy(t *testing.T) {
+	t.Run("captured", func(t *testing.T) {
+		m := newSnapshotModel(t)
+		upd, _ := m.update(snapshotHardcopyMsg{path: "/tmp/x", text: "row one\nrow two\n"})
+		m = upd.(Model)
+		snap := buildSnapshot(m, nil)
+		if !strings.Contains(snap, "== screen hardcopy") {
+			t.Fatal("snapshot should carry a hardcopy section")
+		}
+		if !strings.Contains(snap, "row one\nrow two\n") {
+			t.Error("the hardcopy text should appear verbatim")
+		}
+	})
+
+	t.Run("unavailable reasons are recorded, not swallowed", func(t *testing.T) {
+		m := newSnapshotModel(t)
+		upd, _ := m.update(snapshotHardcopyMsg{path: "/tmp/x", err: errNotInScreen})
+		m = upd.(Model)
+		snap := buildSnapshot(m, nil)
+		if !strings.Contains(snap, "unavailable") || !strings.Contains(snap, "STY unset") {
+			t.Errorf("why there is no hardcopy matters as much as having one; got:\n%s", snap)
+		}
+	})
+}
+
+// screenHardcopy must not shell out at all when there is no screen session to
+// ask — the snapshot path runs on a user keystroke.
+func TestScreenHardcopyRequiresScreen(t *testing.T) {
+	t.Setenv("STY", "")
+	if _, err := screenHardcopy(); !errors.Is(err, errNotInScreen) {
+		t.Errorf("err = %v, want errNotInScreen", err)
+	}
+}
+
+// The terminal is measured BEFORE the repaint. Capturing after it would record
+// a healthy screen every time, because the repaint is what clears the
+// corruption a snapshot is taken to document.
+func TestSnapshotMeasuresTerminalBeforeRepainting(t *testing.T) {
+	m := newSnapshotModel(t)
+	m.cursorReport = cursorReport{x: 1, y: 1, ok: true}
+	m.snapshotHardcopy = "stale from a previous snapshot"
+
+	m2, out, cmd := m.handleDebugCommand([]string{"%debug", "snapshot", filepath.Join(t.TempDir(), "s.txt")})
+	if cmd == nil {
+		t.Fatal("the command should start the capture")
+	}
+	if out != nil {
+		t.Errorf("no synchronous output expected, got %v", out)
+	}
+	// State from any previous snapshot is cleared, so a stale hardcopy or
+	// cursor report can never be presented as this snapshot's measurement.
+	if m2.cursorReport.ok {
+		t.Error("a previous cursor report must not survive into a new snapshot")
+	}
+	if m2.snapshotHardcopy != "" || m2.snapshotHardcopyErr != "" {
+		t.Error("a previous hardcopy must not survive into a new snapshot")
+	}
 }
