@@ -424,3 +424,27 @@ func TestCompareHardcopyCatchesUnerasedRow(t *testing.T) {
 		t.Errorf("the stale text should be shown; got:\n%s", got)
 	}
 }
+
+// Taken verbatim from the 17:34 capture. The two sides spell the status bar's
+// padding differently — zlily's frame in UTF-8, screen's hardcopy as bare 0xA0
+// bytes — and a normalisation that knew only the first reported a mismatch on
+// a screen that agreed exactly, because ansi.Strip then dropped the bare bytes
+// as invalid UTF-8 and the padding vanished rather than differing.
+func TestCompareHardcopyNBSPSpellings(t *testing.T) {
+	const pad = 58
+	fromScreen := "Josh" + strings.Repeat("\xa0", pad) + "RPI | here | 17:34\n"
+	modelFrame := "Josh" + strings.Repeat(" ", pad) + "RPI | here | 17:34\n"
+
+	rows := hardcopyRows(fromScreen)
+	if strings.Contains(rows[0], "JoshRPI") {
+		t.Fatalf("bare 0xA0 padding was dropped instead of becoming spaces: %q", rows[0])
+	}
+	if want := hardcopyRows(modelFrame)[0]; rows[0] != want {
+		t.Errorf("the two spellings should normalise alike:\n  screen: %q\n  zlily : %q", rows[0], want)
+	}
+
+	got := strings.Join(compareHardcopy(fromScreen, modelFrame, 1), "\n")
+	if !strings.Contains(got, "MATCH") || strings.Contains(got, "MISMATCH") {
+		t.Errorf("identical padding must not be reported as a display fault, got:\n%s", got)
+	}
+}
