@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 )
 
@@ -286,5 +287,140 @@ func TestSnapshotMeasuresTerminalBeforeRepainting(t *testing.T) {
 	}
 	if m2.snapshotHardcopy != "" || m2.snapshotHardcopyErr != "" {
 		t.Error("a previous hardcopy must not survive into a new snapshot")
+	}
+}
+
+// The snapshot states the verdict itself. Making a reader diff 25 rows by eye
+// is exactly the step every previous investigation got wrong.
+func TestCompareHardcopy(t *testing.T) {
+	frame := "alpha\nbravo\ncharlie\nstatus bar\n"
+
+	t.Run("agreement", func(t *testing.T) {
+		got := strings.Join(compareHardcopy(frame, frame, 3), "\n")
+		if !strings.Contains(got, "MATCH") || strings.Contains(got, "MISMATCH") {
+			t.Errorf("identical screens should report a match, got:\n%s", got)
+		}
+	})
+
+	t.Run("NBSP padding and trailing blanks do not count as disagreement", func(t *testing.T) {
+		// The status bar pads with U+00A0; screen writes it back as a space.
+		modelFrame := "Josh   RPI | here   \n"
+		fromScreen := "Josh   RPI | here\n"
+		got := strings.Join(compareHardcopy(fromScreen, modelFrame, 1), "\n")
+		if !strings.Contains(got, "MATCH") || strings.Contains(got, "MISMATCH") {
+			t.Errorf("padding differences are not display faults, got:\n%s", got)
+		}
+	})
+
+	t.Run("a display one frame behind is reported as timing, not a fault", func(t *testing.T) {
+		// Exactly what a healthy snapshot looks like: the command's own echo
+		// scrolled the model on by a line before the terminal caught up. Only
+		// the scrolling region moves — the status bar is drawn in place.
+		behind := "zero\nalpha\nbravo\nstatus bar\n"
+		got := strings.Join(compareHardcopy(behind, frame, 3), "\n")
+		if !strings.Contains(got, "MATCH") || !strings.Contains(got, "ordinary frame timing") {
+			t.Errorf("a uniform shift should be identified as timing, got:\n%s", got)
+		}
+		if strings.Contains(got, "MISMATCH") {
+			t.Errorf("a shift is not a mismatch, got:\n%s", got)
+		}
+	})
+
+	t.Run("rows differing in place are a real mismatch", func(t *testing.T) {
+		// The signature of the reported bug: one row stale while the rest agree.
+		corrupt := "alpha\nbravo\nSTALE LINE\nstatus bar\n"
+		got := strings.Join(compareHardcopy(corrupt, frame, 3), "\n")
+		if !strings.Contains(got, "MISMATCH") {
+			t.Fatalf("in-place disagreement must be flagged, got:\n%s", got)
+		}
+		for _, want := range []string{"row 2", "STALE LINE", "charlie"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("the report should show %q; got:\n%s", want, got)
+			}
+		}
+	})
+}
+
+// The comparison rides on the two halves describing the same instant, so the
+// probe frame must be captured on the probe message rather than at the end.
+func TestSnapshotCapturesFrameAlongsideHardcopy(t *testing.T) {
+	m := newSnapshotModel(t)
+	m.inputValue = "typed but not sent"
+
+	upd, cmd := m.update(snapshotProbeMsg{path: "/tmp/x"})
+	m = upd.(Model)
+	if cmd == nil {
+		t.Fatal("the probe should go on to capture the hardcopy")
+	}
+	if m.snapshotProbeFrame == "" {
+		t.Fatal("the probe should record the frame believed to be on screen")
+	}
+	if !strings.Contains(ansi.Strip(m.snapshotProbeFrame), "typed but not sent") {
+		t.Error("the probe frame should be the live frame, not a blank one")
+	}
+
+	// And it reaches the file as a verdict rather than as raw rows to eyeball.
+	m.snapshotHardcopy = m.snapshotProbeFrame
+	if !strings.Contains(buildSnapshot(m, nil), "MATCH") {
+		t.Error("a snapshot with an agreeing hardcopy should say so")
+	}
+}
+
+// The real 17:23 capture: a healthy screen whose scrollback was one line behind
+// the model because the snapshot command's own echo had not yet been drawn.
+// A whole-screen shift cannot describe that — the status bar does not scroll —
+// so this is the case that must not be reported as a display fault.
+func TestCompareHardcopyHealthyScrollbackLag(t *testing.T) {
+	// 4 scrolling rows, then a status bar and an input line.
+	terminal := strings.Join([]string{
+		"older line", "line A", "line B", "line C",
+		"Josh    RPI | here | 17:23",
+		"",
+	}, "\n")
+	model := strings.Join([]string{
+		"line A", "line B", "line C", "line D",
+		"Josh    RPI | here | 17:23",
+		"",
+	}, "\n")
+
+	got := strings.Join(compareHardcopy(terminal, model, 4), "\n")
+	if strings.Contains(got, "MISMATCH") {
+		t.Errorf("a scrollback lag with an agreeing status bar is healthy; got:\n%s", got)
+	}
+	if !strings.Contains(got, "status bar and input line agree") {
+		t.Errorf("the verdict should say the fixed rows agree; got:\n%s", got)
+	}
+}
+
+// A stale row in the fixed region is never timing — it is the signature of the
+// reported bug and must be called out even when the scrollback lines up.
+func TestCompareHardcopyFlagsFixedRegionDrift(t *testing.T) {
+	terminal := strings.Join([]string{"a", "b", "Josh    RPI | here | 14:54", ""}, "\n")
+	model := strings.Join([]string{"a", "b", "Josh    RPI | here | 14:55", ""}, "\n")
+
+	got := strings.Join(compareHardcopy(terminal, model, 2), "\n")
+	if !strings.Contains(got, "MISMATCH") {
+		t.Fatalf("a stale status bar must be flagged; got:\n%s", got)
+	}
+	if !strings.Contains(got, "drawn in place") {
+		t.Errorf("the verdict should explain why that region cannot be timing; got:\n%s", got)
+	}
+	if !strings.Contains(got, "row 2") {
+		t.Errorf("the differing row should be reported with its absolute number; got:\n%s", got)
+	}
+}
+
+// Stale text on a row the app believes it left blank is the bug's signature.
+// Trimming trailing blanks before comparing would hide exactly that.
+func TestCompareHardcopyCatchesUnerasedRow(t *testing.T) {
+	terminal := "a\nb\nJosh    RPI\nleftover text nobody erased\n"
+	model := "a\nb\nJosh    RPI\n\n"
+
+	got := strings.Join(compareHardcopy(terminal, model, 2), "\n")
+	if !strings.Contains(got, "MISMATCH") {
+		t.Fatalf("stale content on a blank row must be flagged; got:\n%s", got)
+	}
+	if !strings.Contains(got, "leftover text nobody erased") {
+		t.Errorf("the stale text should be shown; got:\n%s", got)
 	}
 }

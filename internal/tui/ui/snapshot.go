@@ -24,6 +24,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 	"github.com/joshw/zephyrlily/internal/cmdarg"
 )
@@ -364,6 +365,18 @@ func buildSnapshot(m Model, rendererTail []byte) string {
 		b.WriteString("(not captured)\n")
 	}
 
+	section("hardcopy vs what zlily drew")
+	switch {
+	case m.snapshotHardcopy == "":
+		b.WriteString("(no hardcopy to compare)\n")
+	case m.snapshotProbeFrame == "":
+		b.WriteString("(no frame captured alongside the hardcopy)\n")
+	default:
+		for _, line := range compareHardcopy(m.snapshotHardcopy, m.snapshotProbeFrame, m.viewport.Height()) {
+			b.WriteString(line + "\n")
+		}
+	}
+
 	section("rendered frame (quoted lines)")
 	for _, line := range strings.Split(m.viewContent(), "\n") {
 		fmt.Fprintf(&b, "%s\n", strconv.Quote(line))
@@ -458,12 +471,27 @@ func (m Model) handleDebugCommand(fields []string) (Model, []string, tea.Cmd) {
 	// as a tea.CursorPositionMsg while the hardcopy is still running, which is
 	// what gives it time to land before anything is written.
 	m.cursorReport = cursorReport{}
-	m.snapshotHardcopy, m.snapshotHardcopyErr = "", ""
+	m.snapshotHardcopy, m.snapshotHardcopyErr, m.snapshotProbeFrame = "", "", ""
 	return m, nil, tea.Sequence(
 		func() tea.Msg { return tea.RequestCursorPosition() },
-		hardcopyCmd(path),
+		// A short pause before measuring, so that the frame this very command
+		// caused — the echoed "%debug snapshot" line, the cleared input — has
+		// reached the terminal. Without it the hardcopy shows the screen as it
+		// was one frame ago while the model has already moved on, and the two
+		// halves of the comparison describe different instants.
+		//
+		// This is an ordinary frame, not a repaint: it does not clear the
+		// corruption a snapshot exists to capture. Only the ClearScreen further
+		// down does that, which is why it comes after all the measuring.
+		tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg {
+			return snapshotProbeMsg{path: path}
+		}),
 	)
 }
+
+// snapshotProbeMsg fires once the terminal has caught up, to measure it
+// alongside the frame the model believes is showing.
+type snapshotProbeMsg struct{ path string }
 
 // hardcopyCmd captures the live display off the UI goroutine — it shells out to
 // screen and waits for a file, neither of which belongs in Update.
@@ -472,6 +500,125 @@ func hardcopyCmd(path string) tea.Cmd {
 		text, err := screenHardcopy()
 		return snapshotHardcopyMsg{path: path, text: text, err: err}
 	}
+}
+
+// hardcopyRows normalises a screen dump or a rendered frame into comparable
+// rows: no styling, and no NBSP padding (the status bar pads with U+00A0,
+// which screen writes back as a plain space).
+//
+// Genuinely blank rows are kept. Trimming them away would be convenient and
+// would blind the comparison to the exact thing it is looking for: a terminal
+// showing text on a row the app believes it left empty is stale content that
+// was never erased, which is the signature of the bug this instrumentation
+// exists to catch. Only the empty string left over from a trailing newline is
+// dropped, since that is a split artifact rather than a row.
+func hardcopyRows(s string) []string {
+	lines := strings.Split(ansi.Strip(s), "\n")
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, strings.TrimRight(strings.ReplaceAll(line, "\u00a0", " "), " \t"))
+	}
+	return out
+}
+
+// padRows lengthens a to n rows with blanks, so that a row present on one side
+// and absent on the other is compared rather than quietly skipped.
+func padRows(a []string, n int) []string {
+	for len(a) < n {
+		a = append(a, "")
+	}
+	return a
+}
+
+// compareHardcopy reports whether the terminal's display agrees with the frame
+// the app believed was showing, and how it differs when it does not.
+//
+// The verdict is the point of the whole exercise, so the snapshot states it
+// rather than leaving a reader to diff 25 rows by eye.
+//
+// The screen is two regions and they fail differently, so they are judged
+// separately. The top scrollRows rows scroll, and a display a line or two
+// behind the model there is ordinary frame timing — a message that landed
+// between the two measurements shifts every row uniformly and means nothing is
+// wrong. The rows below (status bar, input area) are drawn in place and never
+// scroll, so any difference there is real. Judging the whole screen under one
+// shift, as a first cut of this did, finds no shift that fits and cries
+// mismatch on a perfectly healthy capture.
+func compareHardcopy(hardcopy, frame string, scrollRows int) []string {
+	hc, want := hardcopyRows(hardcopy), hardcopyRows(frame)
+	if len(hc) == 0 || len(want) == 0 {
+		return []string{"(nothing to compare)"}
+	}
+	// Equal length, so every row position is judged on both sides.
+	n := max(len(hc), len(want))
+	hc, want = padRows(hc, n), padRows(want, n)
+	if scrollRows <= 0 || scrollRows > len(hc) || scrollRows > len(want) {
+		// Geometry we cannot trust: fall back to a straight in-place diff.
+		scrollRows = min(len(hc), len(want))
+	}
+
+	fixedDiffs := rowDiffs(hc[scrollRows:], want[scrollRows:], 0, scrollRows)
+
+	// Scrolling region: in place first, then a shift of a line or two.
+	shift, scrollDiffs := 0, rowDiffs(hc[:scrollRows], want[:scrollRows], 0, 0)
+	if len(scrollDiffs) > 0 {
+		for _, try := range []int{1, -1, 2, -2} {
+			if d := rowDiffs(hc[:scrollRows], want[:scrollRows], try, 0); len(d) == 0 {
+				shift, scrollDiffs = try, nil
+				break
+			}
+		}
+	}
+
+	if len(scrollDiffs) == 0 && len(fixedDiffs) == 0 {
+		if shift == 0 {
+			return []string{"MATCH - the terminal's display agrees with the frame zlily believed it had drawn."}
+		}
+		return []string{fmt.Sprintf(
+			"MATCH - the scrollback is %+d row(s) out, which is ordinary frame timing rather than a"+
+				" display fault; the status bar and input line agree exactly.", shift)}
+	}
+
+	out := []string{"*** MISMATCH - the terminal's display does not agree with what zlily drew. ***", ""}
+	if len(scrollDiffs) > 0 {
+		out = append(out, "scrolling region (no row offset fits, so this is not timing):")
+		out = append(out, scrollDiffs...)
+	}
+	if len(fixedDiffs) > 0 {
+		// One benign case lands here: the status bar clock ticking over between
+		// the two measurements. It is deliberately not special-cased, because a
+		// status bar showing the wrong time is also exactly what this bug looks
+		// like when it strikes — the corrupted capture that prompted all this
+		// had a status bar stuck a minute behind. Reporting it and letting a
+		// reader judge beats a filter that hides the real thing.
+		out = append(out, "status bar / input area (drawn in place, so any difference here is real):")
+		out = append(out, fixedDiffs...)
+	}
+	return out
+}
+
+// rowDiffs compares two row sets with want offset by shift, describing each row
+// that differs. base is added to reported row numbers so a slice of the screen
+// still reports absolute rows. Rows with no counterpart under the shift are
+// skipped rather than counted as differences.
+func rowDiffs(hc, want []string, shift, base int) []string {
+	var out []string
+	for i := range hc {
+		j := i + shift
+		if j < 0 || j >= len(want) {
+			continue
+		}
+		if hc[i] != want[j] {
+			out = append(out,
+				fmt.Sprintf("  row %d:", base+i),
+				fmt.Sprintf("    terminal: %q", hc[i]),
+				fmt.Sprintf("    zlily   : %q", want[j]))
+		}
+	}
+	return out
 }
 
 // snapshotHardcopyMsg carries the pre-repaint display dump back into Update,

@@ -236,6 +236,12 @@ type Model struct {
 	snapshotHardcopy    string
 	snapshotHardcopyErr string
 
+	// snapshotProbeFrame is the frame the model believed was on screen at the
+	// moment the hardcopy was taken. Comparing the two is the measurement the
+	// whole snapshot exists for, so they must describe the same instant — see
+	// the pause in the %debug snapshot command.
+	snapshotProbeFrame string
+
 	// forceRedraw requests a full repaint (tea.ClearScreen) after the current
 	// Update call. Set by maybeResizeViewport when the input area shrinks
 	// (viewport grows): confirmed (via forensic replay of a real debug
@@ -922,6 +928,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case snapshotCaptureMsg:
 		return m, m.captureSnapshot(msg.path)
+
+	case snapshotProbeMsg:
+		// The terminal has caught up with the frame this command caused. Record
+		// what we believe is showing, then ask screen what is actually showing.
+		m.snapshotProbeFrame = m.viewContent()
+		return m, hardcopyCmd(msg.path)
 
 	case snapshotHardcopyMsg:
 		// The terminal has been measured; now repaint and capture our own side.
