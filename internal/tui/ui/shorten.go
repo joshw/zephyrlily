@@ -83,7 +83,7 @@ func (m Model) maybeShortenHint() Model {
 	m.shortenHintShown = true
 	m.output = append(m.output, OutputItem{Type: "command", Data: []string{
 		"Tip: M-s shortens the first URL before the cursor, keeping the site",
-		"name in brackets after it. See '%help shorten'. (Shown once a session.)",
+		"name in brackets after it. See '%help shorten'.",
 	}})
 	return m.syncViewportContent()
 }
