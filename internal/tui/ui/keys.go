@@ -13,6 +13,7 @@ type KeyMap struct {
 	Suspend   key.Binding
 	Redraw    key.Binding
 	DebugMode key.Binding
+	Snapshot  key.Binding
 	PasteMode key.Binding
 	MouseMode key.Binding
 
@@ -83,6 +84,14 @@ func NewKeyMap() KeyMap {
 		DebugMode: key.NewBinding(
 			key.WithKeys("alt+g"),
 			key.WithHelp("M-g", "toggle debug"),
+		),
+		// A snapshot has to be takeable without typing a command: the input
+		// line's contents are part of what a display bug needs recorded, and
+		// clearing it to type "%debug snapshot" destroys that along with the
+		// screen state the command was going to capture.
+		Snapshot: key.NewBinding(
+			key.WithKeys("alt+x"),
+			key.WithHelp("M-x", "debug snapshot"),
 		),
 		PasteMode: key.NewBinding(
 			key.WithKeys("alt+p"),
@@ -278,6 +287,7 @@ func (k KeyMap) KeyBindingHelp() []string {
 		"  C-d         quit (empty input) / delete forward",
 		"  C-l         redraw screen",
 		"  M-g         toggle debug view",
+		"  M-x         write a debug snapshot (leaves the input line alone)",
 		"  M-p         toggle paste mode",
 		"  M-m         toggle mouse mode (see '%help mouse')",
 		"",

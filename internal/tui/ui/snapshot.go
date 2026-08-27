@@ -469,15 +469,31 @@ func (m Model) handleDebugCommand(fields []string) (Model, []string, tea.Cmd) {
 	path := ""
 	if len(fields) >= 3 {
 		path = fields[2]
-	} else {
-		base := "zlily-debug-" + time.Now().Format("20060102-150405") + ".txt"
-		if home, err := os.UserHomeDir(); err == nil {
-			path = filepath.Join(home, base)
-		} else {
-			path = base
-		}
 	}
+	m, cmd := m.startSnapshot(path)
+	return m, nil, cmd
+}
 
+// defaultSnapshotPath names a snapshot taken without one being given.
+func defaultSnapshotPath() string {
+	base := "zlily-debug-" + time.Now().Format("20060102-150405") + ".txt"
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, base)
+	}
+	return base
+}
+
+// startSnapshot begins a capture, from either %debug snapshot or the M-x key.
+//
+// It deliberately prints nothing and leaves the input line untouched. Both
+// matter: this runs while the display is in whatever broken state prompted it,
+// and appending a line to the scrollback would scroll the very region under
+// suspicion before the terminal has been measured. The only output comes at the
+// end, once the file is written and every measurement is already taken.
+func (m Model) startSnapshot(path string) (Model, tea.Cmd) {
+	if path == "" {
+		path = defaultSnapshotPath()
+	}
 	m.recordEvent("snapshot requested path=%s", path)
 
 	// Order matters here, and it is the opposite of what looks natural.
@@ -499,13 +515,13 @@ func (m Model) handleDebugCommand(fields []string) (Model, []string, tea.Cmd) {
 	// what gives it time to land before anything is written.
 	m.cursorReport = cursorReport{}
 	m.snapshotHardcopy, m.snapshotHardcopyErr, m.snapshotProbeFrame = "", "", ""
-	return m, nil, tea.Sequence(
+	return m, tea.Sequence(
 		func() tea.Msg { return tea.RequestCursorPosition() },
-		// A short pause before measuring, so that the frame this very command
-		// caused — the echoed "%debug snapshot" line, the cleared input — has
-		// reached the terminal. Without it the hardcopy shows the screen as it
-		// was one frame ago while the model has already moved on, and the two
-		// halves of the comparison describe different instants.
+		// A short pause before measuring, so that any frame this very trigger
+		// caused — a command's echoed line and cleared input — has reached the
+		// terminal. Without it the hardcopy shows the screen as it was one
+		// frame ago while the model has already moved on, and the two halves of
+		// the comparison describe different instants.
 		//
 		// This is an ordinary frame, not a repaint: it does not clear the
 		// corruption a snapshot exists to capture. Only the ClearScreen further

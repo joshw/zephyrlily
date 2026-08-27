@@ -428,6 +428,12 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		m.advanceLastSeenID()
 
+	// Capture a snapshot without disturbing anything. Returns early rather
+	// than falling through to inputChanged: the input line is untouched, and
+	// the display must stay exactly as it is until the terminal is measured.
+	case key.Matches(msg, m.keys.Snapshot):
+		return m.startSnapshot("")
+
 	// Mode toggles
 	case key.Matches(msg, m.keys.DebugMode):
 		// Toggling debug halves/restores the viewport width, which rewraps output;

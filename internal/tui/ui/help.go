@@ -12,7 +12,12 @@ var tuiHelp = map[string][]string{
 	"snapshot": {
 		"Write a diagnostic snapshot for bug reports",
 		"",
-		"Usage: %debug snapshot [path]",
+		"Usage: %debug snapshot [path]   (or press M-x)",
+		"",
+		"M-x takes one immediately, without touching the input line. Use it",
+		"when the display goes wrong: typing the command means clearing",
+		"whatever you had typed, and the input line's contents and height are",
+		"part of what a display bug needs recorded.",
 		"",
 		"Writes the TUI's internal state to a file (default:",
 		"~/zlily-debug-<timestamp>.txt): terminal geometry, input-line state,",

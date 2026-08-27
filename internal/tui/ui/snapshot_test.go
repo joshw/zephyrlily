@@ -484,3 +484,112 @@ func TestDebugRedrawToggle(t *testing.T) {
 	assert.True(t, m3.redrawOnShrink, "an unparseable argument must not change the setting")
 	assert.Contains(t, strings.Join(out, "\n"), "Usage:")
 }
+
+// M-x exists because typing "%debug snapshot" costs the input line, and the
+// input line is part of what a display bug needs recorded.
+func TestSnapshotKeyLeavesInputAlone(t *testing.T) {
+	m := newSnapshotModel(t)
+	m.inputValue = "half-typed message with a URL"
+	m.inputCursor = 7
+	before := len(m.output)
+
+	upd, cmd := m.handleNormalKey(tea.KeyPressMsg{Code: 'x', Mod: tea.ModAlt})
+	got := upd.(Model)
+
+	require.NotNil(t, cmd, "M-x should start a capture")
+	assert.Equal(t, "half-typed message with a URL", got.inputValue,
+		"the input line must survive the key that captures it")
+	assert.Equal(t, 7, got.inputCursor, "the cursor must not move either")
+
+	// Nothing is printed at request time: appending to the scrollback would
+	// scroll the region under suspicion before the terminal is measured.
+	assert.Len(t, got.output, before, "the trigger must not write to the scrollback")
+
+	// Any state from a previous snapshot is cleared, so stale measurements
+	// cannot be presented as this one's.
+	assert.False(t, got.cursorReport.ok)
+	assert.Empty(t, got.snapshotHardcopy)
+	assert.Empty(t, got.snapshotProbeFrame)
+}
+
+// The key and the command must reach the same capture, or they would drift.
+func TestSnapshotKeyAndCommandAgree(t *testing.T) {
+	m := newSnapshotModel(t)
+
+	byKey, keyCmd := m.startSnapshot("")
+	_, _, cmdCmd := m.handleDebugCommand([]string{"%debug", "snapshot"})
+	require.NotNil(t, keyCmd)
+	require.NotNil(t, cmdCmd)
+
+	// Default path is chosen the same way for both.
+	p := defaultSnapshotPath()
+	assert.True(t, strings.HasSuffix(p, ".txt"), "default path should be a .txt file, got %q", p)
+	assert.Contains(t, p, "zlily-debug-")
+	assert.False(t, byKey.cursorReport.ok)
+
+	// An explicit path is honoured by the command form.
+	m2, _, cmd2 := m.handleDebugCommand([]string{"%debug", "snapshot", "/tmp/explicit.txt"})
+	require.NotNil(t, cmd2)
+	assert.False(t, m2.cursorReport.ok)
+}
+
+// M-d must keep deleting a word: rebinding it would have been destructive to
+// the very input line the snapshot key exists to preserve.
+func TestSnapshotKeyDoesNotStealDeleteWord(t *testing.T) {
+	m := newSnapshotModel(t)
+	m.inputValue = "alpha bravo"
+	m.inputCursor = 0
+
+	upd, _ := m.handleNormalKey(tea.KeyPressMsg{Code: 'd', Mod: tea.ModAlt})
+	got := upd.(Model)
+	assert.NotEqual(t, "alpha bravo", got.inputValue, "M-d should still delete a word forward")
+	assert.Empty(t, got.snapshotProbeFrame, "M-d must not start a snapshot")
+}
+
+// The whole M-x path, driven message by message as Update would: key press,
+// probe, hardcopy, capture, file write. Guards the wiring between the four
+// phases, which no single-phase test can see.
+func TestSnapshotKeyWritesFileEndToEnd(t *testing.T) {
+	m := newSnapshotModel(t)
+	m = m.WithRendererTap(fakeTap{[]byte("bytes")})
+	m.inputValue = "KEYMARKER still here"
+	m.inputCursor = 3
+	path := filepath.Join(t.TempDir(), "key.txt")
+
+	// M-x, with an explicit path stood in for the default.
+	m, cmd := m.startSnapshot(path)
+	require.NotNil(t, cmd)
+
+	// Phase 1: the terminal has caught up; record our frame, ask for a dump.
+	upd, hcCmd := m.update(snapshotProbeMsg{path: path})
+	m = upd.(Model)
+	require.NotEmpty(t, m.snapshotProbeFrame, "the probe should capture the live frame")
+	require.NotNil(t, hcCmd)
+
+	// Phase 2: the dump lands (no screen here, so it reports why).
+	upd, _ = m.update(hcCmd().(snapshotHardcopyMsg))
+	m = upd.(Model)
+	require.NotEmpty(t, m.snapshotHardcopyErr, "outside screen the reason should be recorded")
+
+	// Phase 3: repaint done, assemble and write.
+	res, ok := m.captureSnapshot(path)().(snapshotResultMsg)
+	require.True(t, ok)
+	require.NoError(t, res.err)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	body := string(data)
+
+	// The input line the key exists to preserve is in the file.
+	assert.Contains(t, body, `inputvalue="KEYMARKER still here"`)
+	// And so are the terminal-side measurements.
+	for _, want := range []string{
+		"tty size=",
+		"cursor report=",
+		"== screen hardcopy",
+		"== hardcopy vs what zlily drew ==",
+		"redraw-on-shrink=false",
+	} {
+		assert.Containsf(t, body, want, "snapshot should carry %q", want)
+	}
+}
