@@ -61,6 +61,33 @@ type shortenResultMsg struct {
 	err   error
 }
 
+// maybeShortenHint prints the one-time reminder that M-s exists, the first time
+// the user has a URL in the line they are composing.
+//
+// It fires on the input line rather than on URLs arriving in scrollback,
+// because that is the only place M-s can act: a reminder offered against
+// somebody else's link would name a key that does nothing to it. And it fires
+// as soon as a URL appears rather than waiting for one to be finished the way
+// previews do — a reminder is useful while the URL is still being worked on,
+// and unlike a preview fetch, being early costs nothing and reaches no network.
+//
+// Once per session, on the theory that the reminder is for people who have not
+// met the feature; anyone who has stops needing it after the first time.
+func (m Model) maybeShortenHint() Model {
+	if m.shortenHintShown || m.inputValue == "" {
+		return m
+	}
+	if len(inputURLSpans(m.inputValue)) == 0 {
+		return m
+	}
+	m.shortenHintShown = true
+	m.output = append(m.output, OutputItem{Type: "command", Data: []string{
+		"Tip: M-s shortens the first URL before the cursor, keeping the site",
+		"name in brackets after it. See '%help shorten'. (Shown once a session.)",
+	}})
+	return m.syncViewportContent()
+}
+
 // shortener returns the service M-s will use.
 //
 // The Model holds the service by name rather than by value so that its zero

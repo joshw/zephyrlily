@@ -479,14 +479,19 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // inputChanged is the tail every input-editing path runs: resync the textarea,
-// give the viewport back any room the input area no longer needs, and start
-// preview fetches for URLs that have become complete.
+// give the viewport back any room the input area no longer needs, offer the
+// once-a-session shortening reminder, and start preview fetches for URLs that
+// have become complete.
 //
 // force is for paste, where the whole text arrived at once; typed input leaves
 // it false so that a URL is only fetched once something follows it.
 func (m Model) inputChanged(force bool) (tea.Model, tea.Cmd) {
 	m.syncTextarea()
 	m = m.maybeResizeViewport()
+	// After the resize, so the hint is laid out against the input area's
+	// settled height, and before the pager is armed, so a hint landing while
+	// the user is caught up pauses like any other new output.
+	m = m.maybeShortenHint()
 	m.armPagerIfAtBottom()
 	m, cmds := m.previewCmds(force)
 	return m, tea.Batch(cmds...)

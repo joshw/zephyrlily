@@ -431,6 +431,74 @@ func TestPreviewTarget(t *testing.T) {
 			"previewing a short link directly would describe the shortener, which is worse than silence")
 	})
 }
+
+// The reminder exists for people who have not met M-s, so it fires the first
+// time a URL turns up in the line they are composing, and then never again.
+func TestShortenHint(t *testing.T) {
+	// typeLine feeds s through the ordinary key path, one rune at a time, so
+	// the hint is exercised where it actually fires rather than by calling it.
+	typeLine := func(m Model, s string) Model {
+		for _, r := range s {
+			upd, _ := m.handleNormalKey(tea.KeyPressMsg{Code: r, Text: string(r)})
+			m = upd.(Model)
+		}
+		return m
+	}
+	hintLines := func(m Model) []string {
+		var out []string
+		for _, item := range m.output {
+			lines, ok := item.Data.([]string)
+			if !ok {
+				continue
+			}
+			joined := strings.Join(lines, " ")
+			if strings.Contains(joined, "M-s") {
+				out = append(out, joined)
+			}
+		}
+		return out
+	}
+
+	t.Run("typing a URL offers it once", func(t *testing.T) {
+		m := typeLine(shortenModel("", 0), "see https://example.com/a")
+		got := hintLines(m)
+		require.Len(t, got, 1, "the reminder should be offered exactly once")
+		assert.Contains(t, got[0], "M-s", "it should name the key")
+		assert.Contains(t, got[0], "%help shorten", "it should point at the details")
+	})
+
+	t.Run("a second URL does not repeat it", func(t *testing.T) {
+		m := typeLine(shortenModel("", 0), "see https://example.com/a ")
+		require.Len(t, hintLines(m), 1)
+
+		// Same line, and a fresh one after a send.
+		m = typeLine(m, "and https://example.org/b")
+		m = m.resetPreviewsForNewLine()
+		m.inputValue, m.inputCursor = "", 0
+		m = typeLine(m, "https://example.net/c")
+		assert.Len(t, hintLines(m), 1, "the reminder is once a session, not once a line")
+	})
+
+	t.Run("a line with no URL says nothing", func(t *testing.T) {
+		m := typeLine(shortenModel("", 0), "just talking about http things")
+		assert.Empty(t, hintLines(m), "no URL, no reminder")
+		assert.False(t, m.shortenHintShown)
+	})
+
+	t.Run("a pasted URL offers it too", func(t *testing.T) {
+		m := shortenModel("", 0)
+		upd, _ := m.handlePaste(tea.PasteMsg{Content: "https://example.com/pasted"})
+		assert.Len(t, hintLines(upd.(Model)), 1, "paste is how a URL usually arrives")
+	})
+
+	t.Run("the reminder is not typed into the message", func(t *testing.T) {
+		m := typeLine(shortenModel("", 0), "see https://example.com/a")
+		assert.Equal(t, "see https://example.com/a", m.inputValue,
+			"a note in the scrollback must not touch the line being composed")
+	})
+}
+
+// The key is documented where a user would look for it.
 func TestShortenKeyIsDocumented(t *testing.T) {
 	help := strings.Join(NewKeyMap().KeyBindingHelp(), "\n")
 	assert.Contains(t, help, "M-s")

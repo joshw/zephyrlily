@@ -193,6 +193,10 @@ type Model struct {
 	linkPreviewPending   map[string]bool     // url -> fetch in flight
 	linkPreviewDismissed map[previewKey]bool // previews backspaced away on this line
 
+	// shortenHintShown records that the M-s reminder has been printed, so it is
+	// offered once a session rather than at every URL.
+	shortenHintShown bool
+
 	// shortOriginals maps a short URL back to the URL it was made from, so a
 	// link this session shortened can be previewed by its destination rather
 	// than by the shortener's own page. See previewTarget.
