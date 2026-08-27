@@ -369,6 +369,11 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Lowercase):
 		m = m.downcaseWord()
 
+	// Shortening is a round trip to a remote service, so the key only starts
+	// it; the line is rewritten when the answer lands (see applyShortenResult).
+	case key.Matches(msg, m.keys.ShortenURL):
+		return m.shortenURLAtCursor()
+
 	// History
 	case key.Matches(msg, m.keys.HistoryPrev):
 		m = m.historyPrev()
@@ -686,6 +691,12 @@ func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
 	// URL in the input line.
 	if fields := strings.Fields(line); len(fields) > 0 && cmdarg.Is(fields[0], "%linkpreview") {
 		m, lines := m.handleLinkPreviewCommand(fields)
+		return m, lines, nil, true
+	}
+
+	// %shorten [service] chooses which shortener M-s uses.
+	if fields := strings.Fields(line); len(fields) > 0 && cmdarg.Is(fields[0], "%shorten") {
+		m, lines := m.handleShortenCommand(fields)
 		return m, lines, nil, true
 	}
 

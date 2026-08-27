@@ -11,6 +11,7 @@ import (
 	"github.com/joshw/zephyrlily/internal/cmdarg"
 	"github.com/joshw/zephyrlily/internal/linkpreview"
 	"github.com/joshw/zephyrlily/internal/tui/ascify"
+	"github.com/joshw/zephyrlily/internal/urlshorten"
 )
 
 // Link previews annotate a URL in the input line with what the page says about
@@ -251,7 +252,7 @@ func (m Model) previewCmds(force bool) (Model, []tea.Cmd) {
 			m.linkPreviewPending = make(map[string]bool)
 		}
 		m.linkPreviewPending[sp.url] = true
-		cmds = append(cmds, fetchPreviewCmd(sp.url))
+		cmds = append(cmds, fetchPreviewCmd(sp.url, m.shortOriginals[sp.url]))
 	}
 	return m, cmds
 }
@@ -370,19 +371,59 @@ func isTitleField(f linkpreview.Field) bool {
 }
 
 // fetchPreviewCmd resolves one URL off the UI goroutine.
-func fetchPreviewCmd(rawURL string) tea.Cmd {
+//
+// known is the URL rawURL was shortened from, when this session is the one that
+// shortened it; "" means we do not already know.
+func fetchPreviewCmd(rawURL, known string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), previewTimeout)
 		defer cancel()
-		p, err := linkpreview.Fetch(ctx, rawURL)
+		target, ok := previewTarget(ctx, rawURL, known)
+		if !ok {
+			// A short link we could not see through. Previewing it anyway would
+			// describe the shortener rather than the destination, which is
+			// worse than saying nothing: "The da.gd URL shortening service" next
+			// to a da.gd link tells the reader precisely nothing.
+			return linkPreviewResultMsg{url: rawURL}
+		}
+		p, err := linkpreview.Fetch(ctx, target)
 		if err != nil {
 			// A URL we cannot reach simply gets no preview. Reporting the
 			// failure would put noise in the scrollback for something the user
 			// never explicitly asked for.
 			return linkPreviewResultMsg{url: rawURL}
 		}
-		return linkPreviewResultMsg{url: rawURL, summary: summaryFor(p, rawURL)}
+		// Keyed by the URL in the input line, but summarised — and echo-tested
+		// — against the page actually reached.
+		return linkPreviewResultMsg{url: rawURL, summary: summaryFor(p, target)}
 	}
+}
+
+// previewTarget returns the URL whose page describes rawURL.
+//
+// For an ordinary URL that is rawURL itself. For a short link it is what the
+// link points at, because fetching a short link does not reach the destination:
+// da.gd answers a browser-shaped Accept header — which is exactly what the
+// preview fetcher sends, to get the metadata real sites serve browsers — with a
+// click-through interstitial of its own, served as a 200. Following redirects
+// does not help, because there is no redirect to follow.
+//
+// A link this session shortened needs no lookup at all: M-s knew the original
+// and wrote it down. Anything else is put to the service that issued it (da.gd
+// documents "+" for exactly this), which costs one small request against a host
+// that has nothing else to tell us.
+func previewTarget(ctx context.Context, rawURL, known string) (string, bool) {
+	if known != "" {
+		return known, true
+	}
+	if !urlshorten.IsShort(rawURL) {
+		return rawURL, true
+	}
+	long, err := urlshorten.Expand(ctx, rawURL)
+	if err != nil {
+		return "", false
+	}
+	return long, true
 }
 
 // applyPreviewResult records a finished fetch. Empty summaries are cached too,

@@ -47,6 +47,7 @@ type KeyMap struct {
 	Capitalize     key.Binding
 	Uppercase      key.Binding
 	Lowercase      key.Binding
+	ShortenURL     key.Binding
 
 	// History and search
 	HistoryPrev   key.Binding
@@ -201,6 +202,10 @@ func NewKeyMap() KeyMap {
 			key.WithKeys("alt+l"),
 			key.WithHelp("M-l", "lowercase word"),
 		),
+		ShortenURL: key.NewBinding(
+			key.WithKeys("alt+s"),
+			key.WithHelp("M-s", "shorten URL"),
+		),
 
 		// History and search
 		HistoryPrev: key.NewBinding(
@@ -305,6 +310,7 @@ func (k KeyMap) KeyBindingHelp() []string {
 		"  M-c         capitalize word",
 		"  M-u         uppercase word",
 		"  M-l         lowercase word",
+		"  M-s         shorten first URL before cursor",
 		"",
 		"History & Search:",
 		"  C-p, ↑      previous history",

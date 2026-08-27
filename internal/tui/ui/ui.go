@@ -193,6 +193,23 @@ type Model struct {
 	linkPreviewPending   map[string]bool     // url -> fetch in flight
 	linkPreviewDismissed map[previewKey]bool // previews backspaced away on this line
 
+	// shortOriginals maps a short URL back to the URL it was made from, so a
+	// link this session shortened can be previewed by its destination rather
+	// than by the shortener's own page. See previewTarget.
+	shortOriginals map[string]string
+
+	// shortenService names the shortener M-s uses, as chosen by %shorten. It is
+	// held by name rather than as a urlshorten.Service so that the zero Model
+	// resolves to the default instead of carrying a nil interface; "" means the
+	// default.
+	shortenService string
+
+	// shortenPending holds the M-s requests currently out, so a second press on
+	// a URL already being shortened does not mint a second short link for it.
+	// Shared across value-copies for the same reason linkPreviewPending is: a
+	// copy that could not see it would start the request again.
+	shortenPending map[urlOccurrence]bool
+
 	// renderEpoch versions the per-item render cache. It is bumped whenever
 	// something that affects how items render changes: the window width, the
 	// debug split (which halves the render width), or the whoami identity.
@@ -671,6 +688,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.advanceLastSeenID()
 		return m, reportSeenNow(m.client, m.lastSeenID)
+
+	case shortenResultMsg:
+		// A shorten rewrites the input line, so the textarea is resynced and the
+		// input area re-measured: the replacement is a different length than
+		// what it replaced and may free up or claim a wrapped line.
+		m = m.applyShortenResult(msg)
+		m.syncTextarea()
+		m = m.maybeResizeViewport()
+		// The line now holds a URL it did not a moment ago. Ask for its preview
+		// the same way typing one would — force, because nothing follows the
+		// short URL to mark it finished, and it is as finished as it will get.
+		m, cmds := m.previewCmds(true)
+		return m, tea.Batch(cmds...)
 
 	case linkPreviewResultMsg:
 		// A preview landing does not touch inputValue, so nothing about the
