@@ -11,6 +11,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/joshw/zephyrlily/internal/tui/client"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type fakeTap struct{ tail []byte }
@@ -447,4 +449,38 @@ func TestCompareHardcopyNBSPSpellings(t *testing.T) {
 	if !strings.Contains(got, "MATCH") || strings.Contains(got, "MISMATCH") {
 		t.Errorf("identical padding must not be reported as a display fault, got:\n%s", got)
 	}
+}
+
+// The workaround is a debugging knob, and a snapshot has to say which way it
+// was set: taken with it on, a clean snapshot proves nothing, because the
+// repaint clears any divergence whatever its cause.
+func TestDebugRedrawToggle(t *testing.T) {
+	m := newSnapshotModel(t)
+	require.False(t, m.redrawOnShrink, "the workaround must be off by default")
+
+	if !strings.Contains(buildSnapshot(m, nil), "redraw-on-shrink=false") {
+		t.Error("the snapshot must record that the workaround was off")
+	}
+
+	m, out, _ := m.handleDebugCommand([]string{"%debug", "redraw", "on"})
+	require.True(t, m.redrawOnShrink, "%debug redraw on should enable it")
+	require.Contains(t, strings.Join(out, "\n"), "on")
+	if !strings.Contains(buildSnapshot(m, nil), "redraw-on-shrink=true") {
+		t.Error("the snapshot must record that the workaround was on")
+	}
+
+	m, out, _ = m.handleDebugCommand([]string{"%debug", "redraw", "off"})
+	assert.False(t, m.redrawOnShrink)
+	assert.Contains(t, strings.Join(out, "\n"), "off")
+
+	// No argument reports without changing anything.
+	m.redrawOnShrink = true
+	m2, out, _ := m.handleDebugCommand([]string{"%debug", "redraw"})
+	assert.True(t, m2.redrawOnShrink, "asking must not change the setting")
+	assert.Contains(t, strings.Join(out, "\n"), "on")
+
+	// A bad argument is refused rather than silently treated as off.
+	m3, out, _ := m.handleDebugCommand([]string{"%debug", "redraw", "maybe"})
+	assert.True(t, m3.redrawOnShrink, "an unparseable argument must not change the setting")
+	assert.Contains(t, strings.Join(out, "\n"), "Usage:")
 }

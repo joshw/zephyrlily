@@ -242,37 +242,38 @@ type Model struct {
 	// the pause in the %debug snapshot command.
 	snapshotProbeFrame string
 
+	// redrawOnShrink makes the input area shrinking (viewport growing) force a
+	// full repaint, via forceRedraw below. Toggled by %debug redraw.
+	//
+	// It is OFF by default, which reverses an earlier decision. The repaint was
+	// added to work around display corruption on that transition, attributed to
+	// a false-positive scroll-detection heuristic in mosh. That attribution has
+	// since failed three separate ways:
+	//
+	//   - An instrumented re-investigation built mosh 1.4.0 and drove its real
+	//     code (mosh-scroll-bug-repro/investigation/FINDINGS.md). The heuristic
+	//     does fire, exactly as described, and corrupts nothing: mosh's emitted
+	//     bytes reproduce the reference framebuffer cell for cell, and
+	//     disabling the heuristic changes nothing.
+	//   - The corruption recurred with no mosh in the path at all, over plain
+	//     ssh inside GNU screen.
+	//   - The reproduction harness replayed captures through a cooked-mode tty,
+	//     so ONLCR rewrote every bare LF the renderer emitted. It was corrupting
+	//     the byte stream itself before any terminal saw it.
+	//
+	// What remains true is only that a full repaint clears the corruption —
+	// which says nothing about the cause, since a full repaint clears any
+	// display divergence whatever its origin. Keeping the workaround on hides
+	// the very failure we are trying to catch, so the default is off while it
+	// is being reproduced with the snapshot's terminal-side measurements (see
+	// screenHardcopy and compareHardcopy). Turn it back on with '%debug redraw
+	// on' if a session becomes unusable.
+	redrawOnShrink bool
+
 	// forceRedraw requests a full repaint (tea.ClearScreen) after the current
-	// Update call. Set by maybeResizeViewport when the input area shrinks
-	// (viewport grows): confirmed (via forensic replay of a real debug
-	// snapshot, then isolated by elimination across OS/terminal/timing
-	// variants — see snapshotreplay_test.go and
-	// TestGrowBoundaryRendererByteStream — and finally root-caused by reading
-	// mosh's own source) to be a mosh (mobile-shell) bug, not a bug in
-	// bubbletea, ultraviolet, or this app's own rendering. mosh doesn't proxy
-	// raw bytes like ssh; it re-implements its own client-side terminal
-	// emulation (SSP). Display::new_frame's "did the screen scroll?" fast
-	// path matches the new frame's top row against old-frame rows by object
-	// identity, and mosh deliberately shares one blank Row object across many
-	// still-untouched rows (construction, resize, insert_line/delete_line) —
-	// so any screen with more than one indistinguishable blank region
-	// (e.g. sparse scrollback above a bottom UI region that just changed
-	// height) can trip a false "we scrolled" match. mosh then physically
-	// scrolls the real terminal by a bogus amount and re-indexes its own
-	// bookkeeping to match, so it believes rows are already correct and skips
-	// redrawing them — which is why the corruption persists across frames
-	// instead of self-correcting, and why it can manifest as misplaced or
-	// shifted content on an unrelated row. Plain ssh, GNU screen, iTerm2, and
-	// a from-scratch VT100 emulator (vt.Emulator, in this repo's own replay
-	// tooling) all render the exact same bytes correctly — only mosh does
-	// not. The growth direction (input area getting taller) does not need
-	// this: confirmed clean by TestGrowBoundaryRendererByteStream and never
-	// observed by the user in practice. A full repaint sidesteps mosh's bug
-	// — there's nothing to fix here or upstream in bubbletea/ultraviolet;
-	// filed as https://github.com/mobile-shell/mosh/issues/1400, with a
-	// minimal, zlily-independent reproduction. Consumed and cleared by
-	// Update, which wraps update's normal Cmd with tea.ClearScreen when this
-	// is set.
+	// Update call, when redrawOnShrink is enabled and the input area has just
+	// shrunk. Consumed and cleared by Update, which wraps update's normal Cmd
+	// with tea.ClearScreen when this is set.
 	forceRedraw bool
 
 	// scrollAnchor is the output-item index to keep at the top of the viewport
@@ -643,14 +644,12 @@ func (m Model) Init() tea.Cmd {
 	)
 }
 
-// Update handles a message and, if the input area shrank this cycle
-// (forceRedraw set by maybeResizeViewport), appends a forced full repaint to
-// sidestep a confirmed mosh terminal-emulation bug on that specific
-// transition (see forceRedraw's doc comment — not a bubbletea/ultraviolet
-// bug, not something wrong with this app's rendering). The actual message
-// handling lives in update; this wrapper exists only to give every return
-// path in that large switch a single place to check the flag, rather than
-// threading it through each one individually.
+// Update handles a message and, if the input area shrank this cycle with
+// %debug redraw enabled, appends a forced full repaint (see redrawOnShrink for
+// what that works around and why it is off by default). The actual message
+// handling lives in update; this wrapper exists only to give every return path
+// in that large switch a single place to check the flag, rather than threading
+// it through each one individually.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	start := time.Now()
 	newModel, cmd := m.update(msg)

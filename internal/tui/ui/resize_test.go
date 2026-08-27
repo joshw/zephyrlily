@@ -251,23 +251,21 @@ func cmdYieldsClearScreen(t *testing.T, cmd tea.Cmd) bool {
 	return fmt.Sprintf("%T", msg) == want
 }
 
-// TestResize_ShrinkingInputForcesRedraw is a regression test for a display
-// corruption bug found by forensically replaying a real %debug snapshot: at
-// the exact frame where the input area shrinks from 2 lines back to 1 (and
-// the viewport grows to reclaim the row), the terminal could render content
-// misplaced onto the wrong row — confirmed to be below this app's own
-// renderInputArea(), which produces the correct string by hand-trace, and
-// root-caused to a false-positive scroll-detection heuristic in mosh's
-// Display::new_frame (mosh re-implements its own client-side terminal state,
-// unlike ssh; plain ssh, GNU screen, iTerm2, and a from-scratch VT100
-// emulator all render the same bytes correctly — see forceRedraw's doc
-// comment in ui.go, and https://github.com/mobile-shell/mosh/issues/1400,
-// for the full story). TestGrowBoundaryRendererByteStream proved the same
-// boundary crossed by typing forward does NOT exhibit the bug, so the
-// workaround only needs to fire on the shrink direction: maybeResizeViewport
-// sets forceRedraw when the viewport grows, and Update wraps the cycle's Cmd
-// with tea.ClearScreen to sidestep mosh's bug.
-func TestResize_ShrinkingInputForcesRedraw(t *testing.T) {
+// TestResize_ShrinkRepaint covers the full repaint once forced when the input
+// area shrinks from two lines back to one (the viewport growing to reclaim the
+// row).
+//
+// It is off by default now. The repaint was added believing a display bug on
+// that transition came from mosh; that attribution has since failed — an
+// instrumented run of mosh's own code showed it corrupts nothing, the
+// corruption recurred with no mosh in the path, and the reproduction harness
+// turned out to be mangling the byte stream itself through a cooked-mode tty.
+// All that survives is that a full repaint makes the symptom go away, which is
+// true of any display divergence and so identifies nothing. Leaving it on hides
+// the failure from the snapshot's new terminal-side measurements, so the
+// default is off and %debug redraw turns it back on. See redrawOnShrink in
+// ui.go.
+func TestResize_ShrinkRepaint(t *testing.T) {
 	logChan, _ := NewLogger()
 	base := New(client.New(""), logChan)
 	base.authMode = false
@@ -279,48 +277,56 @@ func TestResize_ShrinkingInputForcesRedraw(t *testing.T) {
 	}
 
 	// 20 chars: n=len+1=21 > firstWidth=20, so two input lines.
-	m := base
-	m.inputValue = strings.Repeat("a", 20)
-	m.inputCursor = 20
-	m = m.maybeResizeViewport()
-	require.Equal(t, 2, m.calculateInputHeight(), "fixture must start on two input lines")
+	twoLine := func(on bool) Model {
+		m := base
+		m.redrawOnShrink = on
+		m.inputValue = strings.Repeat("a", 20)
+		m.inputCursor = 20
+		m = m.maybeResizeViewport()
+		require.Equal(t, 2, m.calculateInputHeight(), "fixture must start on two input lines")
+		return m
+	}
 
-	t.Run("backspace crossing 2->1 forces a redraw", func(t *testing.T) {
-		got, cmd := send(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
-		require.Equal(t, 19, len(got.inputValue))
+	t.Run("off by default, so nothing is repainted or hidden", func(t *testing.T) {
+		require.False(t, base.redrawOnShrink, "the workaround must not be on by default")
+		got, cmd := send(twoLine(false), tea.KeyPressMsg{Code: tea.KeyBackspace})
 		require.Equal(t, 1, got.calculateInputHeight(), "19 chars should fit on one input line")
-		assert.False(t, got.forceRedraw, "flag must be consumed (cleared) by Update, not left set")
-		assert.True(t, cmdYieldsClearScreen(t, cmd),
-			"shrinking the input area must force a full repaint to avoid mosh's false-positive scroll-detection bug")
+		assert.False(t, cmdYieldsClearScreen(t, cmd),
+			"with the workaround off, the shrink transition must be left alone so the bug can be observed")
 	})
 
-	t.Run("backspace NOT crossing a line boundary does not force a redraw", func(t *testing.T) {
-		m19 := m
-		m19.inputValue = strings.Repeat("a", 19)
-		m19.inputCursor = 19
-		m19 = m19.maybeResizeViewport()
-		m19.forceRedraw = false // fixture setup itself shrank a stale 2-line viewport; that's not what's under test
-		require.Equal(t, 1, m19.calculateInputHeight())
+	t.Run("enabled, crossing 2->1 forces a redraw", func(t *testing.T) {
+		got, cmd := send(twoLine(true), tea.KeyPressMsg{Code: tea.KeyBackspace})
+		require.Equal(t, 19, len(got.inputValue))
+		require.Equal(t, 1, got.calculateInputHeight())
+		assert.False(t, got.forceRedraw, "flag must be consumed (cleared) by Update, not left set")
+		assert.True(t, cmdYieldsClearScreen(t, cmd),
+			"with the workaround on, shrinking the input area must force a full repaint")
+	})
 
-		got, cmd := send(m19, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	oneLine := func(on bool) Model {
+		m := twoLine(on)
+		m.inputValue = strings.Repeat("a", 19)
+		m.inputCursor = 19
+		m = m.maybeResizeViewport()
+		m.forceRedraw = false // fixture setup itself shrank a stale 2-line viewport; not what's under test
+		require.Equal(t, 1, m.calculateInputHeight())
+		return m
+	}
+
+	t.Run("enabled, but no line-count change means no redraw", func(t *testing.T) {
+		got, cmd := send(oneLine(true), tea.KeyPressMsg{Code: tea.KeyBackspace})
 		require.Equal(t, 18, len(got.inputValue))
 		require.Equal(t, 1, got.calculateInputHeight())
 		assert.False(t, cmdYieldsClearScreen(t, cmd),
 			"no line-count change means no need for the workaround")
 	})
 
-	t.Run("typing forward across 1->2 does not force a redraw", func(t *testing.T) {
-		m19 := m
-		m19.inputValue = strings.Repeat("a", 19)
-		m19.inputCursor = 19
-		m19 = m19.maybeResizeViewport()
-		m19.forceRedraw = false // fixture setup itself shrank a stale 2-line viewport; that's not what's under test
-		require.Equal(t, 1, m19.calculateInputHeight())
-
-		got, cmd := send(m19, tea.KeyPressMsg{Code: 'a', Text: "a"})
+	t.Run("enabled, growing 1->2 does not force a redraw", func(t *testing.T) {
+		got, cmd := send(oneLine(true), tea.KeyPressMsg{Code: 'a', Text: "a"})
 		require.Equal(t, 20, len(got.inputValue))
 		require.Equal(t, 2, got.calculateInputHeight(), "20 chars should need two input lines")
 		assert.False(t, cmdYieldsClearScreen(t, cmd),
-			"growth direction is confirmed clean (TestGrowBoundaryRendererByteStream); forcing a redraw here would just be extra flicker")
+			"only the shrink direction was ever implicated; repainting on growth would be pure flicker")
 	})
 }

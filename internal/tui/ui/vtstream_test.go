@@ -300,11 +300,10 @@ func TestLongURLRendererByteStream(t *testing.T) {
 // by forensic replay of a real %debug snapshot: backspacing across the
 // input area's 2-line->1-line boundary could leave content misplaced onto
 // the wrong row, even though renderInputArea()'s own string was proven
-// correct by hand. Eventually root-caused (see forceRedraw in ui.go, and
-// https://github.com/mobile-shell/mosh/issues/1400) to a false-positive
-// scroll-detection heuristic in mosh's Display::new_frame, not a
-// bubbletea/ultraviolet bug — but that took ruling out OS, terminal,
-// styling, and timing first, and this test was part of that: it drives the
+// correct by hand. It was attributed at the time to a scroll-detection
+// heuristic in mosh; that no longer stands (see redrawOnShrink in ui.go), and
+// the cause is once again open. What this test established still holds, and is
+// why it stays: it drives the
 // real renderer (via teatest, not a mock) across the same boundary by typing
 // forward instead of backspacing, confirming the corruption is
 // shrink-direction only, not symmetric across both directions of the same

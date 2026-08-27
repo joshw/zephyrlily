@@ -283,6 +283,11 @@ func buildSnapshot(m Model, rendererTail []byte) string {
 	}
 	fmt.Fprintf(&b, "inputheight=%d firstlinewidth=%d prompt=%q debugmode=%v\n",
 		m.calculateInputHeight(), m.inputFirstLineWidth(), m.inputPromptText(), m.debugMode)
+	// Whether the shrink-transition repaint was active. A snapshot taken with
+	// it on cannot be read as evidence that the display was healthy: a full
+	// repaint clears any divergence, so the workaround hides exactly what a
+	// snapshot is taken to find.
+	fmt.Fprintf(&b, "redraw-on-shrink=%v\n", m.redrawOnShrink)
 	// Where the terminal itself says the cursor is, asked before the
 	// pre-snapshot repaint. The renderer tracks the cursor by dead reckoning
 	// from the sequences it emits; if the terminal disagrees, every subsequent
@@ -413,6 +418,9 @@ var debugUsage = []string{
 	"  before sharing.",
 	"Usage: %debug perf",
 	"  Prints how responsive this session has been over its lifetime.",
+	"Usage: %debug redraw [on|off]",
+	"  Forces a full repaint when the input area shrinks. Off by default;",
+	"  it hides display corruption rather than fixing it (see %help redraw).",
 }
 
 // handleDebugCommand implements %debug and its subcommands. The snapshot is
@@ -433,6 +441,25 @@ func (m Model) handleDebugCommand(fields []string) (Model, []string, tea.Cmd) {
 	if cmdarg.Is(fields[1], "perf") {
 		m.recordEvent("perf report requested")
 		return m, m.perf.report(), nil
+	}
+
+	// %debug redraw [on|off] controls the shrink-transition repaint. It is a
+	// debugging knob rather than a preference: it exists to be turned off while
+	// hunting the display bug it was meant to hide, and on again if a session
+	// becomes unusable mid-hunt.
+	if cmdarg.Is(fields[1], "redraw") {
+		on, ok := false, false
+		if len(fields) == 3 {
+			on, ok = cmdarg.OnOff(fields[2])
+		}
+		switch {
+		case ok:
+			m.redrawOnShrink = on
+			return m, []string{"Redraw on input shrink: " + onOff(on)}, nil
+		case len(fields) == 2:
+			return m, []string{"Redraw on input shrink: " + onOff(m.redrawOnShrink)}, nil
+		}
+		return m, []string{"Usage: %debug redraw on|off"}, nil
 	}
 
 	if !cmdarg.Is(fields[1], "snapshot") {

@@ -21,13 +21,12 @@ import (
 // when relayed through mosh: type (not paste) one character more than fits
 // on the input area's first line — one keystroke at a time, with realistic
 // gaps, matching how a human actually types — then backspace twice, crossing
-// back from 2 input lines to 1. The root cause turned out to be entirely
-// mosh's (a false-positive scroll-detection heuristic in its
-// Display::new_frame — see forceRedraw's doc comment in
-// internal/tui/ui/ui.go, and https://github.com/mobile-shell/mosh/issues/1400),
-// not anything in zlily/bubbletea/ultraviolet, so this test is expected to
-// stay clean: it's a permanent check that zlily's own renderer output, with
-// no mosh in the path, never exhibits this or an analogous defect. No
+// back from 2 input lines to 1. It was attributed at the time to mosh; that
+// attribution no longer stands and the cause is open again (see redrawOnShrink
+// in internal/tui/ui/ui.go). What the test checks is unaffected either way,
+// and is worth keeping precisely because the cause is unsettled: that zlily's
+// own renderer output, with no mosh in the path, never exhibits this or an
+// analogous defect. It has stayed clean throughout. No
 // %debug snapshot needed: script(1) already captures every byte zlily
 // writes, so the corrupted frame (if any — there shouldn't be one) is found
 // and checked directly from the typescript by the same forensic technique
