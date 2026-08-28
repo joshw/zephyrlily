@@ -135,7 +135,7 @@ yet been run through mosh.
 
 ## Reduced reproduction (for a mosh test)
 
-`mosh-repro.bin` is 154 bytes, delta-debugged down from the 10,454-byte live
+`mosh-repro.bin` is 83 bytes, delta-debugged down from the 10,454-byte live
 capture. It reproduces through a local stock-mosh loopback:
 
 ```
@@ -143,8 +143,7 @@ direct: cdefghcdefghijkla                                            AAAB
 mosh:   cdefghcdefghijkla                                            AAA
 ```
 
-Characters are lost off the end of a line, at the right margin. Reduced to its
-essentials the stream does this, on an 80-column screen:
+Characters are lost off the end of a line, at the right margin. In full, on an 80-column screen — this is the whole file:
 
 ```
   ESC[?1049h  ESC[H            enter alt screen, home
@@ -156,7 +155,11 @@ essentials the stream does this, on an 80-column screen:
   ESC[4h "A" ESC[4l            insert 'A'
   "AB"                         write, reaching the right margin
   ESC[4h " " ESC[4l  BS        insert again at the margin
+  ESC[4h                       (capture ends with IRM still on)
 ```
+
+It contains no terminal queries, no colour, and no CR or LF, so nothing in it
+can elicit a reply or be rewritten by the tty's output processing.
 
 The shape is insert-mode (IRM) edits repeated at columns 77-80, i.e. right at
 the right margin, where each insert pushes a character off the edge. mosh drops
@@ -210,7 +213,7 @@ test above.
 ## Seeing it yourself
 
 `visual-test.sh` shows the bug on screen, by eye, over whatever connection you
-run it through. It is self-contained — the 154-byte sequence is embedded — so it
+run it through. It is self-contained — the 83-byte sequence is embedded — so it
 can be copied to any host on its own.
 
 ```sh
@@ -232,3 +235,11 @@ directly both are 80.
 
 Run it over each path you want to compare — mosh and ssh — and the difference is
 visible without any capture, snapshot or tooling.
+
+The sequence deliberately contains no terminal queries. An earlier version
+embedded the capture's original prologue, which included `ESC[?u` (a
+keyboard-protocol query). Terminals that answer it replied `ESC[?1u`: one byte
+was consumed as the keypress, so the script exited immediately, and the rest
+appeared at the shell prompt. mosh does not answer that query, so the fault
+showed up only over ssh — the opposite of what the script is for. The queries
+are gone, and pending input is drained before and after the wait regardless.

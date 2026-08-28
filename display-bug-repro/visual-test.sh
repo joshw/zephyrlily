@@ -14,9 +14,7 @@ set -u
 HOLD="${1:-30}"
 # The 154-byte reproduction, embedded so this file stands alone: copy it to any
 # host and run it over whichever connection you want to test.
-REPRO_B64='G1s+NG0bWz0wOzF1G1s/MTA0OWgbWz8yNWwbWz81VxtbPzIwMDRoG1s+NDsybRtbPTE7MXUb
-Wz91G1tIY2RlZmdoY2RlZmdoaWprbGEbWzRsG1s1OUNBG1s0aBtbMzA7NDdtIBtbNGwbW20I
-G1s0aEEbWzRsCBtbNGhBG1s0bEFCG1s0aBtbMzA7NDdtIBtbNGwbW20IG1s0aA=='
+REPRO_B64='G1s/MTA0OWgbW0hjZGVmZ2hjZGVmZ2hpamtsYRtbNGwbWzU5Q0EbWzRoIBtbNGwIG1s0aEEbWzRsCBtbNGhBG1s0bEFCG1s0aCAbWzRsCBtbNGg='
 
 cols=$(stty size 2>/dev/null | awk '{print $2}')
 if [ "${cols:-0}" != "80" ]; then
@@ -50,4 +48,14 @@ printf '\033[11;1H%s' "(waiting ${HOLD}s; press any key to quit)"
 printf '\033[13;1H%s' '         1         2         3         4         5         6         7         8'
 printf '\033[14;1H%s' '12345678901234567890123456789012345678901234567890123456789012345678901234567890'
 
+# Drain anything the terminal has sent back. An earlier version of this
+# script embedded a capture containing ESC[?u, a keyboard-protocol query;
+# terminals that answer it sent ESC[?1u, one byte of which was taken as the
+# keypress -- so the script exited at once -- and the rest of which turned up
+# at the shell prompt. The query is gone from the sequence now, but draining
+# costs nothing and any of these sequences may elicit a reply somewhere.
+while read -r -s -t 0.05 -n 1 _ 2>/dev/null; do :; done
+
 read -r -n 1 -t "$HOLD" _ 2>/dev/null || true
+
+while read -r -s -t 0.05 -n 1 _ 2>/dev/null; do :; done
