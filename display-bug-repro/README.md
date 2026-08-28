@@ -132,3 +132,77 @@ yet been run through mosh.
   comparison cannot be relied on, and mosh is not exonerated by it.
 - Use **tmux** (`tmux capture-pane`) as the trustworthy emulator. It handles
   IRM correctly and agreed with real terminals in every check made here.
+
+## Reduced reproduction (for a mosh test)
+
+`mosh-repro.bin` is 154 bytes, delta-debugged down from the 10,454-byte live
+capture. It reproduces through a local stock-mosh loopback:
+
+```
+direct: cdefghcdefghijkla                                            AAAB
+mosh:   cdefghcdefghijkla                                            AAA
+```
+
+Characters are lost off the end of a line, at the right margin. Reduced to its
+essentials the stream does this, on an 80-column screen:
+
+```
+  ESC[?1049h  ESC[H            enter alt screen, home
+  "cdefghcdefghijkla"          17 characters at column 1
+  ESC[4l                       IRM off
+  ESC[59C  "A"                 jump to column 77, write -> cursor at 78
+  ESC[4h " " ESC[4l  BS        insert a space at 78, step back
+  ESC[4h "A" ESC[4l  BS        insert 'A' at 78, step back
+  ESC[4h "A" ESC[4l            insert 'A'
+  "AB"                         write, reaching the right margin
+  ESC[4h " " ESC[4l  BS        insert again at the margin
+```
+
+The shape is insert-mode (IRM) edits repeated at columns 77-80, i.e. right at
+the right margin, where each insert pushes a character off the edge. mosh drops
+one more than it should.
+
+Note that plain insertion at a full line, by either ICH or IRM, round-trips
+through mosh intact — probed separately and it agrees. So the trigger is
+narrower than "insertion at the margin", and the remaining reduction work is to
+find which part of the repetition matters.
+
+### Checking a candidate
+
+`moshdiff.sh <file>` renders it directly and through a mosh loopback, both via
+`deliver.sh`, and compares with `tmux capture-pane` — the same settled-screen
+granularity mosh's own e2e tests use.
+
+```
+0  AGREE       screens match
+1  DIFFER      mosh's line is a strict prefix of the correct one (this bug)
+3  OTHER-DIFF  they differ some other way -- a different fault, not this one
+2  harness failure (no CONNECT, blank render); never treated as a result
+```
+
+**Controls, which must all pass before any result is believed:**
+
+| candidate | expected |
+|---|---|
+| plain text, no insert mode | AGREE |
+| `ESC[?1049h ESC[H ESC[2J` + `B` | AGREE |
+| the full capture | DIFFER |
+| `mosh-repro.bin` | DIFFER |
+
+### Two traps this oracle was built around
+
+**Both sides must be delivered identically.** A first version fed the direct
+side through `deliver.sh` (raw mode) and the mosh side through a plain `cat`
+(cooked mode), so ONLCR rewrote the bare LFs on one side only and every
+comparison came out a row off.
+
+**A candidate must establish its own screen state.** With no alt-screen enter,
+clear and home, the two renderings start from different cursor positions and
+differ for reasons unrelated to the bug. A reducer that was free to delete
+those tokens duly "reduced" a real reproduction to a single meaningless byte.
+Keep `ESC[?1049h`, `ESC[H` and `ESC[2J` protected.
+
+**And the difference must be the right one.** Accepting any difference lets a
+reduction wander into some other mosh fault; the reducer began mutating bytes
+inside escape sequences and following whatever broke. Hence the strict prefix
+test above.
