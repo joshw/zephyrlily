@@ -294,3 +294,21 @@ emulation, so it can go straight into the terminal unit tests — feed the bytes
 to the emulator, then assert that the cell at row 1 column 80 is `c` and that
 `X` landed at row 2 column 1. `mosh-repro.bin` (83 bytes) stays alongside it as
 the application-level symptom, for an end-to-end check.
+
+### The cursor itself shows the flag
+
+Comparing the two panes side by side, the cursor is drawn differently at the end
+of the ruler: over mosh it sits as an ordinary block on the last character, and
+over ssh it appears at the very edge instead.
+
+That is not a separate oddity, it is the same defect made visible. Pending wrap
+is a piece of cursor state: after writing column 80 a conforming terminal leaves
+the cursor *on* column 80 with the wrap still owing, and many terminals draw
+that distinctly from a cursor merely resting on column 80 ready to overwrite.
+mosh has cleared the flag, so its cursor is the latter — and it draws it that
+way. The two panes are showing the flag's state directly.
+
+It is corroborating evidence rather than something a test can assert. The flag
+is not reportable: a cursor-position report gives row and column only, and both
+terminals would answer column 80. Its only observable is where the *next*
+printable character lands, which is what `pending-wrap-repro.bin` pins down.
