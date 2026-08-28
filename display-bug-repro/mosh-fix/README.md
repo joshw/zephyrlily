@@ -93,3 +93,35 @@ emulation, so it belongs with the terminal tests rather than the e2e ones. Feed:
 
 to an 80-column `Terminal::Emulator` and assert that row 1 column 80 is still
 `c` and that `X` is at row 2 column 1.
+
+## End-to-end verification
+
+Built mosh 1.4.0 twice from the same tree, once with the patch and once without
+(protobuf@21 — 29.x produces a client that segfaults on the first resize, which
+is a build-environment problem unrelated to this issue). Both pairs then drove a
+real `mosh-server`/`mosh-client` loopback over UDP, rendered through tmux, and
+were compared against the same bytes rendered directly.
+
+| candidate | unpatched | patched |
+|---|---|---|
+| `pending-wrap-repro.bin` (30 B) | DIFFER, DIFFER, DIFFER | AGREE, AGREE, AGREE |
+| `mosh-repro.bin` (83 B) | DIFFER, DIFFER, DIFFER | AGREE, AGREE, AGREE |
+
+Three runs each, deterministic in both directions. The patch fixes it with real
+binaries and a real network path, not only in the emulator.
+
+### What the full capture does not tell us
+
+The original 10,454-byte session capture is **not** a reliable test here, and it
+is worth saying why rather than quoting a number from it. Unpatched it differs
+consistently, but patched it came back AGREE on one run and DIFFER on the next.
+
+That capture has no `.writes` file, so it is delivered in fixed 40-byte chunks
+rather than the renderer's own 84 writes. mosh's state-sync coalesces on write
+boundaries, so each run presents a different stimulus and the outcome is not
+stable. This is the same gap that made the very first replay attempt fail to
+reproduce anything at all.
+
+So the full capture neither confirms nor refutes the fix. The two reduced cases
+do, deterministically, and they are what the claim rests on. Re-capturing that
+session from a build that records write boundaries would make it usable again.
