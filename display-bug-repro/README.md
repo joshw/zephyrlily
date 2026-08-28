@@ -283,9 +283,18 @@ one sequence in between:
 So it is specific to the insert/replace mode change, not to mode changes in
 general.
 
-This is very probably the same fault as the input-line truncation, seen without
-the surrounding noise: zlily's renderer toggles IRM constantly while editing the
-input line, and does it at the right margin, which is exactly this condition.
+**This turned out NOT to be the input-line truncation**, despite looking exactly
+like it. A patched mosh-server fixes `visual-test.sh` and both reduced captures,
+and zlily still corrupts its input line over that same patched server while
+staying clean over ssh. So there are two defects here, and this is the smaller
+one.
+
+How the reduction landed on the wrong fault is worth recording. The oracle
+accepted "mosh's line is a strict prefix of the correct one", and *both* defects
+satisfy that. The capture contained both, so the reduction was free to converge
+on whichever was easier to reach, and it did. A symptom test narrow enough to
+exclude an unrelated fault was still too broad to separate two faults with the
+same signature.
 
 ### Why this shape suits a mosh test
 

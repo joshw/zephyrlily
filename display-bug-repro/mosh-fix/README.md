@@ -1,5 +1,11 @@
 # Root cause and fix
 
+> **Scope.** This fixes a real mosh bug, verified in mosh's own emulator and end
+> to end with real binaries. It does **not** fix the zlily input-line corruption
+> that led here: that still occurs over a patched mosh-server and still does not
+> occur over ssh, so a second defect remains. Worth filing on its own merits —
+> just not as the explanation for the symptom in the parent README.
+
 ## The defect
 
 `src/terminal/terminaldispatcher.cc` clears the pending-wrap flag before running
