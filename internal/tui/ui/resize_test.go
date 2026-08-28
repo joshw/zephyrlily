@@ -255,16 +255,12 @@ func cmdYieldsClearScreen(t *testing.T, cmd tea.Cmd) bool {
 // area shrinks from two lines back to one (the viewport growing to reclaim the
 // row).
 //
-// It is off by default now. The repaint was added believing a display bug on
-// that transition came from mosh; that attribution has since failed — an
-// instrumented run of mosh's own code showed it corrupts nothing, the
-// corruption recurred with no mosh in the path, and the reproduction harness
-// turned out to be mangling the byte stream itself through a cooked-mode tty.
-// All that survives is that a full repaint makes the symptom go away, which is
-// true of any display divergence and so identifies nothing. Leaving it on hides
-// the failure from the snapshot's new terminal-side measurements, so the
-// default is off and %debug redraw turns it back on. See redrawOnShrink in
-// ui.go.
+// It is on by default. A six-way matrix over transport, terminal and screen
+// found the corruption in every path carrying mosh and none without it, with
+// both iTerm2 and Terminal.app reproducing and screen turning out to be
+// irrelevant — so the repaint is a workaround for mosh. %debug redraw off
+// turns it back off, which is what you want while observing the fault. See
+// redrawOnShrink in ui.go.
 func TestResize_ShrinkRepaint(t *testing.T) {
 	logChan, _ := NewLogger()
 	base := New(client.New(""), logChan)
@@ -287,8 +283,15 @@ func TestResize_ShrinkRepaint(t *testing.T) {
 		return m
 	}
 
-	t.Run("off by default, so nothing is repainted or hidden", func(t *testing.T) {
-		require.False(t, base.redrawOnShrink, "the workaround must not be on by default")
+	t.Run("on by default, working around mosh", func(t *testing.T) {
+		require.True(t, base.redrawOnShrink, "the mosh workaround is on by default")
+		got, cmd := send(twoLine(true), tea.KeyPressMsg{Code: tea.KeyBackspace})
+		require.Equal(t, 1, got.calculateInputHeight())
+		assert.True(t, cmdYieldsClearScreen(t, cmd),
+			"the default build must repaint across the shrink transition")
+	})
+
+	t.Run("disabled, the transition is left alone so the bug can be observed", func(t *testing.T) {
 		got, cmd := send(twoLine(false), tea.KeyPressMsg{Code: tea.KeyBackspace})
 		require.Equal(t, 1, got.calculateInputHeight(), "19 chars should fit on one input line")
 		assert.False(t, cmdYieldsClearScreen(t, cmd),

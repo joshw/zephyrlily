@@ -456,22 +456,22 @@ func TestCompareHardcopyNBSPSpellings(t *testing.T) {
 // repaint clears any divergence whatever its cause.
 func TestDebugRedrawToggle(t *testing.T) {
 	m := newSnapshotModel(t)
-	require.False(t, m.redrawOnShrink, "the workaround must be off by default")
+	require.True(t, m.redrawOnShrink, "the mosh workaround is on by default")
 
-	if !strings.Contains(buildSnapshot(m, nil), "redraw-on-shrink=false") {
-		t.Error("the snapshot must record that the workaround was off")
-	}
-
-	m, out, _ := m.handleDebugCommand([]string{"%debug", "redraw", "on"})
-	require.True(t, m.redrawOnShrink, "%debug redraw on should enable it")
-	require.Contains(t, strings.Join(out, "\n"), "on")
 	if !strings.Contains(buildSnapshot(m, nil), "redraw-on-shrink=true") {
 		t.Error("the snapshot must record that the workaround was on")
 	}
 
-	m, out, _ = m.handleDebugCommand([]string{"%debug", "redraw", "off"})
-	assert.False(t, m.redrawOnShrink)
-	assert.Contains(t, strings.Join(out, "\n"), "off")
+	m, out, _ := m.handleDebugCommand([]string{"%debug", "redraw", "off"})
+	require.False(t, m.redrawOnShrink, "%debug redraw off should disable it")
+	require.Contains(t, strings.Join(out, "\n"), "off")
+	if !strings.Contains(buildSnapshot(m, nil), "redraw-on-shrink=false") {
+		t.Error("the snapshot must record that the workaround was off")
+	}
+
+	m, out, _ = m.handleDebugCommand([]string{"%debug", "redraw", "on"})
+	assert.True(t, m.redrawOnShrink)
+	assert.Contains(t, strings.Join(out, "\n"), "on")
 
 	// No argument reports without changing anything.
 	m.redrawOnShrink = true
@@ -588,7 +588,7 @@ func TestSnapshotKeyWritesFileEndToEnd(t *testing.T) {
 		"cursor report=",
 		"== screen hardcopy",
 		"== hardcopy vs what zlily drew ==",
-		"redraw-on-shrink=false",
+		"redraw-on-shrink=true",
 	} {
 		assert.Containsf(t, body, want, "snapshot should carry %q", want)
 	}

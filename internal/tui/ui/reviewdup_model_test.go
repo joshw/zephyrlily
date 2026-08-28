@@ -132,7 +132,7 @@ func TestReattachReview_RendersEachLineOnce(t *testing.T) {
 	// the history fetch -- without it the replay path is never exercised.
 	go func() {
 		time.Sleep(40 * time.Millisecond)
-		_ = c.ReportSeen(5)
+		_ = c.ReportSeen(2)
 	}()
 
 	logChan, _ := NewLogger()
@@ -176,6 +176,8 @@ func TestReattachReview_RendersEachLineOnce(t *testing.T) {
 	t.Logf("storedLastSeenID=%d", final.storedLastSeenID)
 	require.NotZero(t, final.storedLastSeenID,
 		"history fetch was skipped (state.LastSeenID was 0); the replay path is not exercised")
+	// msgMeta is a 100-entry ring, so these counts saturate on a long review and
+	// are diagnostics only -- the item count below is the real assertion.
 	var skipped, dropped int
 	for _, e := range final.msgMeta.entries() {
 		if strings.HasPrefix(e.desc, "skip replayed") {
@@ -185,8 +187,12 @@ func TestReattachReview_RendersEachLineOnce(t *testing.T) {
 			dropped++
 		}
 	}
-	t.Logf("dedup activity: %d skipped in replay, %d dropped live", skipped, dropped)
-	require.NotZero(t, skipped+dropped,
-		"no dedup activity recorded; the live stream and history replay never overlapped")
+	t.Logf("dedup activity (ring-capped at %d): %d skipped in replay, %d dropped live",
+		msgMetaRingCap, skipped, dropped)
+
+	// Without the dedup (v0.10.1 and earlier) the live stream and the history
+	// replay each contribute a full copy, roughly doubling the item count.
+	require.Less(t, len(final.output), reviewN+reviewN/2,
+		"output roughly doubled: the review was incorporated twice")
 	require.Empty(t, dupes, "detach review lines must be incorporated exactly once")
 }

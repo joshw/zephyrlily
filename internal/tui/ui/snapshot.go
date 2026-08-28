@@ -450,8 +450,8 @@ var debugUsage = []string{
 	"Usage: %debug perf",
 	"  Prints how responsive this session has been over its lifetime.",
 	"Usage: %debug redraw [on|off]",
-	"  Forces a full repaint when the input area shrinks. Off by default;",
-	"  it hides display corruption rather than fixing it (see %help redraw).",
+	"  Forces a full repaint when the input area shrinks, working around a",
+	"  mosh display bug. On by default; turn off to observe it.",
 }
 
 // handleDebugCommand implements %debug and its subcommands. The snapshot is

@@ -245,29 +245,31 @@ type Model struct {
 	// redrawOnShrink makes the input area shrinking (viewport growing) force a
 	// full repaint, via forceRedraw below. Toggled by %debug redraw.
 	//
-	// It is OFF by default, which reverses an earlier decision. The repaint was
-	// added to work around display corruption on that transition, attributed to
-	// a false-positive scroll-detection heuristic in mosh. That attribution has
-	// since failed three separate ways:
+	// ON by default, restored after being turned off to hunt the bug it hides.
+	// A six-way matrix over the transport, the terminal and screen settled the
+	// attribution: mosh is present in every reproduction and absent from every
+	// clean run, while iTerm2 and Terminal.app both reproduce and screen turns
+	// out to be irrelevant.
 	//
-	//   - An instrumented re-investigation built mosh 1.4.0 and drove its real
-	//     code (mosh-scroll-bug-repro/investigation/FINDINGS.md). The heuristic
-	//     does fire, exactly as described, and corrupts nothing: mosh's emitted
-	//     bytes reproduce the reference framebuffer cell for cell, and
-	//     disabling the heuristic changes nothing.
-	//   - The corruption recurred with no mosh in the path at all, over plain
-	//     ssh inside GNU screen.
-	//   - The reproduction harness replayed captures through a cooked-mode tty,
-	//     so ONLCR rewrote every bare LF the renderer emitted. It was corrupting
-	//     the byte stream itself before any terminal saw it.
+	//   iTerm2       + mosh + screen   reproduces
+	//   iTerm2       + mosh            reproduces
+	//   Terminal.app + mosh + screen   reproduces
+	//   Terminal.app + mosh            reproduces
+	//   iTerm2       + ssh  + screen   clean
+	//   iTerm2       + ssh             clean
 	//
-	// What remains true is only that a full repaint clears the corruption —
-	// which says nothing about the cause, since a full repaint clears any
-	// display divergence whatever its origin. Keeping the workaround on hides
-	// the very failure we are trying to catch, so the default is off while it
-	// is being reproduced with the snapshot's terminal-side measurements (see
-	// screenHardcopy and compareHardcopy). Turn it back on with '%debug redraw
-	// on' if a session becomes unusable.
+	// An instrumented re-investigation had concluded the opposite -- that
+	// mosh's scroll heuristic fires but corrupts nothing. That conclusion came
+	// from comparisons made through charmbracelet/x/vt, which does not
+	// implement insert mode and so mis-renders the streams this app produces
+	// (see display-bug-repro/README.md). It could not have detected a
+	// difference it renders away, which is how mosh was wrongly cleared.
+	//
+	// The mechanism inside mosh is still open. Insert at a full line, by either
+	// ICH or IRM, survives a mosh loopback intact, so it is something more
+	// specific than character insertion alone. Turn this off with '%debug
+	// redraw off' to observe the fault; the snapshot records which way it was
+	// set, because a clean snapshot taken with it on proves nothing.
 	redrawOnShrink bool
 
 	// forceRedraw requests a full repaint (tea.ClearScreen) after the current
@@ -415,6 +417,7 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		historyPos:     -1,
 		searchIdx:      -1,
 		autoPageAnchor: -1,
+		redrawOnShrink: true, // see the field's doc; %debug redraw off to hunt the bug
 		pagerEnabled:   true,
 		linkPreviewOn:  true,
 		scrollAnchor:   -1,

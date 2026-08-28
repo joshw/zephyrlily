@@ -79,29 +79,33 @@ the bug.
 No zlily, no lily server, and no typing required: this is a recording of a real
 failing session's terminal output.
 
-## The matrix worth running
+## The matrix, run
 
-Each row is one path. `A` is the known failure.
+| terminal | transport | screen | result |
+|---|---|---|---|
+| iTerm2 | **mosh** | yes | reproduces |
+| iTerm2 | **mosh** | no | reproduces |
+| Terminal.app | **mosh** | yes | reproduces |
+| Terminal.app | **mosh** | no | reproduces |
+| iTerm2 | ssh | yes | clean |
+| iTerm2 | ssh | no | clean |
 
-| # | terminal | transport | screen | result |
-|---|---|---|---|---|
-| A | iTerm2 | mosh | yes | **reproduces** |
-| B | iTerm2 | ssh | yes | ? |
-| C | Terminal.app | ssh | yes | ? |
-| D | Terminal.app | mosh | yes | ? |
-| E | iTerm2 | ssh | **no** | ? |
+**It is mosh.** Present in every reproduction, absent from every clean run.
+The terminal emulator does not matter — iTerm2 and Terminal.app both reproduce.
+Screen does not matter either; it drops out in both directions.
 
-What the answers mean:
+That vindicates the original attribution and means the instrumented
+re-investigation that cleared mosh was wrong. Its comparisons were made through
+`charmbracelet/x/vt`, which does not implement insert mode and so mis-renders
+the streams this app produces — it could not have detected a difference it
+renders away. See the methodology notes below.
 
-- **B reproduces** → mosh is not required. 
-- **C reproduces** → neither mosh nor iTerm2 is required, which leaves screen's
-  output generation as the only remaining suspect in the path.
-- **C clean, B reproduces** → iTerm2.
-- **D reproduces, C clean** → mosh matters after all, independently of iTerm2.
-- **E reproduces** → screen is not required either, and the fault is in the
-  terminal alone.
-
-B and C are the two that carry the most information; run those first.
+The mechanism inside mosh is still open. Character insertion at a full line, by
+either ICH (`ESC[@`) or IRM (`ESC[4h`), survives a mosh loopback intact, so it
+is something more specific than insertion alone. Two things worth trying next:
+the shrink transition combines a scroll-region change with insertion and a
+layout shift, and a faithful replay (one carrying the `.writes` pattern) has not
+yet been run through mosh.
 
 ## Methodology, learned the hard way
 
