@@ -206,3 +206,29 @@ Keep `ESC[?1049h`, `ESC[H` and `ESC[2J` protected.
 reduction wander into some other mosh fault; the reducer began mutating bytes
 inside escape sequences and following whatever broke. Hence the strict prefix
 test above.
+
+## Seeing it yourself
+
+`visual-test.sh` shows the bug on screen, by eye, over whatever connection you
+run it through. It is self-contained — the 154-byte sequence is embedded — so it
+can be copied to any host on its own.
+
+```sh
+# resize to exactly 80 columns first (height does not matter)
+./visual-test.sh
+```
+
+It paints **row 1** using the byte sequence that triggers the bug, and **row 3**
+with the same text written plainly. Plain writes are unaffected, so row 3 is
+always correct:
+
+- rows 1 and 3 identical → that connection is fine
+- row 1 one character shorter → that connection drops characters
+
+A column ruler is printed lower down so the ends can be compared. Verified that
+the explanatory text does not itself cause a repaint that would mask the fault:
+through a mosh loopback row 1 comes out 79 characters against row 3's 80, and
+directly both are 80.
+
+Run it over each path you want to compare — mosh and ssh — and the difference is
+visible without any capture, snapshot or tooling.
