@@ -37,6 +37,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          # Compiled into the binary as the s.u13.net credential, via the
+          # ldflags in .goreleaser.yaml. Unset, the build still succeeds and the
+          # released client falls back to whatever ZLILY_SHORTEN_API_KEY is in
+          # the user's own environment.
+          ZLILY_SHORTEN_API_KEY: ${{ secrets.ZLILY_SHORTEN_API_KEY }}
 
       # Generate the curl-pipe installer from .config/binstaller.yml, pinning the
       # checksums GoReleaser just published, and attach it to the release. Runs

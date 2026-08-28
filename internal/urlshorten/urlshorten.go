@@ -74,50 +74,79 @@ type Service interface {
 
 // DefaultName is the service used until %shorten says otherwise.
 //
-// da.gd is the default because it is the only one of the three that both works
-// without credentials and behaves like an API: the whole response body is the
-// short URL, failures come back as real HTTP status codes with a plain-text
-// reason, and query strings and fragments survive the round trip byte for byte.
-const DefaultName = "da.gd"
+// s.u13.net is the default so that a link shortened here is the link cj.pl
+// would have made: the same host, in among the links the discussion already
+// carries. It is the one registered service that needs a credential — release
+// builds carry one compiled in, and U13APIKey says where it comes from. A build
+// without a key gets a 403 from it, and da.gd is then one %shorten away.
+const DefaultName = "s.u13.net"
 
 // services is the registry, in the order %shorten lists them. The default comes
 // first.
 var services = []Service{
-	// da.gd answers GET /shorten?url=… with the short URL as the entire body.
-	// expandSuffix is da.gd's documented reverse lookup: appending + to any
-	// short URL renders the long one as plain text ("/g+", or /coshorten/g).
-	plainService{name: "da.gd", host: "da.gd", endpoint: "https://da.gd/shorten", expandSuffix: "+"},
-
-	// tinyurl's keyless endpoint is the same shape. It is undocumented and
-	// long-deprecated in favour of an API-key service, so it is a fallback
-	// rather than the default — but it has outlived several better-documented
-	// competitors, and a tinyurl link is the one most likely to still resolve
-	// in ten years. The tradeoff is on delivery: tinyurl is old enough to be
-	// widely blocklisted by spam filters, which da.gd is not.
-	plainService{name: "tinyurl", host: "tinyurl.com", endpoint: "https://tinyurl.com/api-create.php"},
-
-	// s.u13.net is cj.pl's shortener, kept so that links shortened here and by
-	// the bot are the same links. It cannot currently be used: its nginx
-	// answers 403 to every POST from off-network, which no credential we hold
-	// gets past. See u13Service for what is expected to change when one exists.
+	// s.u13.net is cj.pl's shortener, so that links shortened here and by the
+	// bot are the same links. Its nginx answers 403 to POSTs from off-network,
+	// which is what an allowlist on writes looks like from outside; U13APIKey
+	// is the credential that gets past it.
 	u13Service{
 		host:     "s.u13.net",
 		endpoint: "http://s.u13.net/shorten_url",
 		base:     "https://s.u13.net/",
 	},
+
+	// da.gd is the keyless fallback, and the one to reach for when s.u13.net
+	// will not answer, because it behaves like an API: the whole response body
+	// is the short URL, failures come back as real HTTP status codes with a
+	// plain-text reason, and query strings and fragments survive the round trip
+	// byte for byte. It answers GET /shorten?url=… with the short URL as the
+	// entire body. expandSuffix is da.gd's documented reverse lookup: appending
+	// + to any short URL renders the long one as plain text ("/g+", or
+	// /coshorten/g).
+	plainService{name: "da.gd", host: "da.gd", endpoint: "https://da.gd/shorten", expandSuffix: "+"},
+
+	// tinyurl's keyless endpoint is the same shape. It is undocumented and
+	// long-deprecated in favour of an API-key service, so it is a second
+	// fallback — but it has outlived several better-documented competitors, and
+	// a tinyurl link is the one most likely to still resolve in ten years. The
+	// tradeoff is on delivery: tinyurl is old enough to be widely blocklisted
+	// by spam filters, which da.gd is not.
+	plainService{name: "tinyurl", host: "tinyurl.com", endpoint: "https://tinyurl.com/api-create.php"},
 }
 
 // apiKeyEnv names the environment variable holding the s.u13.net credential.
 const apiKeyEnv = "ZLILY_SHORTEN_API_KEY"
 
-// U13APIKey authenticates requests to s.u13.net once such a credential exists.
-// It is read from the environment at startup and is a var so that a test, or a
-// future %shorten subcommand, can set it directly.
+// u13APIKeyBuild is the credential compiled into a release build, written by
+// the linker:
+//
+//	go build -ldflags "-X github.com/joshw/zephyrlily/internal/urlshorten.u13APIKeyBuild=$KEY" ./cmd/zlily
+//
+// The release workflow passes the ZLILY_SHORTEN_API_KEY repository secret to
+// GoReleaser, which puts it here; a plain go build leaves it empty. It has no
+// initializer because -X can only write a string var that has none or a
+// constant one, which is also why U13APIKey below cannot be the injected var
+// itself.
+//
+// A key baked into a published binary is not a secret from anyone who runs
+// strings on it. It is here so that s.u13.net works out of the box for someone
+// who installed a release, not to keep the value private.
+var u13APIKeyBuild string
+
+// U13APIKey authenticates requests to s.u13.net.
+//
+// The environment wins over the compiled-in key, so a user with their own
+// credential — or with a build that carries none — can supply one without
+// rebuilding. It is a var so that a test, or a future %shorten subcommand, can
+// set it directly.
 //
 // It is global rather than a field on the service because it identifies the
 // user, not the endpoint — there is one of these per person, not per registry
 // entry.
-var U13APIKey = os.Getenv(apiKeyEnv)
+var U13APIKey = resolveU13APIKey(os.Getenv(apiKeyEnv), u13APIKeyBuild)
+
+// resolveU13APIKey picks between the credential in the environment and the one
+// compiled in, in that order.
+func resolveU13APIKey(env, built string) string { return firstNonEmpty(env, built) }
 
 // Lookup returns the service registered under name, matched case-insensitively.
 func Lookup(name string) (Service, bool) {

@@ -280,7 +280,7 @@ func TestShortenServiceSelection(t *testing.T) {
 	t.Run("the zero model uses the default", func(t *testing.T) {
 		assert.Equal(t, urlshorten.DefaultName, Model{}.shortener().Name(),
 			"a Model built without New must still have a shortener")
-		assert.Equal(t, "da.gd", urlshorten.DefaultName, "da.gd is the intended default")
+		assert.Equal(t, "s.u13.net", urlshorten.DefaultName, "s.u13.net is the intended default")
 	})
 
 	t.Run("no argument reports the current setting and the choices", func(t *testing.T) {
@@ -555,8 +555,8 @@ func TestShortenKeyIsDocumented(t *testing.T) {
 	assert.Contains(t, help, "M-s")
 	assert.Contains(t, help, "shorten")
 
-	// And '%help shorten' explains the services, including the one that cannot
-	// currently be used.
+	// And '%help shorten' explains the services, including the credential the
+	// default one needs.
 	topic := strings.Join(tuiHelp["shorten"], "\n")
 	for _, name := range urlshorten.Names() {
 		assert.Containsf(t, topic, name, "%%help shorten should describe %s", name)

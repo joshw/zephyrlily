@@ -35,7 +35,7 @@ func TestRegistry(t *testing.T) {
 	})
 
 	t.Run("all three services are present, default first", func(t *testing.T) {
-		want := []string{"da.gd", "tinyurl", "s.u13.net"}
+		want := []string{"s.u13.net", "da.gd", "tinyurl"}
 		got := Names()
 		if strings.Join(got, ",") != strings.Join(want, ",") {
 			t.Errorf("Names() = %v, want %v", got, want)
@@ -257,9 +257,8 @@ func TestU13ForbiddenExplainsItself(t *testing.T) {
 	}
 }
 
-// The credential does not exist yet, so this pins the plumbing, not the scheme:
-// when a real key is issued the header spelling in u13Service.Shorten changes
-// and this test changes with it.
+// The key rides in an Authorization: Bearer header, confirmed against the live
+// service.
 func TestU13SendsAPIKeyWhenSet(t *testing.T) {
 	var gotAuth string
 	svc := stubU13(t, func(w http.ResponseWriter, r *http.Request) {
@@ -276,6 +275,27 @@ func TestU13SendsAPIKeyWhenSet(t *testing.T) {
 	}
 	if gotAuth != "Bearer secret-token" {
 		t.Errorf("Authorization = %q, want the key to be sent", gotAuth)
+	}
+}
+
+// The environment overrides the key a release build carries, so a user with a
+// credential of their own does not have to rebuild to use it — and a build with
+// no key compiled in still works for anyone who exports one.
+func TestAPIKeyEnvironmentBeatsBuild(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		env, built string
+		want       string
+	}{
+		{"the environment wins", "from-env", "from-build", "from-env"},
+		{"the compiled-in key is the fallback", "", "from-build", "from-build"},
+		{"neither is set", "", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveU13APIKey(tc.env, tc.built); got != tc.want {
+				t.Errorf("resolveU13APIKey(%q, %q) = %q, want %q", tc.env, tc.built, got, tc.want)
+			}
+		})
 	}
 }
 

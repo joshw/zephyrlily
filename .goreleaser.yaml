@@ -5,6 +5,14 @@
 
 version: 2
 
+# The s.u13.net credential is compiled into release binaries (see
+# internal/urlshorten, U13APIKey). It is declared here, defaulting to empty, so
+# the ldflags template below resolves in a local `goreleaser build` too — where
+# nothing exports it and an undefined .Env key would be a template error. CI
+# passes the ZLILY_SHORTEN_API_KEY repository secret in through the environment.
+env:
+  - ZLILY_SHORTEN_API_KEY={{ index .Env "ZLILY_SHORTEN_API_KEY" }}
+
 before:
   hooks:
     - sh -c 'cd web && npm ci && npm run build'
@@ -23,7 +31,7 @@ builds:
       - amd64
       - "386"
     ldflags:
-      - -s -w -X github.com/joshw/zephyrlily/internal/version.Version={{.Version}}
+      - -s -w -X github.com/joshw/zephyrlily/internal/version.Version={{.Version}} -X github.com/joshw/zephyrlily/internal/urlshorten.u13APIKeyBuild={{.Env.ZLILY_SHORTEN_API_KEY}}
 
 archives:
   - formats: [tar.gz]

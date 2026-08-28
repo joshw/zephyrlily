@@ -101,13 +101,13 @@ func (s plainService) Expand(ctx context.Context, shortURL string) (string, erro
 // a link shortened by this client and one shortened by the bot are the same
 // link.
 //
-// It cannot be reached from outside its network as things stand: its nginx
-// answers 403 to every POST, body or no body, http or https, while GETs of the
-// same path reach the application and report "Must use POST." That is a
-// method-level block rather than a dead service, which is what an IP allowlist
-// on writes looks like from outside. The request below is therefore the real
-// one, unstubbed — the day a credential gets past the block, this starts
-// working with no other change.
+// Writes are gated from outside its network: its nginx answers 403 to an
+// unauthenticated POST, body or no body, http or https, while GETs of the same
+// path reach the application and report "Must use POST." That is a method-level
+// block rather than a dead service, which is what an allowlist on writes looks
+// like from outside. A bearer token in U13APIKey gets past it; release builds
+// carry one compiled in, and a build without one gets the 403 and the hint
+// below.
 type u13Service struct {
 	host     string
 	endpoint string
@@ -137,13 +137,6 @@ func (s u13Service) Shorten(ctx context.Context, rawURL string) (string, error) 
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", UserAgent)
 	if U13APIKey != "" {
-		// PROVISIONAL: no credential has ever been issued for this service, so
-		// the scheme below is the common convention and NOT a documented fact
-		// about s.u13.net. When a real key arrives, check how it is meant to be
-		// presented — a bearer token, an X- header, a query parameter, a field
-		// in the JSON body — and correct this one line. Everything else on the
-		// path (the setting, the environment variable, the plumbing) is
-		// independent of the answer.
 		req.Header.Set("Authorization", "Bearer "+U13APIKey)
 	}
 
@@ -154,10 +147,11 @@ func (s u13Service) Shorten(ctx context.Context, rawURL string) (string, error) 
 	if status < 200 || status > 299 {
 		hint := detail(respBody)
 		if status == http.StatusForbidden && U13APIKey == "" {
-			// The expected answer today, and an opaque one: nginx's stock 403
-			// page says nothing about credentials. Name the setting rather than
-			// leaving the user to guess what to do about it.
-			hint = "POSTs are refused from off-network; set " + apiKeyEnv + " once a key is issued"
+			// The answer a build with no key compiled in gets, and an opaque
+			// one: nginx's stock 403 page says nothing about credentials. Name
+			// the setting, and the way out, rather than leaving the user to
+			// guess what to do about it.
+			hint = "POSTs are refused without a key; set " + apiKeyEnv + ", or use another service with %shorten"
 		}
 		return "", &StatusError{Code: status, Detail: hint}
 	}
