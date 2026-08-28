@@ -1,0 +1,6 @@
+#define PACKAGE_NAME "mosh"
+#define PACKAGE_VERSION "1.4.0"
+#define HAVE_STDINT_H 1
+#define HAVE_INTTYPES_H 1
+#define HAVE_MEMORY 1
+#define HAVE_STD_SHARED_PTR 1

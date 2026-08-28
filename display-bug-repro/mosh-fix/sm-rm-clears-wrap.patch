@@ -1,0 +1,15 @@
+--- a/src/terminal/terminalfunctions.cc	2026-08-27 23:03:11
++++ b/src/terminal/terminalfunctions.cc
+@@ -376,8 +376,10 @@
+   }
+ }
+ 
+-static Function func_CSI_SM( CSI, "h", CSI_SM );
+-static Function func_CSI_RM( CSI, "l", CSI_RM );
++/* Setting or clearing an ANSI mode is not a cursor movement, so it must not
++   discard a pending wrap -- just as DECSET/DECRST and SGR above do not. */
++static Function func_CSI_SM( CSI, "h", CSI_SM, false );
++static Function func_CSI_RM( CSI, "l", CSI_RM, false );
+ 
+ /* set top and bottom margins */
+ static void CSI_DECSTBM( Framebuffer *fb, Dispatcher *dispatch )
