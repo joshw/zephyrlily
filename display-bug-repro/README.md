@@ -243,3 +243,54 @@ was consumed as the keypress, so the script exited immediately, and the rest
 appeared at the shell prompt. mosh does not answer that query, so the fault
 showed up only over ssh — the opposite of what the script is for. The queries
 are gone, and pending input is drained before and after the wait regardless.
+
+## The mechanism, in 30 bytes
+
+Found from a screenshot of the visual test over mosh: the *column ruler* was
+also wrong, showing `...789j` where it should have read `...7890`, with the `j`
+of the following shell prompt pulled up onto the end of it. That line is written
+plainly, with no insert mode at all — so something simpler than the input-line
+case was going on, and it reduces to this (`pending-wrap-repro.bin`, 30 bytes):
+
+```
+  ESC[?1049h ESC[H ESC[2J      setup
+  ESC[1;78H  "abc"             write columns 78, 79, 80
+  ESC[4l                       reset insert mode
+  "X"                          should wrap to row 2, column 1
+```
+
+```
+  correct: row 1 = "...abc",  X on row 2
+  mosh:    row 1 = "...abX"   <- X overwrote column 80
+```
+
+Writing to the last column does not move the cursor past it. The cursor stays
+on column 80 with a *pending wrap* flag, and the next printable character
+consumes the flag and wraps. Nothing here should disturb that flag: a mode
+change is not a cursor movement.
+
+**mosh clears it.** Isolated by elimination — with the ruler filling the row and
+one sequence in between:
+
+| between the last column and the next character | result |
+|---|---|
+| `ESC[4l` (RM 4, replace mode) | **wrong** |
+| `ESC[4h` (SM 4, insert mode) | **wrong** |
+| `ESC[?25h` (show cursor) | correct |
+| `ESC[0m` (SGR reset) | correct |
+| nothing | correct |
+
+So it is specific to the insert/replace mode change, not to mode changes in
+general.
+
+This is very probably the same fault as the input-line truncation, seen without
+the surrounding noise: zlily's renderer toggles IRM constantly while editing the
+input line, and does it at the right margin, which is exactly this condition.
+
+### Why this shape suits a mosh test
+
+It needs no network and no state-sync: it is a claim about mosh's terminal
+emulation, so it can go straight into the terminal unit tests — feed the bytes
+to the emulator, then assert that the cell at row 1 column 80 is `c` and that
+`X` landed at row 2 column 1. `mosh-repro.bin` (83 bytes) stays alongside it as
+the application-level symptom, for an end-to-end check.
