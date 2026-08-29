@@ -6,20 +6,27 @@ Two independent defects, two patches. Apply **both**: the first
 responsible for the zlily symptom, but both are real and the first is
 cheap to carry.
 
-## Only the server needs it
+## Patch BOTH ends
 
-Tested by mixing binaries across a loopback:
+The first fix (`mosh-fix/`, the emulator) is server-side only. **The second
+(`mosh-bug2/`) is not** — it must be applied to the client as well.
 
-| server | client | result |
-|---|---|---|
-| stock | stock | broken |
-| **patched** | **stock** | **fixed** |
-| stock | patched | broken |
-| patched | patched | fixed |
+`Display::new_frame` runs on both sides: on the server to generate the state
+diff, and on the client to render to the terminal. The `append_move` fix is in
+code both use, so a patched server with a stock client still corrupts the
+display on the client's own render.
 
-`mosh-server` runs the terminal emulator over the application's output; the
-client receives framebuffer *states* rather than escape sequences, so the flag
-is only ever wrong on the server side. Keep your existing mosh-client.
+Confirmed against the live session, same server and same keystrokes, changing
+only the client binary:
+
+| client | backspace #3 |
+|---|---|
+| stock | 77 characters — **the bug** |
+| patched | 78 characters — correct |
+
+An earlier loopback test suggested a patched server alone was enough. That was
+measured against a reduced capture which happened to exercise only the server's
+copy of `new_frame`; a real session exercises both. Do not trust it.
 
 ## Build (Ubuntu/Debian)
 
