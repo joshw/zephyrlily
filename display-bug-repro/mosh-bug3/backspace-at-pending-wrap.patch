@@ -1,0 +1,23 @@
+--- a/src/terminal/terminalfunctions.cc
++++ b/src/terminal/terminalfunctions.cc
+@@ -184,10 +184,19 @@
+ /* backspace */
+ static void Ctrl_BS( Framebuffer *fb, Dispatcher *dispatch __attribute((unused)) )
+ {
++  /* With a wrap pending the cursor is logically past the last column while
++     sitting on it, so a backspace cancels the wrap and leaves the column
++     alone. Stepping left as well would move two cells' worth. */
++  if ( fb->ds.next_print_will_wrap ) {
++    fb->ds.next_print_will_wrap = false;
++    return;
++  }
+   fb->ds.move_col( -1, true );
+ }
+ 
+-static Function func_Ctrl_BS( CONTROL, "\x08", Ctrl_BS );
++/* Registered as not clearing the wrap state: the handler above needs to see
++   the flag in order to act on it. */
++static Function func_Ctrl_BS( CONTROL, "\x08", Ctrl_BS, false );
+ 
+ /* reverse index -- like a backwards line feed */
+ static void Ctrl_RI( Framebuffer *fb, Dispatcher *dispatch __attribute((unused)) )
