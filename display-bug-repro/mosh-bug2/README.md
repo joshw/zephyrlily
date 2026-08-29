@@ -91,8 +91,56 @@ No network, no pty, no timing. That makes it a candidate for mosh's own tests:
 the invariant is that `new_frame(A,B)` applied to A yields B, cursor and wrap
 state included, and it is checkable in a unit test.
 
-## Still open
+## The fix
 
-The exact fix. Extending the existing guard to any row whose last cell is at the
-right margin is the obvious candidate, but it has not been tried, and the last
-confident root-cause claim in this saga did not survive contact with evidence.
+`append_move` optimises a short leftward step into backspaces:
+
+```c
+    // Backspaces are good too.
+    if ( y == last_y && x - last_x < 0 && x - last_x > -5 ) {
+      append( last_x - x, '\b' );
+```
+
+That is only valid from a column the terminal's cursor can actually occupy.
+After the last cell of a row is written, `frame.cursor_x` is the autowrap
+column -- one past the last -- while the terminal has snapped to the last
+column with a wrap pending. A backspace from there starts a cell to the left of
+where the bookkeeping thinks and lands a cell early; the next frame's diff then
+erases one cell too many, which is the missing character.
+
+`no-backspace-from-autowrap-column.patch` refuses the optimisation in that case
+and addresses absolutely instead.
+
+### Two candidates that were wrong
+
+Recorded because both look reasonable and neither survives.
+
+**Dropping `wrap_this` from the guard in `put_row`** (so the cursor is
+invalidated before writing the last cell of any row) does not fix it:
+`frame.cursor_x` is incremented back to the autowrap column immediately
+afterwards, and the final move is still relative.
+
+**Invalidating the cursor after writing the last cell of any row** does fix the
+bug, and breaks mosh's own `emulation-80th-column.test`, which exists to pin
+"the ancient VT100 behavior of positioning the cursor at column 80 (and not
+wrapping) after 80 characters are output". That behaviour is deliberate and
+modelled; a fix must leave it alone. It is the reason the fix belongs in
+`append_move` rather than in the cursor bookkeeping.
+
+### Verification
+
+`make check` on mosh 1.4.0 with the patch: 31 tests, 29 PASS, 2 XFAIL, **0 FAIL,
+0 ERROR** -- including `emulation-80th-column.test`, which the rejected
+candidate broke.
+
+End to end over a real mosh-server/mosh-client loopback:
+
+| candidate | SM/RM patch only | both patches |
+|---|---|---|
+| the 288-byte reduction | DIFFER | **AGREE** |
+| the full 9,546-byte session | DIFFER | **AGREE** |
+| `../mosh-fix/pending-wrap-repro.bin` | — | AGREE |
+| plain-text control | — | AGREE |
+
+And `loopprobe` reports the round trip clean, with the cursor agreeing at state
+5 where it previously diverged.

@@ -1,0 +1,20 @@
+--- a/src/terminal/terminaldisplay.cc
++++ b/src/terminal/terminaldisplay.cc
+@@ -516,8 +516,15 @@
+       append( y - last_y, '\n' );
+       return;
+     }
+-    // Backspaces are good too.
+-    if ( y == last_y && x - last_x < 0 && x - last_x > -5 ) {
++    // Backspaces are good too -- but only from a column the terminal's cursor
++    // can actually be in. After writing the last cell of a row our bookkeeping
++    // sits on the autowrap column, one past the last, while the terminal has
++    // snapped to the last column with a wrap pending. A backspace computed
++    // from the autowrap column therefore starts one cell to the left of where
++    // we think and lands one cell early, and the next frame's diff then erases
++    // a cell that should have survived. Address absolutely in that case.
++    if ( y == last_y && x - last_x < 0 && x - last_x > -5
++	 && last_x < last_frame.ds.get_width() ) {
+       append( last_x - x, '\b' );
+       return;
+     }
