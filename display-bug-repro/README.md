@@ -321,3 +321,21 @@ It is corroborating evidence rather than something a test can assert. The flag
 is not reportable: a cursor-position report gives row and column only, and both
 terminals would answer column 80. Its only observable is where the *next*
 printable character lands, which is what `pending-wrap-repro.bin` pins down.
+
+## A blind spot in all of this tooling
+
+Everything here replays a capture of the application's **output**. That can
+never exercise mosh's prediction engine (local echo), for two reasons:
+
+- it is driven by the user's **keystrokes**, which an output capture does not
+  contain; and
+- it only displays above a latency threshold —
+  `SRTT_TRIGGER_HIGH = 30` ms in `terminaloverlay.h`. A loopback on localhost
+  has an RTT near zero, so predictions are never shown.
+
+So a prediction-engine fault is invisible to every probe in this directory, and
+to the mosh loopback harness, by construction. If a symptom reproduces reliably
+when typed by hand and never from a faithful replay of the same session, that
+asymmetry is itself the evidence: suspect the overlay, not the byte stream.
+
+`mosh --predict=never` settles it in one run.
