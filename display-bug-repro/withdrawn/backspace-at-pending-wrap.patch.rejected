@@ -1,5 +1,5 @@
---- a/src/terminal/terminalfunctions.cc
-+++ b/src/terminal/terminalfunctions.cc
+--- /tmp/moshprobe/tf.before-bs	2026-08-29 10:24:49
++++ src/terminal/terminalfunctions.cc	2026-08-29 10:24:49
 @@ -184,10 +184,19 @@
  /* backspace */
  static void Ctrl_BS( Framebuffer *fb, Dispatcher *dispatch __attribute((unused)) )
