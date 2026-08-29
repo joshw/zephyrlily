@@ -1,0 +1,37 @@
+--- a/src/frontend/mosh-server.cc
++++ b/src/frontend/mosh-server.cc
+@@ -843,6 +843,34 @@
+ 	  network.start_shutdown();
+ 	} else {
+ 	  terminal_to_host += terminal.act( string( buf, bytes_read ) );
++
++	  /* Log the bottom row of the server's own framebuffer after every read
++	     from the pty, so a corrupted client display can be attributed: if
++	     this row is right while the screen is wrong, the loss is downstream
++	     of the server's emulator. Set MOSH_SERVER_LOG to a path to enable. */
++	  {
++	    const char *dbg = getenv( "MOSH_SERVER_LOG" );
++	    if ( dbg ) {
++	      FILE *fp = fopen( dbg, "a" );
++	      if ( fp ) {
++		const Terminal::Framebuffer &fb = terminal.get_fb();
++		const int last = fb.ds.get_height() - 1;
++		std::string row;
++		for ( int c = 0; c < fb.ds.get_width(); c++ ) {
++		  const Terminal::Cell *cell = fb.get_cell( last, c );
++		  if ( cell->is_blank() ) { row += ' '; continue; }
++		  cell->print_grapheme( row );
++		}
++		while ( !row.empty() && row[ row.size() - 1 ] == ' ' ) row.erase( row.size() - 1 );
++		fprintf( fp, "read %4zd B | cursor r%d c%d wrap=%d | row%d len=%zu | %s\n",
++			 (ssize_t)bytes_read,
++			 fb.ds.get_cursor_row(), fb.ds.get_cursor_col(),
++			 (int)fb.ds.next_print_will_wrap,
++			 last, row.size(), row.c_str() );
++		fclose( fp );
++	      }
++	    }
++	  }
+ 	
+ 	  /* update client with new state of terminal */
+ 	  network.set_current_state( terminal );
