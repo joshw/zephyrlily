@@ -25,8 +25,19 @@ Direct/xterm/tmux: row 1 keeps its 80 characters and `X` lands at row 2
 column 1. mosh: `X` overwrites row 1 column 80.
 
 `emulation-mode-change-wrap.test` (attached) runs this in the existing e2e
-framework. On mosh 1.4.0 it fails with a direct-vs-mosh capture mismatch;
-with the fix it passes.
+framework. On mosh 1.4.0 it reports **ERROR (exit 99)**, because the resulting
+framebuffer state does not survive `Display::new_frame`'s round trip and mosh's
+own verifier says so:
+
+```
+Cursor mismatch: (23, 79) vs. (23, 78).
+Warning, round-trip Instruction verification failed!
+```
+
+`e2e-test` promotes that to `test_error` before it reaches the capture
+comparison, so the status is ERROR rather than FAIL. The rendered output is
+also visibly wrong (`X` on row 1 column 80 instead of row 2 column 1). With the
+fix, the verifier is silent and the test passes.
 
 ## Cause
 
