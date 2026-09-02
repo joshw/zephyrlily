@@ -7,8 +7,39 @@ path is irrelevant; `--predict=never` changes nothing).
 
 | | defect | test (mosh e2e framework) | on stock 1.4.0 |
 |---|---|---|---|
-| bug 1 | SM/RM clears the pending-wrap flag (emulator) | `emulation-mode-change-wrap.test` | ERROR (exit 99) |
-| bug 2 | `new_frame` backspaces from the autowrap column (frame generation / state sync) | `emulation-bottom-row-resync.test` | ERROR (exit 99) |
+| bug 1 | SM/RM clears the pending-wrap flag (emulator) | `emulation-mode-change-wrap.test` | fails |
+| bug 2 | `new_frame` backspaces from the autowrap column (frame generation / state sync) | `emulation-bottom-row-resync.test` | fails |
+
+## Verifying
+
+```sh
+./verify.sh /path/to/mosh-1.4.0
+```
+
+That copies both tests in, registers them, builds, runs them, applies both
+patches, rebuilds, and runs them again — printing the before and after. It
+asserts that the built binaries are newer than the patched sources at each
+step, because the e2e harness runs `src/frontend/mosh-{client,server}` and a
+missed rebuild silently turns a working fix into an apparent failure. (That
+happened to us; it is the reason the check exists.)
+
+Expected output:
+
+```
+=== tests BEFORE the fixes (expected: both non-zero) ===
+  ERROR: emulation-mode-change-wrap.test
+  ERROR: emulation-bottom-row-resync.test
+  --- mosh's own verifier said: ---
+  Warning, round-trip Instruction verification failed!
+  Cursor mismatch: (23, 79) vs. (23, 78).
+
+=== tests AFTER the fixes (expected: both PASS) ===
+  PASS: emulation-mode-change-wrap.test
+  PASS: emulation-bottom-row-resync.test
+
+=== full suite after the fixes ===
+  # TOTAL: 33   # PASS: 31   # XFAIL: 2   # FAIL: 0   # ERROR: 0
+```
 
 ## Reading the failures: ERROR, not FAIL
 
@@ -32,31 +63,21 @@ In other words: mosh's own round-trip invariant is violated, and mosh's own
 test infrastructure is what says so. With either fix applied, the verifier is
 silent and its test passes.
 
-(On macOS the bug 1 test happened to surface as a plain capture mismatch,
-exit 1, because frame timing differed and that particular diff was never
-generated standalone. On Linux both trip the verifier. Either way the test is
-non-zero on stock and zero with the fix; the Linux behaviour is described here
-because that is where maintainers and CI run.)
+Which of the two statuses you get is not stable: whether that particular diff
+is generated standalone depends on frame timing, so a test may surface as
+ERROR (the verifier fired) or as FAIL (a plain direct-vs-mosh capture
+mismatch). We have observed both on the same machine across runs. What is
+stable is the direction: **non-zero on stock, PASS with the fix.** Judge the
+result on that, not on which non-zero status appears.
 
 With both one-line fixes applied and both tests added to `src/tests`:
 33 tests, 31 PASS, 2 XFAIL, 0 FAIL, 0 ERROR.
 
-To verify from a pristine mosh-1.4.0 tree:
-
-```sh
-cp bug*/emulation-*.test mosh-1.4.0/src/tests/     # add both to TESTS in src/tests/Makefile.am
-cd mosh-1.4.0 && ./autogen.sh && ./configure && make
-# both ERROR (exit 99): "Round-trip Instruction verification failed on server"
-( cd src/tests && make check TESTS="emulation-mode-change-wrap.test emulation-bottom-row-resync.test" )
-
-patch -p1 < ../bug1-sm-rm-pending-wrap/fix.patch
-patch -p1 < ../bug2-frame-cursor-desync/fix.patch
-make
-
-# both PASS, verifier silent
-( cd src/tests && make check TESTS="emulation-mode-change-wrap.test emulation-bottom-row-resync.test" )
-( cd src/tests && make check )                      # whole suite clean
-```
+If you would rather drive it by hand than run `verify.sh`, note the one trap:
+after `patch`, rebuild from the **top** of the tree and confirm
+`src/frontend/mosh-server` is newer than the patched sources before running
+`make check`. `make check` inside `src/tests` does not rebuild the frontend,
+and the tests will quietly run against the old binaries and still fail.
 
 (Build note: protobuf 3.21 was used here; protobuf 29.x produces a
 mosh-client that crashes on resize, unrelated to these bugs.)
