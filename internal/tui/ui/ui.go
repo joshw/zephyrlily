@@ -14,7 +14,6 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 )
@@ -202,11 +201,10 @@ type Model struct {
 	reserveLastColumn bool
 
 	// mosh detection state, gathered once per session (never per reconnect).
-	// See moshdetect.go: moshSDACertain is the terminal identifying itself as
-	// mosh, moshPSFound the weaker "a mosh-server is running here".
-	moshProbed     bool
-	moshSDACertain bool
-	moshPSFound    bool
+	// See moshdetect.go: moshPSFound is "a mosh-server is running here", which
+	// is as much as anything available to us can establish.
+	moshProbed  bool
+	moshPSFound bool
 	// Pacing for when the hint may be shown; see the timing note in
 	// moshdetect.go. moshHintSettling means the wait is running.
 	moshHintSettling  bool
@@ -901,7 +899,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Look for mosh once per session, not once per reconnect.
 		if !m.moshProbed {
 			m.moshProbed = true
-			cmds = append(cmds, detectMoshCmds()...)
+			cmds = append(cmds, detectMoshCmd())
 		}
 		return m, tea.Batch(cmds...)
 
@@ -911,14 +909,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case moshSettleMsg:
 		return m.moshHintSettle()
-
-	case uv.SecondaryDeviceAttributesEvent:
-		// Unsolicited replies are possible (a terminal answering something else
-		// we sent), so this only ever sets the flag, never clears it.
-		if isMoshSDA(msg) {
-			m.moshSDACertain = true
-		}
-		return m, nil
 
 	case serverEventMsg:
 		if msg.msg == nil {

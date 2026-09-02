@@ -4,13 +4,11 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // Detecting mosh, in two parts.
@@ -24,27 +22,23 @@ import (
 // setup runs zlily inside screen, whose daemon is reparented to init, so
 // mosh-server is nowhere above us.
 //
-// So we ask two questions and say only as much as the answers support:
+// So there is one question we can actually answer: is this user running a
+// mosh-server on this machine. It is blunt — it is equally true of a mosh
+// session that is not this one — but it survives a multiplexer, and it is the
+// only signal that never claims more than it knows.
 //
-//  1. Secondary Device Attributes. Mosh emulates the terminal itself and
-//     answers this query with a hardcoded signature of its own — see
-//     CSI_SDA in mosh's src/terminal/terminalfunctions.cc. When that
-//     signature comes back, mosh is certain. It only comes back when nothing
-//     is between us and mosh: screen answers the query itself (it replies
-//     83 = 'S'), so under a multiplexer this tells us nothing about mosh.
+// Asking the terminal to identify itself looked better and was not. Mosh
+// emulates the terminal and answers Secondary Device Attributes with
+// "\033[>1;10;0c" (see CSI_SDA in mosh's src/terminal/terminalfunctions.cc),
+// which reads like a fingerprint until you notice what it says: "a plain VT220,
+// firmware 10". That is a natural thing for any emulator to claim, and Ghostty
+// claims exactly it — reported by a user running zlily locally and being told
+// they were on mosh. The query is gone rather than merely downgraded: a reply
+// that cannot establish mosh cannot corroborate it either.
 //
-//  2. Is this user running a mosh-server on this machine. Blunt, and true of
-//     sessions that are not ours, but it is what survives a multiplexer. It
-//     supports "might be", nothing stronger.
-//
-// A wrong answer costs one suggestion the user can ignore; no behaviour
-// changes on it.
-
-// moshSDA is mosh's hardcoded Secondary Device Attributes reply, "\033[>1;10;0c"
-// (a claim to be a plain VT220, firmware 10). Real terminals answer with their
-// own identity: iTerm2 with 0;95;0, Terminal.app 1;95;0, xterm 41;<patch>;0,
-// screen 83;<version>;0, tmux 84;0;0.
-var moshSDA = []int{1, 10, 0}
+// So the process check gates the hint entirely, and the wording stays hedged
+// even when it fires. A wrong answer then costs one suggestion the user can
+// ignore; no behaviour changes on it.
 
 // When to say it. The hint is a note about the display, so it can wait for a
 // gap; what it must not do is land in the middle of something the user is being
@@ -73,22 +67,16 @@ type moshPSMsg struct{ found bool }
 // moshSettleMsg is one tick of the wait for a good moment to speak up.
 type moshSettleMsg struct{}
 
-// detectMoshCmds starts both probes. Deciding what to say with the answers is
-// paced separately; see moshSettleMsg.
-func detectMoshCmds() []tea.Cmd {
-	return []tea.Cmd{
-		func() tea.Msg { return moshPSMsg{found: moshServerRunning()} },
-		tea.Raw(ansi.RequestSecondaryDeviceAttributes),
-	}
+// detectMoshCmd starts the probe. Deciding what to say with the answer is paced
+// separately; see moshSettleMsg.
+func detectMoshCmd() tea.Cmd {
+	return func() tea.Msg { return moshPSMsg{found: moshServerRunning()} }
 }
 
 // moshSettleCmd schedules the next look for a gap.
 func moshSettleCmd() tea.Cmd {
 	return tea.Tick(moshSettleTick, func(time.Time) tea.Msg { return moshSettleMsg{} })
 }
-
-// isMoshSDA reports whether a Secondary Device Attributes reply is mosh's.
-func isMoshSDA(attrs []int) bool { return slices.Equal(attrs, moshSDA) }
 
 // moshServerRunning reports whether this user owns a mosh-server process.
 func moshServerRunning() bool {
@@ -154,7 +142,7 @@ func (m Model) moshHintSettle() (Model, tea.Cmd) {
 	if m.reserveLastColumn {
 		return m, nil
 	}
-	lines := moshHintLines(m.moshSDACertain, m.moshPSFound)
+	lines := moshHintLines(m.moshPSFound)
 	if lines == nil {
 		return m, nil
 	}
@@ -162,26 +150,20 @@ func (m Model) moshHintSettle() (Model, tea.Cmd) {
 	return m.syncViewportContent(), nil
 }
 
-// moshHintLines is the suggestion, worded to match how much we actually know.
-// Nil when there is nothing worth saying.
-func moshHintLines(certain, psFound bool) []string {
-	var lead []string
-	switch {
-	case certain:
-		lead = []string{
-			"Note: this session is running over mosh (it identified itself).",
-		}
-	case psFound:
-		lead = []string{
-			"Note: a mosh-server is running here, so this session may be going",
-			"through it. There is no way to tell from inside a screen session.",
-		}
-	default:
+// moshHintLines is the suggestion. Nil when there is nothing worth saying.
+//
+// The wording stays hedged whatever we think we know. Nothing available to us
+// distinguishes this session from another of the same user's, so stating it as
+// fact would be wrong for anyone who keeps a mosh session open elsewhere — and
+// being told about a transport you are not using reads as a bug in zlily.
+func moshHintLines(psFound bool) []string {
+	if !psFound {
 		return nil
 	}
-	return append(lead,
+	return []string{
+		"Note: you may be using mosh - a mosh-server is running on this machine.",
 		"mosh 1.4.0 has two display bugs that can make the input line overwrite",
 		"itself. '%debug lastcol on' avoids them, at the cost of one column of",
 		"typing room. See '%help lastcol'.",
-	)
+	}
 }
