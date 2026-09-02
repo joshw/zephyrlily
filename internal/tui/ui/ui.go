@@ -193,6 +193,11 @@ type Model struct {
 	linkPreviewPending   map[string]bool     // url -> fetch in flight
 	linkPreviewDismissed map[previewKey]bool // previews backspaced away on this line
 
+	// reserveLastColumn keeps the input area off the terminal's last column, so
+	// the renderer never writes the cell whose pending-wrap state trips two mosh
+	// bugs. On by default; see reservedColumns for why, and %debug lastcol.
+	reserveLastColumn bool
+
 	// shortenHintShown records that the M-s reminder has been printed, so it is
 	// offered once a session rather than at every URL.
 	shortenHintShown bool
@@ -408,28 +413,29 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 	passwordField.SetHeight(1)
 
 	return Model{
-		client:         c,
-		output:         output,
-		input:          ti,
-		keys:           NewKeyMap(),
-		spellChecker:   NewSpellChecker(),
-		logChan:        logChan,
-		historyPos:     -1,
-		searchIdx:      -1,
-		autoPageAnchor: -1,
-		redrawOnShrink: true, // see the field's doc; %debug redraw off to hunt the bug
-		pagerEnabled:   true,
-		linkPreviewOn:  true,
-		scrollAnchor:   -1,
-		renderEpoch:    1, // 1 so zero-valued item caches (epoch 0) read as stale
-		authMode:       !c.HasToken(),
-		authField:      0,
-		usernameInput:  usernameField,
-		passwordInput:  passwordField,
-		inputEvents:    newRing(inputEventRingCap),
-		msgMeta:        newRing(msgMetaRingCap),
-		perf:           newPerfMetrics(),
-		processedIDs:   newDedupSet(),
+		client:            c,
+		output:            output,
+		input:             ti,
+		keys:              NewKeyMap(),
+		spellChecker:      NewSpellChecker(),
+		logChan:           logChan,
+		historyPos:        -1,
+		searchIdx:         -1,
+		autoPageAnchor:    -1,
+		redrawOnShrink:    true, // see the field's doc; %debug redraw off to hunt the bug
+		reserveLastColumn: true, // see reservedColumns; %debug lastcol off to hunt the bug
+		pagerEnabled:      true,
+		linkPreviewOn:     true,
+		scrollAnchor:      -1,
+		renderEpoch:       1, // 1 so zero-valued item caches (epoch 0) read as stale
+		authMode:          !c.HasToken(),
+		authField:         0,
+		usernameInput:     usernameField,
+		passwordInput:     passwordField,
+		inputEvents:       newRing(inputEventRingCap),
+		msgMeta:           newRing(msgMetaRingCap),
+		perf:              newPerfMetrics(),
+		processedIDs:      newDedupSet(),
 
 		linkPreviewCache:   make(map[string]string),
 		linkPreviewPending: make(map[string]bool),
@@ -1211,9 +1217,42 @@ func (m Model) inputPromptDisplayWidth() int {
 	return len(promptText) + 1 // +1 for space after prompt
 }
 
+// reservedColumns is how many columns at the right edge the input area leaves
+// empty, over and above the cell it already reserves for the cursor.
+//
+// One, normally, and it exists to sidestep two mosh bugs rather than for any
+// layout reason. Both need something written to the terminal's last column:
+// writing there leaves the cursor on it with a wrap pending, and mosh mishandles
+// that state in two ways — an ANSI mode change discards the pending wrap
+// (mosh's SM/RM registration), and its frame generator ends up believing the
+// cursor is one past the last column and emits a backspace that lands a cell
+// early (Display::new_frame / append_move). The input line is where this bites,
+// because it sits on the bottom row, which is the one row mosh's put_row does
+// not re-anchor with a CR/LF afterwards.
+//
+// Keeping the input area off the last column means the renderer never writes
+// that cell. Trailing blanks it emits as an erase-to-end-of-line, which leaves
+// no wrap pending; the one thing it does write out at an explicit column is the
+// virtual cursor cell, and that is inside the input area's width too (see the
+// +1 in inputTotalLines). So neither bug has anything to trigger on. That is
+// worth a column: it
+// prevents the corruption rather than repainting over it afterwards, which is
+// all redrawOnShrink can do. Both patches are filed upstream
+// (display-bug-repro/upstream); this is what protects users running a mosh that
+// does not have them yet, which will be most of them for a long time.
+//
+// '%debug lastcol off' turns it off, for observing the bug or reclaiming the
+// column on a connection that is not mosh.
+func (m Model) reservedColumns() int {
+	if m.reserveLastColumn {
+		return 1
+	}
+	return 0
+}
+
 // inputFirstLineWidth returns columns available for input on line 0 (after prompt).
 func (m Model) inputFirstLineWidth() int {
-	w := m.width - m.inputPromptDisplayWidth()
+	w := m.width - m.inputPromptDisplayWidth() - m.reservedColumns()
 	if w < 1 {
 		w = 1
 	}
@@ -1257,12 +1296,13 @@ func (m Model) inputDisplayLen() int {
 }
 
 // inputWrapWidth returns the columns available on continuation lines (2..n),
-// which carry no prompt and so span the full terminal width.
+// which carry no prompt and so span the terminal width less reservedColumns.
 func (m Model) inputWrapWidth() int {
-	if m.width < 1 {
-		return 1
+	w := m.width - m.reservedColumns()
+	if w < 1 {
+		w = 1
 	}
-	return m.width
+	return w
 }
 
 // inputTotalLines returns total display lines needed for input, including cursor.

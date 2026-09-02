@@ -295,7 +295,8 @@ func buildSnapshot(m Model, rendererTail []byte) string {
 	// it on cannot be read as evidence that the display was healthy: a full
 	// repaint clears any divergence, so the workaround hides exactly what a
 	// snapshot is taken to find.
-	fmt.Fprintf(&b, "redraw-on-shrink=%v\n", m.redrawOnShrink)
+	fmt.Fprintf(&b, "redraw-on-shrink=%v reserve-last-column=%v\n",
+		m.redrawOnShrink, m.reserveLastColumn)
 	// Where the terminal itself says the cursor is, asked before the
 	// pre-snapshot repaint. The renderer tracks the cursor by dead reckoning
 	// from the sequences it emits; if the terminal disagrees, every subsequent
@@ -449,6 +450,9 @@ var debugUsage = []string{
 	"  before sharing.",
 	"Usage: %debug perf",
 	"  Prints how responsive this session has been over its lifetime.",
+	"Usage: %debug lastcol [on|off]",
+	"  Keeps the input area off the terminal's last column, avoiding two mosh",
+	"  display bugs entirely. On by default; turn off to observe them.",
 	"Usage: %debug redraw [on|off]",
 	"  Forces a full repaint when the input area shrinks, working around a",
 	"  mosh display bug. On by default; turn off to observe it.",
@@ -478,6 +482,24 @@ func (m Model) handleDebugCommand(fields []string) (Model, []string, tea.Cmd) {
 	// debugging knob rather than a preference: it exists to be turned off while
 	// hunting the display bug it was meant to hide, and on again if a session
 	// becomes unusable mid-hunt.
+	// %debug lastcol [on|off] controls whether the input area keeps clear of the
+	// terminal's last column. See reservedColumns in ui.go.
+	if cmdarg.Is(fields[1], "lastcol") {
+		on, ok := false, false
+		if len(fields) == 3 {
+			on, ok = cmdarg.OnOff(fields[2])
+		}
+		switch {
+		case ok:
+			m.reserveLastColumn = on
+			m = m.maybeResizeViewport()
+			return m, []string{"Reserve last column: " + onOff(on)}, nil
+		case len(fields) == 2:
+			return m, []string{"Reserve last column: " + onOff(m.reserveLastColumn)}, nil
+		}
+		return m, []string{"Usage: %debug lastcol on|off"}, nil
+	}
+
 	if cmdarg.Is(fields[1], "redraw") {
 		on, ok := false, false
 		if len(fields) == 3 {

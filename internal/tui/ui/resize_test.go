@@ -265,19 +265,25 @@ func TestResize_ShrinkRepaint(t *testing.T) {
 	logChan, _ := NewLogger()
 	base := New(client.New(""), logChan)
 	base.authMode = false
-	base = sizeTo(t, base, 20, 10) // firstWidth = 20 (no prompt)
+	base = sizeTo(t, base, 20, 10)
+	// Derive the wrap boundary rather than hardcoding it: the input area keeps
+	// clear of the last column (see reservedColumns), so the first line holds
+	// fewer characters than the terminal is wide, and a hardcoded width silently
+	// moves this fixture off the boundary it is meant to straddle.
+	firstWidth := base.inputFirstLineWidth()
+	fill := firstWidth     // fill+1 > firstWidth, so this needs two lines
+	fits := firstWidth - 1 // fits+1 == firstWidth, the last length on one line
 
 	send := func(m Model, msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		upd, cmd := m.Update(msg)
 		return upd.(Model), cmd
 	}
 
-	// 20 chars: n=len+1=21 > firstWidth=20, so two input lines.
 	twoLine := func(on bool) Model {
 		m := base
 		m.redrawOnShrink = on
-		m.inputValue = strings.Repeat("a", 20)
-		m.inputCursor = 20
+		m.inputValue = strings.Repeat("a", fill)
+		m.inputCursor = fill
 		m = m.maybeResizeViewport()
 		require.Equal(t, 2, m.calculateInputHeight(), "fixture must start on two input lines")
 		return m
@@ -293,14 +299,14 @@ func TestResize_ShrinkRepaint(t *testing.T) {
 
 	t.Run("disabled, the transition is left alone so the bug can be observed", func(t *testing.T) {
 		got, cmd := send(twoLine(false), tea.KeyPressMsg{Code: tea.KeyBackspace})
-		require.Equal(t, 1, got.calculateInputHeight(), "19 chars should fit on one input line")
+		require.Equal(t, 1, got.calculateInputHeight(), "one under the boundary fits on one input line")
 		assert.False(t, cmdYieldsClearScreen(t, cmd),
 			"with the workaround off, the shrink transition must be left alone so the bug can be observed")
 	})
 
 	t.Run("enabled, crossing 2->1 forces a redraw", func(t *testing.T) {
 		got, cmd := send(twoLine(true), tea.KeyPressMsg{Code: tea.KeyBackspace})
-		require.Equal(t, 19, len(got.inputValue))
+		require.Equal(t, fits, len(got.inputValue))
 		require.Equal(t, 1, got.calculateInputHeight())
 		assert.False(t, got.forceRedraw, "flag must be consumed (cleared) by Update, not left set")
 		assert.True(t, cmdYieldsClearScreen(t, cmd),
@@ -309,8 +315,8 @@ func TestResize_ShrinkRepaint(t *testing.T) {
 
 	oneLine := func(on bool) Model {
 		m := twoLine(on)
-		m.inputValue = strings.Repeat("a", 19)
-		m.inputCursor = 19
+		m.inputValue = strings.Repeat("a", fits)
+		m.inputCursor = fits
 		m = m.maybeResizeViewport()
 		m.forceRedraw = false // fixture setup itself shrank a stale 2-line viewport; not what's under test
 		require.Equal(t, 1, m.calculateInputHeight())
@@ -319,7 +325,7 @@ func TestResize_ShrinkRepaint(t *testing.T) {
 
 	t.Run("enabled, but no line-count change means no redraw", func(t *testing.T) {
 		got, cmd := send(oneLine(true), tea.KeyPressMsg{Code: tea.KeyBackspace})
-		require.Equal(t, 18, len(got.inputValue))
+		require.Equal(t, fits-1, len(got.inputValue))
 		require.Equal(t, 1, got.calculateInputHeight())
 		assert.False(t, cmdYieldsClearScreen(t, cmd),
 			"no line-count change means no need for the workaround")
@@ -327,8 +333,8 @@ func TestResize_ShrinkRepaint(t *testing.T) {
 
 	t.Run("enabled, growing 1->2 does not force a redraw", func(t *testing.T) {
 		got, cmd := send(oneLine(true), tea.KeyPressMsg{Code: 'a', Text: "a"})
-		require.Equal(t, 20, len(got.inputValue))
-		require.Equal(t, 2, got.calculateInputHeight(), "20 chars should need two input lines")
+		require.Equal(t, fill, len(got.inputValue))
+		require.Equal(t, 2, got.calculateInputHeight(), "one past the boundary needs two input lines")
 		assert.False(t, cmdYieldsClearScreen(t, cmd),
 			"only the shrink direction was ever implicated; repainting on growth would be pure flicker")
 	})

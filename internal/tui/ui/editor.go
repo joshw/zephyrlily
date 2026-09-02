@@ -64,7 +64,11 @@ func (m Model) editorTitle() string {
 // viewEditor renders the full-screen editing overlay.
 func (m Model) viewEditor() string {
 	header := commandResultStyle.Render(m.editorTitle())
-	footer := statusBarStyle.Width(m.width).Render("Ctrl+S  save   Esc  cancel")
+	// The footer is the bottom row here, so it keeps off the last column for the
+	// same reason the input line does: painting there leaves the pending-wrap
+	// state that mosh 1.4.0 loses track of. See reservedColumns in ui.go.
+	footer := statusBarStyle.Width(m.width - m.reservedColumns()).
+		Render("Ctrl+S  save   Esc  cancel")
 	return strings.Join([]string{header, m.editor.View(), footer}, "\n")
 }
 

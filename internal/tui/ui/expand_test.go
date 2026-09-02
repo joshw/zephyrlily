@@ -77,7 +77,12 @@ func TestExpandKeyAtWrapBoundaryResizesViewport(t *testing.T) {
 	logChan, _ := NewLogger()
 	base := New(client.New(""), logChan)
 	base.authMode = false
-	base = sizeTo(t, base, 20, 10) // firstWidth = 20 (no prompt)
+	base = sizeTo(t, base, 20, 10)
+	// Derive the wrap boundary rather than hardcoding it: the input area keeps
+	// clear of the last column (see reservedColumns), so the first line holds
+	// fewer characters than the terminal is wide.
+	firstWidth := base.inputFirstLineWidth()
+	fits := firstWidth - 1 // the last length that still fits on one line
 
 	expectedHeightFor := func(m Model) int {
 		return m.height - 1 - m.calculateInputHeight()
@@ -88,11 +93,11 @@ func TestExpandKeyAtWrapBoundaryResizesViewport(t *testing.T) {
 		return upd.(Model)
 	}
 
-	// 19 chars: n=len+1=20 <= firstWidth=20, so still a single input line.
-	// The 20th character is the one that must cross into a second line.
+	// One character under the boundary, so the next one must cross into a
+	// second line.
 	m := base
-	m.inputValue = strings.Repeat("a", 19)
-	m.inputCursor = 19
+	m.inputValue = strings.Repeat("a", fits)
+	m.inputCursor = fits
 	m = m.maybeResizeViewport()
 	require.Equal(t, 1, m.calculateInputHeight(), "fixture must start on a single input line")
 	require.Equal(t, expectedHeightFor(m), m.viewport.Height(), "fixture must start in sync")
@@ -100,8 +105,8 @@ func TestExpandKeyAtWrapBoundaryResizesViewport(t *testing.T) {
 	for _, r := range []rune{'x', ';', ':', ',', '='} {
 		t.Run(string(r), func(t *testing.T) {
 			got := send(m, r)
-			require.Equal(t, 20, len(got.inputValue))
-			require.Equal(t, 2, got.calculateInputHeight(), "20 chars should need 2 input lines")
+			require.Equal(t, fits+1, len(got.inputValue))
+			require.Equal(t, 2, got.calculateInputHeight(), "crossing the boundary needs 2 input lines")
 			assert.Equal(t, expectedHeightFor(got), got.viewport.Height(),
 				"viewport must resize to match the taller input area")
 		})
