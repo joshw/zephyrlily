@@ -41,6 +41,21 @@ Expected output:
   # TOTAL: 33   # PASS: 31   # XFAIL: 2   # FAIL: 0   # ERROR: 0
 ```
 
+## Confirmed against the original symptom
+
+Beyond the tests, both patches were confirmed to resolve the user-visible
+symptom that started this: a full-width input line in a terminal application
+losing a character when trimmed back from the right margin. Reproduced
+interactively over a real network with a patched `mosh-server` and
+`mosh-client`, typing rather than replaying, with the application's own
+repaint workaround disabled so nothing could mask the result. Before the
+fixes the third backspace left 77 characters; after, it leaves the correct
+78.
+
+Note that this required patching **both** ends. `Display::new_frame` runs on
+the server to generate state diffs and on the client to render them, so a
+patched server with a stock client still shows the corruption.
+
 ## Reading the failures: ERROR, not FAIL
 
 On stock 1.4.0 both tests report **ERROR** rather than FAIL. That is not a
