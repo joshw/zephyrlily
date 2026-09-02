@@ -207,6 +207,12 @@ type Model struct {
 	moshProbed     bool
 	moshSDACertain bool
 	moshPSFound    bool
+	// Pacing for when the hint may be shown; see the timing note in
+	// moshdetect.go. moshHintSettling means the wait is running.
+	moshHintSettling  bool
+	moshHintDone      bool
+	moshHintOutputLen int
+	moshHintWaited    time.Duration
 
 	// shortenHintShown records that the M-s reminder has been printed, so it is
 	// offered once a session rather than at every URL.
@@ -903,20 +909,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.moshPSFound = msg.found
 		return m, nil
 
+	case moshSettleMsg:
+		return m.moshHintSettle()
+
 	case uv.SecondaryDeviceAttributesEvent:
 		// Unsolicited replies are possible (a terminal answering something else
 		// we sent), so this only ever sets the flag, never clears it.
 		if isMoshSDA(msg) {
 			m.moshSDACertain = true
-		}
-		return m, nil
-
-	case moshDecideMsg:
-		// Say nothing if the workaround is already on: someone who turned it on,
-		// here or while the probes were in flight, does not need telling.
-		if lines := moshHintLines(m.moshSDACertain, m.moshPSFound); lines != nil && !m.reserveLastColumn {
-			m.output = append(m.output, OutputItem{Type: "command", Data: lines})
-			m = m.syncViewportContent()
 		}
 		return m, nil
 
@@ -1101,6 +1101,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The zlilyStartup memo is fetched and replayed by the proxy now; any
 		// client-only commands it contains arrive as "clientcommand" events.
 		replayCmds = append(replayCmds, reportSeenNow(m.client, m.lastSeenID))
+		// Reaching here means the login sync finished, so Lily's own login
+		// prompts have been answered: only now may the mosh hint start looking
+		// for a gap. See the timing note in moshdetect.go.
+		if m.moshProbed && !m.moshHintSettling && !m.moshHintDone {
+			m.moshHintSettling = true
+			m.moshHintOutputLen = len(m.output)
+			replayCmds = append(replayCmds, moshSettleCmd())
+		}
 		return m, tea.Batch(replayCmds...)
 
 	case editorFetchResultMsg:
