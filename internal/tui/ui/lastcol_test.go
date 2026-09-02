@@ -27,6 +27,7 @@ func TestInputAreaKeepsOffLastColumn(t *testing.T) {
 	for _, w := range []int{20, 40, 80, 81} {
 		base := New(client.New(""), logChan)
 		base.authMode = false
+		base.reserveLastColumn = true
 		base = sizeTo(t, base, w, 12)
 
 		// Sweep well past the first wrap so both the first line (which pays for
@@ -69,6 +70,7 @@ func TestEveryModeKeepsOffLastColumn(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m := New(client.New(""), logChan)
 			m.authMode = false
+			m.reserveLastColumn = true
 			m = sizeTo(t, m, w, h)
 			m.inputValue = strings.Repeat("a", w+w/2)
 			m.inputCursor = len(m.inputValue)
@@ -92,8 +94,8 @@ func TestReserveLastColumnOffLetsInputReachTheEdge(t *testing.T) {
 
 	m := New(client.New(""), logChan)
 	m.authMode = false
-	m.reserveLastColumn = false
 	m = sizeTo(t, m, w, 12)
+	require.False(t, m.reserveLastColumn, "off is the default")
 
 	// One short of the cursor cell filling the last column.
 	n := m.inputFirstLineWidth() - 1
@@ -115,20 +117,21 @@ func TestDebugLastColToggle(t *testing.T) {
 	base.authMode = false
 	base = sizeTo(t, base, 80, 24)
 
-	require.True(t, base.reserveLastColumn, "the workaround is on by default")
+	require.False(t, base.reserveLastColumn, "the workaround is off by default")
 
 	m, out, _ := base.handleDebugCommand([]string{"debug", "lastcol"})
-	assert.Equal(t, []string{"Reserve last column: on"}, out)
-	assert.True(t, m.reserveLastColumn, "a bare query must not change the setting")
-
-	m, out, _ = m.handleDebugCommand([]string{"debug", "lastcol", "off"})
 	assert.Equal(t, []string{"Reserve last column: off"}, out)
-	assert.False(t, m.reserveLastColumn)
+	assert.False(t, m.reserveLastColumn, "a bare query must not change the setting")
 	assert.Equal(t, m.width, m.inputWrapWidth(), "off gives the input the full width")
 
 	m, out, _ = m.handleDebugCommand([]string{"debug", "lastcol", "on"})
 	assert.Equal(t, []string{"Reserve last column: on"}, out)
 	assert.True(t, m.reserveLastColumn)
+	assert.Equal(t, m.width-1, m.inputWrapWidth(), "on holds a column back")
+
+	m, out, _ = m.handleDebugCommand([]string{"debug", "lastcol", "off"})
+	assert.Equal(t, []string{"Reserve last column: off"}, out)
+	assert.False(t, m.reserveLastColumn)
 
 	_, out, _ = m.handleDebugCommand([]string{"debug", "lastcol", "sideways"})
 	assert.Equal(t, []string{"Usage: %debug lastcol on|off"}, out)

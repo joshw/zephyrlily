@@ -14,6 +14,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 )
@@ -195,8 +196,17 @@ type Model struct {
 
 	// reserveLastColumn keeps the input area off the terminal's last column, so
 	// the renderer never writes the cell whose pending-wrap state trips two mosh
-	// bugs. On by default; see reservedColumns for why, and %debug lastcol.
+	// bugs. Off by default, because it costs a visible column of typing room and
+	// only mosh users need it; moshHintShown covers offering it to them. See
+	// reservedColumns for why it works, and %debug lastcol.
 	reserveLastColumn bool
+
+	// mosh detection state, gathered once per session (never per reconnect).
+	// See moshdetect.go: moshSDACertain is the terminal identifying itself as
+	// mosh, moshPSFound the weaker "a mosh-server is running here".
+	moshProbed     bool
+	moshSDACertain bool
+	moshPSFound    bool
 
 	// shortenHintShown records that the M-s reminder has been printed, so it is
 	// offered once a session rather than at every URL.
@@ -422,8 +432,8 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		historyPos:        -1,
 		searchIdx:         -1,
 		autoPageAnchor:    -1,
-		redrawOnShrink:    true, // see the field's doc; %debug redraw off to hunt the bug
-		reserveLastColumn: true, // see reservedColumns; %debug lastcol off to hunt the bug
+		redrawOnShrink:    true,  // see the field's doc; %debug redraw off to hunt the bug
+		reserveLastColumn: false, // off by default: costs a column. See reservedColumns.
 		pagerEnabled:      true,
 		linkPreviewOn:     true,
 		scrollAnchor:      -1,
@@ -882,7 +892,33 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.seenLoopStarted = true
 			cmds = append(cmds, reportSeenCmd(m.client, 0))
 		}
+		// Look for mosh once per session, not once per reconnect.
+		if !m.moshProbed {
+			m.moshProbed = true
+			cmds = append(cmds, detectMoshCmds()...)
+		}
 		return m, tea.Batch(cmds...)
+
+	case moshPSMsg:
+		m.moshPSFound = msg.found
+		return m, nil
+
+	case uv.SecondaryDeviceAttributesEvent:
+		// Unsolicited replies are possible (a terminal answering something else
+		// we sent), so this only ever sets the flag, never clears it.
+		if isMoshSDA(msg) {
+			m.moshSDACertain = true
+		}
+		return m, nil
+
+	case moshDecideMsg:
+		// Say nothing if the workaround is already on: someone who turned it on,
+		// here or while the probes were in flight, does not need telling.
+		if lines := moshHintLines(m.moshSDACertain, m.moshPSFound); lines != nil && !m.reserveLastColumn {
+			m.output = append(m.output, OutputItem{Type: "command", Data: lines})
+			m = m.syncViewportContent()
+		}
+		return m, nil
 
 	case serverEventMsg:
 		if msg.msg == nil {
@@ -1220,8 +1256,9 @@ func (m Model) inputPromptDisplayWidth() int {
 // reservedColumns is how many columns at the right edge the input area leaves
 // empty, over and above the cell it already reserves for the cursor.
 //
-// One, normally, and it exists to sidestep two mosh bugs rather than for any
-// layout reason. Both need something written to the terminal's last column:
+// Zero unless the mosh workaround is on, since it costs a visible column and
+// exists to sidestep two mosh bugs rather than for any layout reason. Both need
+// something written to the terminal's last column:
 // writing there leaves the cursor on it with a wrap pending, and mosh mishandles
 // that state in two ways — an ANSI mode change discards the pending wrap
 // (mosh's SM/RM registration), and its frame generator ends up believing the
@@ -1241,8 +1278,9 @@ func (m Model) inputPromptDisplayWidth() int {
 // (display-bug-repro/upstream); this is what protects users running a mosh that
 // does not have them yet, which will be most of them for a long time.
 //
-// '%debug lastcol off' turns it off, for observing the bug or reclaiming the
-// column on a connection that is not mosh.
+// It is off by default: most connections are not mosh, and the empty column is
+// noticeable. When a mosh-server turns up on the machine at login we suggest
+// turning it on (see detectMoshCmd), and '%debug lastcol on' does that.
 func (m Model) reservedColumns() int {
 	if m.reserveLastColumn {
 		return 1
