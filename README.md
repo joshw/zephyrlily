@@ -21,9 +21,13 @@ The separation allows multiple clients to connect to the same proxy session with
 
 The primary client is a feature-rich terminal interface built with [Bubble Tea](https://github.com/charmbracelet/bubbletea). It provides full Lily functionality including intelligent name expansion, history navigation, and emacs-style keybindings.
 
+### The TUI in a browser
+
+The terminal client also compiles to WebAssembly and runs in a browser tab — the same model, keymap and rendering code, with xterm.js standing in for the terminal. Run `zlily server --web` and open `/term/`. See [Browser TUI](docs/browser-tui.md).
+
 ### Web UI (Experimental)
 
-An experimental browser-based client is available in the `web/` directory. Built with Svelte and Vite, it provides a Discord-like interface for basic chat and presence tracking. See [Web UI Documentation](docs/webui.md) for details on building and running it.
+A separate browser-native client is available in the `web/` directory. Built with Svelte and Vite, it provides a Discord-like interface for basic chat and presence tracking. See [Web UI Documentation](docs/webui.md) for details on building and running it.
 
 ## Install
 
@@ -122,6 +126,8 @@ Each client will connect to the same proxy session. The proxy persists event his
 - **[Authentication and Login Flow](docs/auth.md)** — How the TUI and proxy authenticate with the Lily server, including token management and session persistence
 - **[Client API Reference](docs/client-api.md)** — Complete HTTP and WebSocket API for the proxy; use this if building a custom client
 - **[Event Types Reference](docs/events.md)** — Comprehensive guide to all Lily event types, display conventions, and how the TUI renders them
+- **[Deploying](docs/deploying.md)** — `zlily deploy`: a containerized deployment behind Traefik with a Let's Encrypt certificate, and what exposing it to the internet entails
+- **[Browser TUI](docs/browser-tui.md)** — Running the terminal client itself in a browser via WebAssembly and xterm.js; build, serving, and the platform caveats
 - **[Web UI (Experimental)](docs/webui.md)** — Browser-based client built with Svelte; architecture, setup, and development guide
 - **[Releasing](docs/releasing.md)** — Instructions for creating and publishing new releases using GoReleaser
 

@@ -42,6 +42,9 @@ func main() {
 		case "combined":
 			cmdCombined(os.Args[2:])
 			return
+		case "deploy":
+			cmdDeploy(os.Args[2:])
+			return
 		case "version", "-v", "--version":
 			fmt.Println("zlily", version.String())
 			return
@@ -86,6 +89,9 @@ func cmdServer(args []string) {
 	webTLS := fs.Bool("web-tls", false, "serve the web UI over HTTPS")
 	webCert := fs.String("web-cert", "", "TLS certificate PEM for web UI (default: self-signed)")
 	webKey := fs.String("web-key", "", "TLS private key PEM for web UI (default: self-signed)")
+	behindProxy := fs.Bool("behind-proxy", false, "trust X-Forwarded-For (only when a reverse proxy fronts this)")
+	maxSessions := fs.Int("max-sessions", 0, "cap on concurrent sessions (0 = default)")
+	authMaxFailures := fs.Int("auth-max-failures", 0, "failed logins per client before a lockout (0 = default)")
 	logLevel := fs.String("log-level", "info", "minimum log level to display (debug, info, warn, error)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: zlily server [flags]")
@@ -100,7 +106,10 @@ func cmdServer(args []string) {
 	cfg := api.Config{
 		ListenAddr: *listen, LilyAddr: *lily,
 		LilyTLS: *tlsFlag, LilyTLSInsecure: *tlsInsecure,
-		ServeWeb: *webUI, WebTLS: *webTLS,
+		TrustProxyHeaders: *behindProxy,
+		MaxSessions:       *maxSessions,
+		AuthMaxFailures:   *authMaxFailures,
+		ServeWeb:          *webUI, WebTLS: *webTLS,
 		WebCertFile: *webCert, WebKeyFile: *webKey,
 	}
 	if *webUI {
@@ -272,6 +281,7 @@ func printUsage() {
   zlily combined [flags]        Same as above
   zlily server  [flags]         Proxy only (no TUI) — for headless/server use
   zlily client  [flags]         TUI only (connect to a running proxy)
+  zlily deploy  [flags]         Generate and start a Docker + Traefik deployment
   zlily version                 Print the version and exit
   zlily help                    Show this help and exit
 
