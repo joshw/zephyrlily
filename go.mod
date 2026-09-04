@@ -47,3 +47,7 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace charm.land/bubbletea/v2 => ./third_party/bubbletea
+
+replace github.com/atotto/clipboard => ./third_party/clipboard
