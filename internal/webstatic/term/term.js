@@ -217,6 +217,28 @@ function watchForUpdates() {
 async function main() {
   const termEl = document.getElementById('term');
   term.open(termEl);
+
+  // Draw with WebGL rather than the DOM.
+  //
+  // This is not about speed. The DOM renderer emits block and box-drawing
+  // characters as text, so what you get is whatever the font has: a U+2588
+  // FULL BLOCK that stops short of the cell leaves a horizontal gap between
+  // rows, and a U+2580 UPPER HALF BLOCK whose split is off by a fraction of a
+  // pixel leaves a seam. The splash art is made of exactly those characters,
+  // and so are the dialog borders. The WebGL renderer draws them from geometry
+  // instead, so they meet exactly.
+  //
+  // It has to come after open(), and it is optional: a browser with no WebGL,
+  // or one that loses the context, falls back to the DOM renderer, which is
+  // correct but grainier for block art.
+  try {
+    const webgl = new WebglAddon.WebglAddon();
+    webgl.onContextLoss(() => webgl.dispose());
+    term.loadAddon(webgl);
+  } catch (e) {
+    console.info('zlily: WebGL renderer unavailable, falling back to the DOM renderer', e);
+  }
+
   fit.fit();
 
   if (!WebAssembly.instantiateStreaming) {
