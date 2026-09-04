@@ -21,14 +21,16 @@ ZephyrLily is licensed under the Mozilla Public License, Version 1.1 (MPL 1.1).
 **Source:** https://commons.wikimedia.org/wiki/File:Zephyranthes_candida.jpg
 **Copyright:** Stan Shebs
 
-The ANSI art shown on the splash screen is derived from a photograph of
+The splash art and the favicon are both derived from a photograph of
 *Zephyranthes candida* — the genus this project is named for — by Stan Shebs,
 available under the Creative Commons Attribution-ShareAlike 3.0 Unported
-licence. It was reduced to black-and-white line art, cropped, and converted to
-256-colour ANSI.
+licence.
 
-The favicon is traced from the same photograph: one bloom's outline was
-recovered from the image and redrawn flat, with the stamens as a single mark.
+The blooms in the photograph overlap, so one of them was isolated by casting
+rays outward from its stamens until each met the gap between two of its own
+petals. That outline was smoothed and redrawn flat: white petals with a single
+mark for the stamens. The favicon is that drawing rasterised; the splash is the
+same drawing as block characters, one colour per cell.
 
 As derivatives of a share-alike work, these files are available under
 CC BY-SA 3.0 rather than the MPL 1.1 that covers the rest of the project.
