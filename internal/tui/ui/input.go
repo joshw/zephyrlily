@@ -127,6 +127,33 @@ func (m Model) maybeResizeViewport() Model {
 	return m
 }
 
+// authField numbers the dialog's three lines.
+const (
+	authFieldUsername = 0
+	authFieldPassword = 1
+	authFieldRemember = 2
+)
+
+// focusAuthField moves the dialog to field n, focusing the textarea that owns
+// it. The remember box is not a textarea, so both are blurred there — which is
+// also what stops a stray keystroke landing in a field the user cannot see the
+// cursor in.
+func (m Model) focusAuthField(n int) Model {
+	m.authField = n
+	switch n {
+	case authFieldUsername:
+		m.passwordInput.Blur()
+		m.usernameInput.Focus()
+	case authFieldPassword:
+		m.usernameInput.Blur()
+		m.passwordInput.Focus()
+	default:
+		m.usernameInput.Blur()
+		m.passwordInput.Blur()
+	}
+	return m
+}
+
 // handleAuthKey handles key events in authentication dialog mode.
 func (m Model) handleAuthKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keyStr := msg.String()
@@ -136,16 +163,26 @@ func (m Model) handleAuthKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.quitPending = false
 
 	switch keyStr {
-	case "tab":
-		// Switch between username and password fields
-		if m.authField == 0 {
-			m.authField = 1
-			m.usernameInput.Blur()
-			m.passwordInput.Focus()
+	case "tab", "down", "shift+tab", "up":
+		// Cycle the three fields. Shift-Tab and the arrows exist because a
+		// prefilled dialog is often entered at the password line, and the way
+		// back to the username should not be three more Tabs.
+		step := 1
+		if keyStr == "shift+tab" || keyStr == "up" {
+			step = -1
+		}
+		return m.focusAuthField((m.authField + step + 3) % 3), nil
+
+	case " ", "space":
+		// Space toggles the box, and types a space anywhere else.
+		if m.authField == authFieldRemember {
+			m.authRemember = !m.authRemember
+			return m, nil
+		}
+		if m.authField == authFieldUsername {
+			m.usernameInput, _ = m.usernameInput.Update(msg)
 		} else {
-			m.authField = 0
-			m.passwordInput.Blur()
-			m.usernameInput.Focus()
+			m.passwordInput, _ = m.passwordInput.Update(msg)
 		}
 		return m, nil
 
@@ -154,13 +191,11 @@ func (m Model) handleAuthKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.authInProgress {
 			return m, nil
 		}
-		// Submit only when on password field
-		if m.authField != 1 {
-			// In username field, Tab to password instead
-			m.authField = 1
-			m.usernameInput.Blur()
-			m.passwordInput.Focus()
-			return m, nil
+		// Enter on the username field means "done here", not "submit": the
+		// password is still to come. From the password or the box it submits,
+		// which is what makes a prefilled dialog a single keystroke.
+		if m.authField == authFieldUsername {
+			return m.focusAuthField(authFieldPassword), nil
 		}
 		// Get values and attempt auth
 		m.authUsername = m.usernameInput.Value()
@@ -194,10 +229,11 @@ func (m Model) handleAuthKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg { return tea.Suspend() }
 
 	default:
-		// Route to active textarea
-		if m.authField == 0 {
+		// Route to active textarea; the checkbox line takes no text.
+		switch m.authField {
+		case authFieldUsername:
 			m.usernameInput, _ = m.usernameInput.Update(msg)
-		} else {
+		case authFieldPassword:
 			m.passwordInput, _ = m.passwordInput.Update(msg)
 		}
 		return m, nil
@@ -708,6 +744,14 @@ func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
 	if fields := strings.Fields(line); len(fields) > 0 && cmdarg.Is(fields[0], "%shorten") {
 		m, lines := m.handleShortenCommand(fields)
 		return m, lines, nil, true
+	}
+
+	// %save-password / %forget-password: the stores are on this machine, so the
+	// proxy never sees these (see credentials.go).
+	if fields := strings.Fields(line); len(fields) > 0 {
+		if m, out, cmd, ok := m.handleCredsCommand(fields); ok {
+			return m, out, cmd, true
+		}
 	}
 
 	out, handled, asyncCmd := m.handleLocalCommand(line)

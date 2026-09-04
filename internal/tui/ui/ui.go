@@ -16,6 +16,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
 	"github.com/joshw/zephyrlily/internal/tui/client"
+	"github.com/joshw/zephyrlily/internal/tui/creds"
 )
 
 // OutputItem represents a single item in the output buffer.
@@ -313,13 +314,23 @@ type Model struct {
 	// Authentication dialog
 	authMode       bool
 	authError      string
+	authNotice     string // non-error line for the dialog (where a password was saved, why one was dropped)
 	authUsername   string
 	authPassword   string
-	authField      int // 0=username, 1=password
+	authField      int // 0=username, 1=password, 2=remember checkbox
 	usernameInput  textarea.Model
 	passwordInput  textarea.Model
 	authenticated  bool // true after auth succeeds
 	authInProgress bool // true while attempting auth
+
+	// Saved credentials (see credentials.go). credsHost is the Lily address the
+	// proxy fronts, which is what stored passwords are keyed by; credsPrefilled
+	// and credsFrom describe the password the stores handed us, so a login can
+	// tell an unchanged saved password from one the user has just typed.
+	authRemember   bool // "remember password" box in the dialog
+	credsHost      string
+	credsFrom      creds.Location
+	credsPrefilled string
 
 	// Intelligent expand state (mirrors tigerlily expand.pl)
 	expandSender    string   // last person who private/emoted us  (recalled by ':')
@@ -658,7 +669,9 @@ func reportSeenCmd(c *client.Client, lastSeenID int64) tea.Cmd {
 // Init starts the event listener.
 func (m Model) Init() tea.Cmd {
 	if m.authMode {
-		return nil
+		// Ask the stores who logs in here while the dialog is being drawn, so
+		// the answer is usually already on screen by the time it is read.
+		return loadCredsCmd(m.client)
 	}
 	return tea.Batch(
 		listenCmd(m.client),
@@ -856,13 +869,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.authMode = true
 				m.reconnectPrompt = false
 				m.authError = msg.err.Error()
+				m.authNotice = ""
 				m.authPassword = ""
 				m.passwordInput.SetValue("")
 				m.usernameInput.SetValue(m.authUsername)
-				m.authField = 1
-				m.usernameInput.Blur()
-				m.passwordInput.Focus()
-				return m, nil
+				m = m.focusAuthField(1)
+				// A saved password Lily turned down is worse than none: it would
+				// be offered again at every launch. Drop it and say so.
+				m, forget := m.credsAfterRejection(msg.username, msg.password)
+				return m, forget
 			}
 			m.reconnectPrompt = true
 			m.output = append(m.output, OutputItem{Type: "error", Data: "reconnect failed: " + msg.err.Error()})
@@ -873,6 +888,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.authenticated = true
 		m.authInProgress = false
 		m.reconnectPrompt = false
+		m.authError = ""
+		// Credential bookkeeping runs on the credentials that just worked, which
+		// on a reconnect are the ones the client replayed rather than anything
+		// typed into the dialog.
+		credsCmd := m.credsAfterLogin(msg.username, msg.password)
 		// A reconnect hands back a brand-new proxy session (the old one is torn
 		// down the moment the Lily socket closes), and its message IDs start
 		// over from 1. Adopting its ID space is what lets the login output
@@ -895,6 +915,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.seenLoopStarted {
 			m.seenLoopStarted = true
 			cmds = append(cmds, reportSeenCmd(m.client, 0))
+		}
+		if credsCmd != nil {
+			cmds = append(cmds, credsCmd)
 		}
 		// Look for mosh once per session, not once per reconnect.
 		if !m.moshProbed {
@@ -986,6 +1009,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Answer to a cursor-position query. Only %debug snapshot asks, so this
 		// is cheap to keep around and is read while assembling the snapshot.
 		m.cursorReport = cursorReport{x: msg.X, y: msg.Y, at: time.Now(), ok: true}
+		return m, nil
+
+	case credsLoadedMsg:
+		m = m.applyCredsLoaded(msg)
+		return m, nil
+
+	case credsSavedMsg:
+		m = m.applyCredsSaved(msg)
+		return m, nil
+
+	case credsForgotMsg:
+		m = m.applyCredsForgot(msg)
 		return m, nil
 
 	case snapshotResultMsg:
@@ -1733,7 +1768,7 @@ func (m Model) viewAuth() string {
 
 		// Username field
 		usernameVal := m.usernameInput.Value()
-		if m.authField == 0 {
+		if m.authField == authFieldUsername {
 			dialogContent.WriteString("Username: " + usernameVal + cursorStyle.Render("▌") + "\n")
 		} else {
 			dialogContent.WriteString("Username: " + usernameVal + "\n")
@@ -1742,8 +1777,22 @@ func (m Model) viewAuth() string {
 		// Password field
 		maskedPass := strings.Repeat("•", utf8.RuneCountInString(m.passwordInput.Value()))
 		dialogContent.WriteString("Password: " + maskedPass)
-		if m.authField == 1 {
+		if m.authField == authFieldPassword {
 			dialogContent.WriteString(cursorStyle.Render("▌"))
+		}
+		dialogContent.WriteString("\n")
+
+		// Remember box. Ticked on arrival means the password above came out of a
+		// store; clearing it is how the user asks for that to be undone.
+		box := "[ ]"
+		if m.authRemember {
+			box = "[x]"
+		}
+		rememberLine := box + " Remember password"
+		if m.authField == authFieldRemember {
+			dialogContent.WriteString(cursorStyle.Render(rememberLine))
+		} else {
+			dialogContent.WriteString(lipgloss.NewStyle().Faint(true).Render(rememberLine))
 		}
 		dialogContent.WriteString("\n")
 
@@ -1751,8 +1800,14 @@ func (m Model) viewAuth() string {
 			errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 			dialogContent.WriteString("\n" + errorStyle.Render("Error: "+m.authError) + "\n")
 		}
+		if m.authNotice != "" {
+			noticeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+			dialogContent.WriteString("\n" + noticeStyle.Render(m.authNotice) + "\n")
+		}
 
-		dialogContent.WriteString("\nTab: switch | Enter: submit")
+		// Two lines, because the one-line version wraps inside a 40-column
+		// dialog and reads as a mistake.
+		dialogContent.WriteString("\nTab: switch | Space: toggle\nEnter: log in")
 
 		if m.quitPending {
 			dialogContent.WriteString("\n\nPress C-c again to exit.")

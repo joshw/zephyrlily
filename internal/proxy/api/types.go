@@ -12,6 +12,16 @@ type AuthResponse struct {
 	Token string `json:"token"`
 }
 
+// InfoResponse is returned by GET /info: what a client needs to know before it
+// can log in. Nothing here is a secret, and the endpoint takes no token —
+// a client has no token yet when it asks.
+type InfoResponse struct {
+	// LilyAddr is the Lily server this proxy connects to, host:port. Clients key
+	// saved credentials by it: the proxy's own address is no good for that, since
+	// the embedded proxy takes a fresh ephemeral port on every run.
+	LilyAddr string `json:"lily_addr"`
+}
+
 // StateResponse is returned by GET /state.
 type StateResponse struct {
 	Whoami       string       `json:"whoami"`

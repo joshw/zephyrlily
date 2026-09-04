@@ -8,7 +8,7 @@ All communication is currently over plain HTTP/WebSocket on localhost. See [auth
 
 ## Authentication
 
-All endpoints except `POST /auth` require a bearer token obtained at login.
+All endpoints except `GET /info` and `POST /auth` require a bearer token obtained at login.
 
 Pass the token in one of two ways:
 
@@ -23,10 +23,29 @@ Missing or unrecognised tokens return **HTTP 401**.
 
 ## Endpoints
 
+### `GET /info` — What this proxy fronts
+
+Facts a client needs before it can log in. Takes no token — the caller has none yet.
+
+**Response `200 OK`**
+```json
+{ "lily_addr": "rpi.lily.org:7777" }
+```
+
+`lily_addr` is the Lily server this proxy connects to. Clients that remember credentials key them by it: the proxy's own address is no good for that, because the TUI's embedded proxy takes a fresh ephemeral port on every run.
+
+**Errors**
+
+| Status | Meaning |
+|--------|---------|
+| 405 | Method not GET |
+
+---
+
 ### `POST /auth` — Authenticate
 
 Connects to the Lily server and returns a session token.  
-If the user already has an active session the existing token is returned (no new connection is made).
+If the user already has an active session, the supplied password is checked against the one that opened it and the existing token is returned (no new connection is made); a wrong password gets a 401 and leaves that session running.
 
 **Request body**
 ```json
@@ -43,7 +62,7 @@ The token is a 64-character hex string (32 random bytes). Store it and include i
 | Status | Meaning |
 |--------|---------|
 | 400 | Missing username or password |
-| 401 | Lily rejected the credentials |
+| 401 | Lily rejected the credentials, or they do not match the caller's live session |
 | 405 | Method not POST |
 
 ---

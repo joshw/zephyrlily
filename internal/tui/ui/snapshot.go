@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -117,7 +118,18 @@ func (m Model) modeName() string {
 }
 
 // recordKeyEvent notes a key press in the input-event ring.
+//
+// Keys typed into the login dialog are recorded without their text: a snapshot
+// is written to be attached to a bug report, and the character-by-character
+// contents of the password field have no business travelling with it. What
+// remains — that a printable key arrived, how many runes it carried, and its
+// modifiers — is what a display or input bug actually needs.
 func (m *Model) recordKeyEvent(msg tea.KeyPressMsg) {
+	if m.authMode && msg.Text != "" {
+		m.inputEvents.add(fmt.Sprintf("key %-14s text=<redacted %d rune(s)> mod=%d mode=%s",
+			"(typed)", utf8.RuneCountInString(msg.Text), msg.Mod, m.modeName()))
+		return
+	}
 	m.inputEvents.add(fmt.Sprintf("key %-14s code=%q text=%q mod=%d mode=%s",
 		msg.String(), msg.Code, msg.Text, msg.Mod, m.modeName()))
 }

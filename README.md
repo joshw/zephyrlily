@@ -134,6 +134,7 @@ Each client will connect to the same proxy session. The proxy persists event his
 - **Emacs-style keybindings** — Familiar navigation and editing commands
 - **Unicode support** — Automatic conversion of Unicode input to ASCII for Lily compatibility
 - **Cross-platform** — Runs on macOS, Linux, and Windows (with platform-specific adjustments)
+- **Saved logins** — Remembers your username, and optionally your password, in your OS keyring or a 0600 file (`%help password`)
 - **Reconnection** — Seamless reconnection with history restoration on proxy disconnect
 
 ## Platform Notes

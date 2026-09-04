@@ -278,6 +278,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 // registerAPIRoutes mounts all proxy API endpoints on mux.
 func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/info", s.handleInfo)
 	mux.HandleFunc("/auth", s.handleAuth)
 	mux.HandleFunc("/state", s.handleState)
 	mux.HandleFunc("/ws", s.handleWS)
@@ -328,6 +329,18 @@ func (s *Server) RunWithListener(ctx context.Context, l net.Listener) error {
 		return err
 	}
 	return nil
+}
+
+// handleInfo reports the facts a client needs before it can authenticate.
+// Unauthenticated by necessity — the caller has no token yet — and safe to be:
+// the Lily address is public knowledge, and is exactly what a client needs to
+// find the right saved password for the server it is about to log in to.
+func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, InfoResponse{LilyAddr: s.cfg.LilyAddr})
 }
 
 // handleAuth authenticates a user against the Lily server and returns a token.

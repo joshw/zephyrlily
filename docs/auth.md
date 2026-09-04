@@ -5,12 +5,34 @@ This document describes the end-to-end login process for ZephyrLily, covering ho
 ## Overview
 
 ```
-TUI client  ──POST /auth──▶  zlily-proxy  ──TCP──▶  Lily server
-            ◀── token ───    (localhost)
+TUI client  ──GET /info───▶  zlily-proxy  ──TCP──▶  Lily server
+ (+ saved    ◀─ lily addr ─   (localhost)
+  creds)     ──POST /auth──▶
+            ◀── token ───
             ──Bearer token──▶  (all subsequent requests)
 ```
 
 The proxy runs as a localhost-only process. The TUI communicates with it over HTTP and WebSocket; the proxy maintains a persistent TCP connection to the Lily server on the TUI's behalf.
+
+---
+
+## Step 0 — Where the credentials come from
+
+The dialog is usually not typed into twice. While it is being drawn, the TUI calls `GET /info` to learn which Lily server the proxy fronts, then looks up that server in two client-side stores (`internal/tui/creds`):
+
+1. `~/.config/zlily/credentials` — tab-separated, one account per line, mode 0600. Read **first**, so a line the user added by hand overrides everything else. A file that others can read is ignored, with a line in the dialog saying so.
+2. The OS keyring — macOS Keychain, Windows Credential Manager, or a freedesktop Secret Service, under the service name `zlily:<lily addr>`. Every keyring call is bounded by a 3-second timeout: zlily's usual home is a headless host with no Secret Service running, and a missing keyring must cost nothing.
+
+Saving inverts the order — the keyring when the machine has one, the file when it does not — and a save that reaches the keyring deletes any file entry for the same account, since the file is read first and a stale line there would shadow it forever.
+
+The username alone is not a secret and is remembered on every successful login (`~/.config/zlily/config.json`), which is why the dialog opens with the cursor on the password field. A password is only ever written when the user ticks "Remember password" or runs `%save-password`; clearing that box on a later login removes what was stored, as does `%forget-password`.
+
+Two rules keep a stored password from becoming a nuisance:
+
+- A stored password Lily **rejects** is deleted, not offered again at the next launch. The dialog says so, so the vanished prefill is not a mystery.
+- Keys typed into the dialog are recorded in the input-event ring **without their text** (`recordKeyEvent`), so a `%debug snapshot` attached to a bug report does not carry the password a character at a time.
+
+All of this is client-side on purpose. The proxy is multi-user, and in `zlily client` mode the credential belongs to the person at the terminal, not to the machine holding the session.
 
 ---
 

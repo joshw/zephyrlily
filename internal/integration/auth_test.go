@@ -8,6 +8,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestE2E_InfoReportsLilyAddress covers the one thing a client can ask before it
+// has a token. The TUI needs it to find a saved password: passwords are keyed by
+// Lily server, and in combined mode the proxy's own address is a fresh ephemeral
+// port every run.
+func TestE2E_InfoReportsLilyAddress(t *testing.T) {
+	fake := lilytest.Start(t, lilytest.DefaultWorld())
+	c := client.New(startProxy(t, fake))
+
+	info, err := c.Info()
+	require.NoError(t, err)
+	require.Equal(t, fake.Addr(), info.LilyAddr)
+	require.False(t, c.HasToken(), "/info must not need, or mint, a session")
+}
+
 // TestE2E_ExistingSessionRequiresPassword covers the shortcut in handleAuth that
 // hands back the token of a session the user already has: it must check the
 // supplied password first, or anyone who knows a username can take over that

@@ -71,6 +71,25 @@ func (c *Client) Token() string {
 	return c.token
 }
 
+// Info asks the proxy what it is connected to. It needs no token (the caller
+// has none yet) and is the first call the TUI makes: saved credentials are
+// keyed by Lily server, which only the proxy knows.
+func (c *Client) Info() (*api.InfoResponse, error) {
+	resp, err := http.Get("http://" + c.proxyAddr + "/info")
+	if err != nil {
+		return nil, fmt.Errorf("info request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("info: HTTP %s", resp.Status)
+	}
+	var ir api.InfoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ir); err != nil {
+		return nil, fmt.Errorf("info decode: %w", err)
+	}
+	return &ir, nil
+}
+
 // Auth authenticates against the proxy and stores the session token.
 func (c *Client) Auth(username, password string) error {
 	body, _ := json.Marshal(api.AuthRequest{Username: username, Password: password})
