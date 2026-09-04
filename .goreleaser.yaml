@@ -10,6 +10,13 @@ version: 2
 # the ldflags template below resolves in a local `goreleaser build` too — where
 # nothing exports it and an undefined .Env key would be a template error. CI
 # passes the ZLILY_SHORTEN_API_KEY repository secret in through the environment.
+# The rolling "dev" tag that carries prerelease dev builds is not a version.
+# Left visible it becomes the nearest tag, and a snapshot then builds as
+# "dev-SNAPSHOT-<sha>" instead of "<next version>-SNAPSHOT-<sha>".
+git:
+  ignore_tags:
+    - dev
+
 env:
   - ZLILY_SHORTEN_API_KEY={{ index .Env "ZLILY_SHORTEN_API_KEY" }}
 
