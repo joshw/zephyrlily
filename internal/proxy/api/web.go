@@ -84,6 +84,13 @@ func addWebHandler(mux *http.ServeMux) error {
 	}))
 	mux.Handle("/term", http.RedirectHandler("/term/", http.StatusMovedPermanently))
 
+	// Browsers ask for /favicon.ico at the site root whatever the page's link
+	// tags say, so answer it rather than logging a 404 on every first visit.
+	mux.Handle("/favicon.ico", http.StripPrefix("/", termHandler{
+		fs:      http.FS(termFS),
+		buildID: webstatic.TermBuildID(),
+	}))
+
 	// The bare domain gives you the terminal; nobody should have to be told to
 	// add /term to a URL. Everything else here is a 404 — the Svelte app that
 	// used to catch unknown paths is no longer built.

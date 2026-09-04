@@ -136,3 +136,29 @@ func TestTermPathStillServesTheClient(t *testing.T) {
 	require.Equal(t, http.StatusOK, res.Code)
 	require.Contains(t, res.Body.String(), "ZLILY_BUILD")
 }
+
+// Browsers ask for /favicon.ico at the site root whatever the page's link tags
+// say. Answering it there as well as under /term/ keeps a 404 out of the log on
+// every first visit.
+func TestFaviconIsServedAtBothPaths(t *testing.T) {
+	h := termMux(t)
+	for _, p := range []string{"/favicon.ico", "/term/favicon.ico"} {
+		res := get(t, h, p, [2]string{"Accept", "image/avif,image/webp,*/*"})
+		require.Equal(t, http.StatusOK, res.Code, "%s should serve the icon", p)
+		body := res.Body.Bytes()
+		require.NotEmpty(t, body)
+		// An ICO file starts with a 0x00 0x00 0x01 0x00 header; serving HTML
+		// here would be the SPA-fallback mistake in another costume.
+		require.Equal(t, []byte{0x00, 0x00, 0x01, 0x00}, body[:4],
+			"%s did not return an ICO file", p)
+	}
+}
+
+// The page must reference the icon, or none of the above matters.
+func TestPageLinksTheIcon(t *testing.T) {
+	body := get(t, termMux(t), "/term/").Body.String()
+	require.Contains(t, body, `rel="icon"`)
+	require.Contains(t, body, "favicon.ico")
+	require.Contains(t, body, "apple-touch-icon")
+	require.NotContains(t, body, buildIDPlaceholder, "the icon URLs were not stamped")
+}

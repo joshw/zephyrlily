@@ -15,8 +15,8 @@ ZephyrLily is licensed under the Mozilla Public License, Version 1.1 (MPL 1.1).
 **License:** Apache 2.0 (or compatible)
 **Source:** https://github.com/client9/gospell
 
-### Splash logo
-**Location:** `internal/tui/ui/logo.txt`
+### Splash logo and favicon
+**Location:** `internal/tui/ui/logo.txt`, `internal/webstatic/term/favicon.ico`, `internal/webstatic/term/apple-touch-icon.png`
 **License:** CC BY-SA 3.0 Unported
 **Source:** https://commons.wikimedia.org/wiki/File:Zephyranthes_candida.jpg
 **Copyright:** Stan Shebs
@@ -27,8 +27,11 @@ available under the Creative Commons Attribution-ShareAlike 3.0 Unported
 licence. It was reduced to black-and-white line art, cropped, and converted to
 256-colour ANSI.
 
-As a derivative of a share-alike work, this file is available under CC BY-SA 3.0
-rather than the MPL 1.1 that covers the rest of the project.
+The favicon is traced from the same photograph: one bloom's outline was
+recovered from the image and redrawn flat, with the stamens as a single mark.
+
+As derivatives of a share-alike work, these files are available under
+CC BY-SA 3.0 rather than the MPL 1.1 that covers the rest of the project.
 
 ## Compliance Notes
 
