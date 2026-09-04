@@ -118,6 +118,20 @@ Neither makes the URL private. If it should not be a login form open to the
 whole internet, add Traefik basic auth in front of the router, or restrict
 access at the firewall.
 
+## Connecting a terminal client to it
+
+The deployment is a proxy like any other, so the native TUI can use it — the
+browser client is not the only way in:
+
+```sh
+zlily client --proxy https://lily.example.org
+```
+
+The scheme matters. A bare `host:port` is spoken over plain HTTP, so
+`--proxy lily.example.org:443` sends unencrypted HTTP at the TLS port; Traefik
+finds no non-TLS router and answers 404, without the request ever reaching
+zlily. The error says nothing about the cause, so pass a URL.
+
 ## Operating
 
 ```sh

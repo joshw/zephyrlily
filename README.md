@@ -21,6 +21,12 @@ The separation allows multiple clients to connect to the same proxy session with
 
 The primary client is a feature-rich terminal interface built with [Bubble Tea](https://github.com/charmbracelet/bubbletea). It provides full Lily functionality including intelligent name expansion, history navigation, and emacs-style keybindings.
 
+### Connecting to a remote proxy
+
+`zlily client --proxy https://lily.example.org` points the terminal client at a
+proxy someone else is running. Give a URL rather than `host:port` when it sits
+behind TLS.
+
 ### The TUI in a browser
 
 The terminal client also compiles to WebAssembly and runs in a browser tab — the same model, keymap and rendering code, with xterm.js standing in for the terminal. Run `zlily server --web` and open `/term/`. See [Browser TUI](docs/browser-tui.md).

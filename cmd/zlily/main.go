@@ -124,9 +124,22 @@ func cmdServer(args []string) {
 
 func cmdClient(args []string) {
 	fs := pflag.NewFlagSet("client", pflag.ExitOnError)
-	proxy := fs.String("proxy", "localhost:7888", "proxy address")
+	proxy := fs.String("proxy", "localhost:7888",
+		"proxy address: host:port, or a URL when the proxy is behind TLS (https://lily.example.org)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: zlily client [flags]")
+		fmt.Fprint(os.Stderr, `Usage: zlily client [flags]
+
+Connect the TUI to a proxy someone else is running.
+
+  zlily client --proxy localhost:7888
+  zlily client --proxy https://lily.example.org
+
+A bare host:port is spoken over plain HTTP. Give a URL when the proxy sits
+behind TLS: without the scheme the TUI sends plain HTTP at port 443, and the
+reverse proxy answers 404 without the request ever reaching zlily.
+
+Flags:
+`)
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args)
@@ -136,7 +149,12 @@ func cmdClient(args []string) {
 		startupMsgs = append(startupMsgs, "⚠ Warning: cmd.exe has limited key support (PgUp/PgDn won't work)")
 		startupMsgs = append(startupMsgs, "  Try Windows Terminal or ConEmu for full key binding support")
 	}
-	runTUI(*proxy, startupMsgs...)
+	c, err := client.Dial(*proxy)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "zlily client:", err)
+		os.Exit(2)
+	}
+	runTUI(c, startupMsgs...)
 }
 
 func cmdCombined(args []string) {
@@ -200,7 +218,7 @@ func cmdCombined(args []string) {
 	if *webUI {
 		startupMsgs = append(startupMsgs, "Web UI: "+webURL(proxyAddr, *webTLS))
 	}
-	runTUI(proxyAddr, startupMsgs...)
+	runTUI(client.New(proxyAddr), startupMsgs...)
 	cancel()
 	<-proxyDone
 }
@@ -210,10 +228,9 @@ func cmdCombined(args []string) {
 // runTUI creates the client and starts the Bubble Tea event loop.
 // The TUI handles authentication interactively via modal dialog.
 // startupMsgs are displayed below the logo on first render.
-func runTUI(proxyAddr string, startupMsgs ...string) {
+func runTUI(c *client.Client, startupMsgs ...string) {
 	ensureTmuxColor()
 
-	c := client.New(proxyAddr)
 	defer c.Close()
 
 	logChan, logger := ui.NewLogger()
