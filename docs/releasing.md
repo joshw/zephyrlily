@@ -64,3 +64,27 @@ binst check --config .config/binstaller.yml   # validates against the latest rel
 Note the config's `asset.binaries` maps the binary `zlily` inside the
 `zephyrlily_*` archives — `binst init` does not infer this automatically because
 the project name (`zephyrlily`) differs from the binary name (`zlily`).
+
+## Dev builds
+
+To try a build without cutting a release, run the **Dev build** workflow from
+the Actions tab and pick a branch. It runs GoReleaser in snapshot mode, so it
+produces the same archives a release would — same before-hooks, same ldflags,
+same embedded browser client — and attaches them to the run as artifacts.
+
+Nothing is tagged, no GitHub release is created, and the Homebrew and Scoop taps
+are untouched: snapshot mode skips announce, publish and validate outright.
+
+The version comes out as `<next>-SNAPSHOT-<sha>`, e.g.
+`0.12.0-SNAPSHOT-c436ebe`, so a dev binary is never mistaken for a release.
+
+Two options on the run form:
+
+- **all** — every platform, as a release does. ~390 MB of artifacts, about a
+  minute of build time.
+- **linux-amd64-only** — one binary, for when the point is to try the change
+  rather than to check every platform still compiles.
+
+Artifacts are kept for 14 days. They carry the s.u13.net credential in the same
+way released binaries do, and only people with write access can start the
+workflow.

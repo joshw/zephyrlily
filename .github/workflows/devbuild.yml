@@ -1,0 +1,103 @@
+# Build release-shaped binaries without cutting a release.
+#
+# Run it from the Actions tab ("Dev build" -> "Run workflow") and pick a branch.
+# It produces the same archives a real release would, using GoReleaser's
+# snapshot mode, and attaches them to the run as artifacts instead of
+# publishing anything. Nothing is tagged, no GitHub release is created, and the
+# Homebrew and Scoop taps are untouched — snapshot mode skips announce, publish
+# and validate outright.
+name: Dev build
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Which platforms to build"
+        type: choice
+        default: all
+        options:
+          - all
+          - linux-amd64-only
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # GoReleaser derives the snapshot version from the most recent tag,
+          # so it needs the full history rather than a shallow clone.
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # Both before-hooks in .goreleaser.yaml run as part of this: the Svelte
+      # build, and the GOOS=js GOARCH=wasm build of the browser client that the
+      # binary embeds.
+      - name: Build (all platforms)
+        if: inputs.platforms == 'all'
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --snapshot --clean
+        env:
+          # Compiled into the binary as the s.u13.net credential, exactly as a
+          # release build does, so what is tested behaves like what ships.
+          # Note this means the artifact carries the credential; it is the same
+          # exposure as a published release, and only people with write access
+          # can start this workflow.
+          ZLILY_SHORTEN_API_KEY: ${{ secrets.ZLILY_SHORTEN_API_KEY }}
+
+      # A single target builds in a fraction of the time, for when the point is
+      # to try the change rather than to check every platform still compiles.
+      - name: Build (linux/amd64 only)
+        if: inputs.platforms == 'linux-amd64-only'
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: build --snapshot --clean --single-target
+        env:
+          ZLILY_SHORTEN_API_KEY: ${{ secrets.ZLILY_SHORTEN_API_KEY }}
+
+      - name: Report what was built
+        run: |
+          echo "### Dev build \`${GITHUB_REF_NAME}\` @ \`$(git rev-parse --short HEAD)\`" >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Not a release: nothing tagged, nothing published.' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          find dist -maxdepth 2 \( -name '*.tar.gz' -o -name '*.zip' -o -name 'zlily' -o -name 'zlily.exe' \) \
+            -exec ls -lh {} \; | awk '{print $5, $9}' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: zlily-dev-${{ github.ref_name }}-${{ github.run_number }}
+          # Archives when the whole matrix was built; the bare binary when only
+          # one target was. Missing paths are not an error.
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*checksums.txt
+            dist/*/zlily
+            dist/*/zlily.exe
+          if-no-files-found: error
+          # Long enough to test with, short enough not to accumulate: these are
+          # ~390 MB per run for the full matrix.
+          retention-days: 14
