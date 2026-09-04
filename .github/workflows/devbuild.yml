@@ -2,10 +2,20 @@
 #
 # Run it from the Actions tab ("Dev build" -> "Run workflow") and pick a branch.
 # It produces the same archives a real release would, using GoReleaser's
-# snapshot mode, and attaches them to the run as artifacts instead of
-# publishing anything. Nothing is tagged, no GitHub release is created, and the
-# Homebrew and Scoop taps are untouched — snapshot mode skips announce, publish
-# and validate outright.
+# snapshot mode. The Homebrew and Scoop taps are untouched and no version is
+# tagged — snapshot mode skips announce, publish and validate outright.
+#
+# The archives are attached to the run as artifacts, which GitHub will only
+# serve to someone logged in, even for a public repository. To hand a build to
+# someone who is not, "publish" also puts them on a rolling prerelease at the
+# tag "dev", whose assets a public repository serves to anyone:
+#
+#   https://github.com/joshw/zephyrlily/releases/download/dev/zephyrlily_Linux_x86_64.tar.gz
+#
+# That tag is replaced by each run, so the URL is stable and always the most
+# recent dev build. It is marked prerelease, so the newest real release stays
+# the one GitHub calls Latest, and it does not match the v* pattern that starts
+# the release workflow.
 name: Dev build
 
 on:
@@ -18,6 +28,10 @@ on:
         options:
           - all
           - linux-amd64-only
+      publish:
+        description: "Replace the public 'dev' prerelease with this build"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -25,6 +39,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      # Needed to replace the rolling dev prerelease. Read would be enough for
+      # everything else here.
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -84,6 +102,33 @@ jobs:
           find dist -maxdepth 2 \( -name '*.tar.gz' -o -name '*.zip' -o -name 'zlily' -o -name 'zlily.exe' \) \
             -exec ls -lh {} \; | awk '{print $5, $9}' >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Only for a full build: the single-target path runs `goreleaser build`,
+      # which produces bare binaries and no archives, and a dev release holding
+      # one platform would be a trap for anyone who found it.
+      - name: Publish to the rolling dev prerelease
+        if: inputs.publish && inputs.platforms == 'all'
+        run: |
+          set -euo pipefail
+          version=$(cd dist && ls *checksums.txt | sed 's/^zephyrlily_//; s/_checksums\.txt$//')
+
+          # Replace rather than update: --cleanup-tag drops the old tag too, so
+          # the new one points at this commit instead of wherever it was.
+          gh release delete dev --yes --cleanup-tag 2>/dev/null || true
+
+          gh release create dev \
+            --prerelease \
+            --target "${GITHUB_SHA}" \
+            --title "Dev build ${version}" \
+            --notes "Unreleased build of \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}, made by the Dev build workflow.
+
+          Not a release: unversioned, untested beyond CI, and replaced by the next dev build. For a supported build see the [latest release](https://github.com/${GITHUB_REPOSITORY}/releases/latest)." \
+            dist/*.tar.gz dist/*.zip dist/*checksums.txt
+
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo "Published to <https://github.com/${GITHUB_REPOSITORY}/releases/tag/dev> — downloadable without a GitHub account." >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4

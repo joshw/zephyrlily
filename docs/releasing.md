@@ -88,3 +88,22 @@ Two options on the run form:
 Artifacts are kept for 14 days. They carry the s.u13.net credential in the same
 way released binaries do, and only people with write access can start the
 workflow.
+
+### Handing a dev build to someone else
+
+GitHub only serves workflow artifacts to a logged-in account, even for a public
+repository, so an artifact link is no use to someone without one. The **publish**
+option (on by default) also puts the archives on a rolling prerelease at the tag
+`dev`, and release assets on a public repository are served to anyone:
+
+    https://github.com/joshw/zephyrlily/releases/download/dev/zephyrlily_Linux_x86_64.tar.gz
+
+The tag is replaced by every dev build, so that URL is stable and always points
+at the most recent one. It is marked prerelease, so the newest real release
+stays the one GitHub calls *Latest*, and `dev` does not match the `v*` pattern
+that starts the release workflow — publishing a dev build cannot cut a release
+or touch the Homebrew and Scoop taps.
+
+Turn **publish** off for a build you would rather not put a public link on.
+It is skipped automatically for a single-platform build, since a `dev` release
+holding one platform would mislead anyone who found it.
