@@ -248,19 +248,53 @@ func writeTemplate(path, tmpl string, data any) error {
 	return f.Close()
 }
 
+// composeCommand reports how Compose is invoked on this host.
+//
+// Docker ships it two ways. Modern installs have it as a CLI plugin, invoked
+// as "docker compose"; before that it was a standalone "docker-compose"
+// binary, which is still what plenty of hosts have. Assuming the plugin gets
+// you "unknown shorthand flag: 'd'" from the docker CLI, which does not read
+// as "Compose is not installed the way you expected".
+//
+// The plugin is probed by running it rather than by looking for a file,
+// because it lives in a plugin directory rather than on PATH.
+func composeCommand() ([]string, error) {
+	if _, err := exec.LookPath("docker"); err == nil {
+		if err := exec.Command("docker", "compose", "version").Run(); err == nil {
+			return []string{"docker", "compose"}, nil
+		}
+	}
+	if path, err := exec.LookPath("docker-compose"); err == nil {
+		return []string{path}, nil
+	}
+	return nil, errors.New(
+		"no Docker Compose found: neither `docker compose` (the CLI plugin) nor `docker-compose` " +
+			"(the standalone binary) runs here.\n" +
+			"The deployment was written but not started; install one and run it yourself:\n" +
+			"    cd " + composeHint + " && docker compose up -d --build")
+}
+
+// composeHint names the directory in the message above; the real one is
+// substituted by the caller, which knows it.
+const composeHint = "<deployment directory>"
+
 // composeUp builds and starts the stack.
 func composeUp(opts Options) error {
-	if _, err := exec.LookPath("docker"); err != nil {
-		return errors.New("docker is not on PATH; the deployment was written but not started")
+	compose, err := composeCommand()
+	if err != nil {
+		return fmt.Errorf("%s", strings.ReplaceAll(err.Error(), composeHint, opts.Dir))
 	}
-	_, _ = fmt.Fprintf(opts.Out, "\n  docker compose up -d --build\n\n")
 
-	cmd := exec.Command("docker", "compose", "up", "-d", "--build")
+	shown := strings.Join(compose, " ")
+	_, _ = fmt.Fprintf(opts.Out, "\n  %s up -d --build\n\n", shown)
+
+	args := append(append([]string{}, compose[1:]...), "up", "-d", "--build")
+	cmd := exec.Command(compose[0], args...)
 	cmd.Dir = opts.Dir
 	cmd.Stdout = opts.Out
 	cmd.Stderr = opts.Out
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker compose up: %w", err)
+		return fmt.Errorf("%s up: %w", shown, err)
 	}
 
 	_, _ = fmt.Fprintf(opts.Out, "\n  https://%s/term/\n", opts.Domain)

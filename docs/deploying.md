@@ -16,7 +16,9 @@ That writes `./zlily-deploy/` and runs `docker compose up -d --build`. Add
 - **DNS for the domain already points at this host**, and **ports 80 and 443
   reach it**. Port 80 is not only there for the HTTPS redirect — the ACME HTTP
   challenge is answered on it, so a certificate cannot be issued without it.
-- Docker with the Compose plugin.
+- Docker, with Compose available either way: as the CLI plugin (`docker
+  compose`) or as the older standalone binary (`docker-compose`). `zlily deploy`
+  probes for both and uses whichever runs.
 - Run it **on the Linux host you are deploying to** (see below).
 
 Use `--staging` for the first run against a new domain. It requests from Let's

@@ -3,6 +3,7 @@ package deploy
 import (
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -152,5 +153,52 @@ func TestValidationRejectsBadInput(t *testing.T) {
 				t.Errorf("error %q does not mention %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// Compose is invoked as `docker compose` on hosts with the CLI plugin and as
+// `docker-compose` on hosts with the older standalone binary. Assuming the
+// former yields "unknown shorthand flag: 'd'" from the docker CLI, which does
+// not read as "Compose is not installed the way you expected".
+func TestComposeCommandFindsWhateverIsInstalled(t *testing.T) {
+	cmd, err := composeCommand()
+	if err != nil {
+		// A host with neither must say so usefully, not blame a flag.
+		msg := err.Error()
+		for _, want := range []string{"docker compose", "docker-compose", "written but not started"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("the message does not mention %q:\n%s", want, msg)
+			}
+		}
+		return
+	}
+
+	if len(cmd) == 0 {
+		t.Fatal("no error, but no command either")
+	}
+	switch {
+	case len(cmd) == 2 && cmd[0] == "docker" && cmd[1] == "compose":
+	case len(cmd) == 1 && strings.Contains(cmd[0], "docker-compose"):
+	default:
+		t.Errorf("unexpected compose command: %q", cmd)
+	}
+
+	// Whatever it picked must actually run, or the deployment fails at the
+	// last step having already written everything.
+	if err := exec.Command(cmd[0], append(cmd[1:], "version")...).Run(); err != nil {
+		t.Errorf("composeCommand chose %q, which does not run: %v", cmd, err)
+	}
+}
+
+// The directory placeholder must not survive into what the user reads.
+func TestComposeErrorNamesTheRealDirectory(t *testing.T) {
+	msg := strings.ReplaceAll(
+		"no Docker Compose found ... cd "+composeHint+" && docker compose up -d --build",
+		composeHint, "zlily-deploy")
+	if strings.Contains(msg, composeHint) {
+		t.Error("the placeholder was not substituted")
+	}
+	if !strings.Contains(msg, "cd zlily-deploy") {
+		t.Errorf("the real directory is missing:\n%s", msg)
 	}
 }
