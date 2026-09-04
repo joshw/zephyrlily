@@ -1,6 +1,8 @@
 // Package api implements the HTTP and WebSocket interface served by zlily-proxy.
 package api
 
+import "github.com/joshw/zephyrlily/internal/linkpreview"
+
 // AuthRequest is the body for POST /auth.
 type AuthRequest struct {
 	Username string `json:"username"`
@@ -19,6 +21,15 @@ type InfoResponse struct {
 	// LilyAddr is the Lily server this proxy connects to, host:port. Clients key
 	// saved credentials by it: the proxy's own address is no good for that, since
 	// the embedded proxy takes a fresh ephemeral port on every run.
+	LilyAddr string `json:"lily_addr"`
+}
+
+// SessionResponse is returned by GET /session: confirmation that a token still
+// names a live session, and who it belongs to. A client resuming from a stored
+// token asks this first, because every other authenticated route either does
+// real work or blocks on the Lily sync.
+type SessionResponse struct {
+	Username string `json:"username"`
 	LilyAddr string `json:"lily_addr"`
 }
 
@@ -135,4 +146,28 @@ type StoreRequest struct {
 	Target string   `json:"target"` // empty string means current user
 	Name   string   `json:"name"`   // memo name (empty for info)
 	Lines  []string `json:"lines"`
+}
+
+// PreviewResponse is returned by GET /urlpreview. It carries the metadata
+// linkpreview scraped; rendering it into a summary line stays with the client,
+// which is the side that knows how wide the input line is.
+type PreviewResponse struct {
+	Preview linkpreview.Preview `json:"preview"`
+}
+
+// URLExpandResponse is returned by GET /urlexpand.
+type URLExpandResponse struct {
+	URL string `json:"url"`
+}
+
+// ShortenRequest is the body for POST /shorten. Service is a name from
+// urlshorten.Names(); empty means the proxy's default.
+type ShortenRequest struct {
+	Service string `json:"service"`
+	URL     string `json:"url"`
+}
+
+// ShortenResponse is returned by POST /shorten.
+type ShortenResponse struct {
+	Short string `json:"short"`
 }

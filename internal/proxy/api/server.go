@@ -39,6 +39,11 @@ type Config struct {
 	LilyTLS         bool   // connect to Lily over TLS
 	LilyTLSInsecure bool   // skip TLS certificate verification
 
+	// Exposure controls. Defaults apply when these are zero; see ratelimit.go.
+	TrustProxyHeaders bool // believe X-Forwarded-For (only behind a trusted reverse proxy)
+	MaxSessions       int  // cap on concurrent sessions, and so on Lily connections
+	AuthMaxFailures   int  // failed /auth attempts per client before a lockout
+
 	// Web UI
 	ServeWeb    bool   // serve the embedded Svelte web app
 	WebTLS      bool   // serve the web interface over HTTPS
@@ -53,6 +58,12 @@ type Server struct {
 	cfg        Config
 	sessions   sync.Map // token -> *Session
 	userTokens sync.Map // username -> token (for finding an existing session by username)
+
+	// sessionCount tracks len(sessions), which sync.Map will not report.
+	sessionCount atomic.Int64
+
+	// authLimit throttles failed logins; see ratelimit.go.
+	authLimit *authLimiter
 }
 
 // Session represents an authenticated proxy session for one Lily user.
@@ -264,7 +275,18 @@ func (s *Session) broadcast(msg *WSServerMsg) {
 
 // New creates a Server.
 func New(cfg Config) *Server {
-	return &Server{cfg: cfg}
+	return &Server{
+		cfg:       cfg,
+		authLimit: newAuthLimiter(cfg.AuthMaxFailures, defaultAuthWindow, defaultAuthLockout),
+	}
+}
+
+// maxSessions is the configured session cap, or the default when unset.
+func (s *Server) maxSessions() int {
+	if s.cfg.MaxSessions > 0 {
+		return s.cfg.MaxSessions
+	}
+	return defaultMaxSessions
 }
 
 // Run starts the HTTP server bound to ListenAddr and blocks until ctx is cancelled.
@@ -281,12 +303,17 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/info", s.handleInfo)
 	mux.HandleFunc("/auth", s.handleAuth)
 	mux.HandleFunc("/state", s.handleState)
+	mux.HandleFunc("/session", s.handleSession)
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/events", s.handleEvents)
 	mux.HandleFunc("/seen", s.handleSeen)
 	mux.HandleFunc("/expand", s.handleExpand)
 	mux.HandleFunc("/fetch", s.handleFetch)
 	mux.HandleFunc("/store", s.handleStore)
+	// Outbound web fetches made on a client's behalf; see weburl.go.
+	mux.HandleFunc("/urlpreview", s.handleURLPreview)
+	mux.HandleFunc("/urlexpand", s.handleURLExpand)
+	mux.HandleFunc("/shorten", s.handleShorten)
 }
 
 // RunWithListener starts the HTTP server using the provided listener and blocks
@@ -351,6 +378,16 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Throttle before reading the body, so a locked-out client cannot keep
+	// this proxy busy talking to Lily on its behalf.
+	who := clientIP(r, s.cfg.TrustProxyHeaders)
+	if ok, retryAfter := s.authLimit.allow(who, time.Now()); !ok {
+		slog.Warn("handleAuth: rate limited", "client", who, "retry_after", retryAfter)
+		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
+		http.Error(w, "too many failed login attempts; try again later", http.StatusTooManyRequests)
+		return
+	}
+
 	var req AuthRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -373,17 +410,30 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 			// would turn a wrong password into a way to knock the user offline.
 			if !v.(*Session).auth.matches(req.Password) {
 				slog.Warn("handleAuth: rejected wrong password for live session", "user", req.Username)
+				s.authLimit.recordFailure(who, time.Now())
 				http.Error(w, lily.ErrAuthFailed.Error(), http.StatusUnauthorized)
 				return
 			}
+			// Rejoining an existing session opens no new Lily connection, so it
+			// is not subject to the session cap.
+			s.authLimit.recordSuccess(who)
 			writeJSON(w, AuthResponse{Token: existing.(string)})
 			return
 		}
 	}
 
+	// Refuse before dialing: past the cap, a new login would open a Lily
+	// connection this proxy has already decided it will not carry.
+	if int(s.sessionCount.Load()) >= s.maxSessions() {
+		slog.Warn("handleAuth: session cap reached", "max", s.maxSessions(), "user", req.Username)
+		http.Error(w, "server at capacity; try again later", http.StatusServiceUnavailable)
+		return
+	}
+
 	conn := lily.NewConn(s.cfg.LilyAddr, req.Username, req.Password, s.cfg.LilyTLS, s.cfg.LilyTLSInsecure)
 	if err := conn.Connect(); err != nil {
 		if errors.Is(err, lily.ErrAuthFailed) {
+			s.authLimit.recordFailure(who, time.Now())
 			http.Error(w, lily.ErrAuthFailed.Error(), http.StatusUnauthorized)
 			return
 		}
@@ -434,11 +484,25 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 
 	s.sessions.Store(token, sess)
 	s.userTokens.Store(req.Username, token)
+	s.sessionCount.Add(1)
+	s.authLimit.recordSuccess(who)
 
 	go s.fanOut(sess)
 	go s.runStartup(sess)
 
 	writeJSON(w, AuthResponse{Token: token})
+}
+
+// handleSession reports whether the caller's token still names a live session.
+// It is deliberately cheap: no Lily traffic, no state snapshot, just a yes or
+// no and the identity behind the token.
+func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.sessionFromRequest(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	writeJSON(w, SessionResponse{Username: sess.username, LilyAddr: s.cfg.LilyAddr})
 }
 
 // handleState returns the current Lily state snapshot for the authenticated session.
@@ -494,9 +558,16 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // CORS — clients are same-host or trusted
-	})
+	// Origin is left at the library default, which accepts a request whose
+	// Origin host matches the Host header, and one carrying no Origin at all.
+	// That covers both real clients: the browser build is served by this same
+	// listener, and the native TUI is not a browser so it sends no Origin.
+	//
+	// It used to pass InsecureSkipVerify, which disables the check entirely.
+	// That was defensible while the proxy only ever listened on loopback, but
+	// serving a browser client means being reachable off-host, and then any
+	// page the user visits could open an authenticated socket to this proxy.
+	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		slog.Debug("ws accept error", "err", err)
 		return
@@ -688,7 +759,9 @@ func (s *Server) fanOut(sess *Session) {
 
 	// Lily connection closed — notify subscribers.
 	sess.publish(&WSServerMsg{Type: "error", Data: "lily connection closed"})
-	s.sessions.Delete(sess.token)
+	if _, loaded := s.sessions.LoadAndDelete(sess.token); loaded {
+		s.sessionCount.Add(-1)
+	}
 	s.userTokens.Delete(sess.username)
 
 	// Fully close our side of the Lily socket. On a natural drop we have only

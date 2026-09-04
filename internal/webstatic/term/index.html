@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>zlily</title>
+<link rel="stylesheet" href="vendor/xterm.css">
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; height: 100%; background: #16161a;
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #d5d5da;
+  }
+  #term { position: absolute; inset: 0; padding: 6px; }
+  #term.hidden { visibility: hidden; }
+
+  #boot {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px; text-align: center;
+    padding: 24px;
+  }
+  #boot.done { display: none; }
+
+  /* Hidden by default and shown by adding .show, rather than by toggling the
+     `hidden` attribute: `hidden` works through the user-agent rule
+     [hidden]{display:none}, which an id selector setting `display` outranks.
+     A banner styled `#update{display:flex}` is therefore visible no matter
+     what `hidden` says, and el.hidden = true silently does nothing. */
+  #update {
+    display: none;
+    position: absolute; right: 12px; bottom: 12px; z-index: 10;
+    align-items: center; gap: 10px;
+    padding: 8px 10px 8px 14px; border-radius: 8px;
+    background: #23232b; border: 1px solid #34343e;
+    box-shadow: 0 6px 20px rgba(0,0,0,.35);
+    font-size: 13px; color: #d5d5da;
+  }
+  #update button {
+    font: inherit; color: #16161a; background: #6c8cff;
+    border: 0; border-radius: 5px; padding: 4px 10px; cursor: pointer;
+  }
+  #update.show { display: flex; }
+  #update #update-dismiss { background: transparent; color: #8b8b95; padding: 4px 6px; }
+  #boot h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .02em; }
+  #boot p { margin: 0; max-width: 44ch; color: #8b8b95; font-size: 13px; }
+  #bar { width: min(280px, 70vw); height: 3px; background: #2a2a31; border-radius: 2px; overflow: hidden; }
+  #bar > i { display: block; height: 100%; width: 0; background: #6c8cff; transition: width .2s ease; }
+  #boot code { color: #b9b9c2; }
+  .err { color: #ff8a8a; }
+</style>
+</head>
+<body>
+  <div id="term" class="hidden"></div>
+
+  <div id="update">
+    <span>A newer zlily is available.</span>
+    <button type="button" id="update-reload">Reload</button>
+    <button type="button" id="update-dismiss" aria-label="Dismiss">&times;</button>
+  </div>
+
+  <div id="boot">
+    <h1>zlily</h1>
+    <p id="status">Loading…</p>
+    <div id="bar"><i></i></div>
+    <p id="hint">Ctrl-N and Ctrl-T stay with the browser in some browsers; everything else reaches zlily.</p>
+  </div>
+
+  <!-- __ZLILY_BUILD__ is substituted by the server (see termHandler.serveIndex).
+       Every asset carries it so a new build is a new URL and can never be
+       served from a stale cache; this file is the only one revalidated. -->
+  <script>window.ZLILY_BUILD = "__ZLILY_BUILD__";</script>
+  <script src="vendor/xterm.js?v=__ZLILY_BUILD__"></script>
+  <script src="vendor/addon-fit.js?v=__ZLILY_BUILD__"></script>
+  <script src="vendor/wasm_exec.js?v=__ZLILY_BUILD__"></script>
+  <script src="term.js?v=__ZLILY_BUILD__"></script>
+</body>
+</html>

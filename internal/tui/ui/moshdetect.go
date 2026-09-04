@@ -80,6 +80,11 @@ func moshSettleCmd() tea.Cmd {
 
 // moshServerRunning reports whether this user owns a mosh-server process.
 func moshServerRunning() bool {
+	// A browser tab reaches no process table, and mosh cannot be in the path
+	// between this program and its display anyway.
+	if !moshDetectable {
+		return false
+	}
 	if runtime.GOOS == "windows" {
 		return false
 	}

@@ -26,6 +26,7 @@ var ErrAuthFailed = errors.New("invalid username or password")
 // Client is a connection from the TUI to the proxy.
 type Client struct {
 	proxyAddr string // e.g. "localhost:7888"
+	secure    bool   // talk https/wss rather than http/ws
 	token     string
 	username  string // stored for reconnection
 	password  string // stored for reconnection
@@ -47,15 +48,79 @@ type Client struct {
 	closed atomic.Bool
 }
 
-// New creates a Client pointing at the given proxy address.
-func New(proxyAddr string) *Client {
+// New creates a Client pointing at the given proxy address over plain HTTP.
+func New(proxyAddr string) *Client { return newClient(proxyAddr, false) }
+
+// NewSecure is New over TLS. The browser build needs it: a page served over
+// https cannot open http or ws connections back to its own origin, and the
+// proxy serves its API and the web assets from the same listener (--web-tls).
+func NewSecure(proxyAddr string) *Client { return newClient(proxyAddr, true) }
+
+func newClient(proxyAddr string, secure bool) *Client {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Client{
 		proxyAddr: proxyAddr,
+		secure:    secure,
 		ctx:       ctx,
 		cancel:    cancel,
 		Events:    make(chan *api.WSServerMsg, 256),
 	}
+}
+
+// httpURL builds an absolute proxy URL for path, which must start with "/".
+func (c *Client) httpURL(path string) string {
+	if c.secure {
+		return "https://" + c.proxyAddr + path
+	}
+	return "http://" + c.proxyAddr + path
+}
+
+// wsURL is httpURL for the WebSocket schemes.
+func (c *Client) wsURL(path string) string {
+	if c.secure {
+		return "wss://" + c.proxyAddr + path
+	}
+	return "ws://" + c.proxyAddr + path
+}
+
+// ResumeSession adopts a token obtained earlier — from browser storage, say —
+// and confirms with the proxy that it still names a live session, returning the
+// username it belongs to.
+//
+// A resumed client knows no password, so it cannot Reconnect() on its own: if
+// the session later dies, the caller has to ask for credentials again. That is
+// the whole trade, and it is why this checks the token up front rather than
+// letting the first real request fail somewhere less recoverable.
+func (c *Client) ResumeSession(token string) (string, error) {
+	if token == "" {
+		return "", errors.New("no token")
+	}
+	c.token = token
+
+	var sr api.SessionResponse
+	req, err := http.NewRequest(http.MethodGet, c.httpURL("/session"), nil)
+	if err != nil {
+		c.token = ""
+		return "", err
+	}
+	if err := c.doJSON(req, &sr); err != nil {
+		// The token is stale, or this proxy has never heard of it. Drop it so
+		// HasToken() is honest and the caller falls back to logging in.
+		c.token = ""
+		return "", fmt.Errorf("%w: %s", ErrAuthFailed, err)
+	}
+	// A session is not usable until its WebSocket is open: the TUI reads events
+	// from it and Send writes commands to it. Auth's caller pairs Auth with
+	// Connect for exactly this reason (see attemptAuthCmd), and resuming has to
+	// do the same or it yields a client that looks authenticated, reads no
+	// events, and panics on the first thing typed.
+	if err := c.Connect(); err != nil {
+		c.token = ""
+		return "", fmt.Errorf("resume connect: %w", err)
+	}
+
+	c.username = sr.Username
+	return sr.Username, nil
 }
 
 // HasToken returns true if the client has been authenticated and has a token.
@@ -75,7 +140,7 @@ func (c *Client) Token() string {
 // has none yet) and is the first call the TUI makes: saved credentials are
 // keyed by Lily server, which only the proxy knows.
 func (c *Client) Info() (*api.InfoResponse, error) {
-	resp, err := http.Get("http://" + c.proxyAddr + "/info")
+	resp, err := http.Get(c.httpURL("/info"))
 	if err != nil {
 		return nil, fmt.Errorf("info request: %w", err)
 	}
@@ -93,7 +158,7 @@ func (c *Client) Info() (*api.InfoResponse, error) {
 // Auth authenticates against the proxy and stores the session token.
 func (c *Client) Auth(username, password string) error {
 	body, _ := json.Marshal(api.AuthRequest{Username: username, Password: password})
-	resp, err := http.Post("http://"+c.proxyAddr+"/auth", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(c.httpURL("/auth"), "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("auth request: %w", err)
 	}
@@ -125,7 +190,7 @@ func (c *Client) Auth(username, password string) error {
 
 // FetchState retrieves the current state snapshot from the proxy.
 func (c *Client) FetchState() (*api.StateResponse, error) {
-	req, _ := http.NewRequest(http.MethodGet, "http://"+c.proxyAddr+"/state", nil)
+	req, _ := http.NewRequest(http.MethodGet, c.httpURL("/state"), nil)
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -141,7 +206,7 @@ func (c *Client) FetchState() (*api.StateResponse, error) {
 
 // FetchEvents retrieves buffered events from the proxy after the given ID.
 func (c *Client) FetchEvents(afterID int64, limit int) ([]api.WSServerMsg, bool, error) {
-	url := fmt.Sprintf("http://%s/events?after=%d&limit=%d", c.proxyAddr, afterID, limit)
+	url := c.httpURL(fmt.Sprintf("/events?after=%d&limit=%d", afterID, limit))
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := http.DefaultClient.Do(req)
@@ -166,7 +231,7 @@ func (c *Client) ReportSeen(lastSeenID int64) error {
 		return nil
 	}
 	body, _ := json.Marshal(api.SeenRequest{LastSeenID: lastSeenID})
-	req, _ := http.NewRequest(http.MethodPost, "http://"+c.proxyAddr+"/seen", bytes.NewReader(body))
+	req, _ := http.NewRequest(http.MethodPost, c.httpURL("/seen"), bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -184,7 +249,7 @@ func (c *Client) ReportSeen(lastSeenID int64) error {
 // When validDestOnly is true the proxy excludes discussions the current user
 // is not a member of.
 func (c *Client) Expand(partial string, validDestOnly bool) ([]api.EntityJSON, error) {
-	u := "http://" + c.proxyAddr + "/expand?q=" + url.QueryEscape(partial)
+	u := c.httpURL("/expand?q=" + url.QueryEscape(partial))
 	if validDestOnly {
 		u += "&valid_dest_only=1"
 	}
@@ -209,8 +274,8 @@ func (c *Client) Expand(partial string, validDestOnly bool) ([]api.EntityJSON, e
 // contentType is "info" or "memo". target is "me" or a handle. name is the
 // memo name (empty for info). Returns parsed content lines (stripped of "* " prefix).
 func (c *Client) FetchContent(contentType, target, name string) ([]string, error) {
-	u := fmt.Sprintf("http://%s/fetch?type=%s&target=%s",
-		c.proxyAddr, url.QueryEscape(contentType), url.QueryEscape(target))
+	u := c.httpURL(fmt.Sprintf("/fetch?type=%s&target=%s",
+		url.QueryEscape(contentType), url.QueryEscape(target)))
 	if name != "" {
 		u += "&name=" + url.QueryEscape(name)
 	}
@@ -242,7 +307,7 @@ func (c *Client) StoreContent(contentType, target, name string, lines []string) 
 		Name:   name,
 		Lines:  lines,
 	})
-	req, _ := http.NewRequest(http.MethodPost, "http://"+c.proxyAddr+"/store", bytes.NewReader(body))
+	req, _ := http.NewRequest(http.MethodPost, c.httpURL("/store"), bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -258,7 +323,7 @@ func (c *Client) StoreContent(contentType, target, name string, lines []string) 
 
 // Connect upgrades to a WebSocket and starts delivering events on c.Events.
 func (c *Client) Connect() error {
-	ws, _, err := websocket.Dial(c.ctx, "ws://"+c.proxyAddr+"/ws?token="+c.token, nil)
+	ws, _, err := websocket.Dial(c.ctx, c.wsURL("/ws?token="+c.token), nil)
 	if err != nil {
 		return fmt.Errorf("ws connect: %w", err)
 	}
@@ -272,6 +337,14 @@ func (c *Client) Connect() error {
 func (c *Client) Send(text string) error {
 	if c.closed.Load() {
 		return fmt.Errorf("client is closed")
+	}
+	// Without a socket there is nothing to write to, and wsjson.Write would
+	// dereference the nil and take the whole program down from inside Update.
+	// A client can be authenticated but unconnected — Auth and Connect are
+	// separate steps — so this is reachable, and an error the TUI can show
+	// beats a panic that loses the session.
+	if c.ws == nil {
+		return errors.New("not connected to the proxy")
 	}
 	return wsjson.Write(c.ctx, c.ws, api.WSClientMsg{Type: "command", Text: text})
 }
@@ -315,7 +388,17 @@ func (c *Client) readLoop() {
 // ErrAuthFailed when the credentials were rejected.
 func (c *Client) Reconnect() (*Client, error) {
 	c.Close()
-	nc := New(c.proxyAddr)
+	nc := newClient(c.proxyAddr, c.secure)
+
+	// A client resumed from a stored token holds no password, so there is
+	// nothing to log back in with. Say so as an auth failure: that is what the
+	// TUI turns into a credential prompt, whereas a generic error becomes an
+	// offer to retry that could never succeed.
+	if c.password == "" {
+		nc.username = c.username
+		return nc, fmt.Errorf("%w: session ended and no password was stored", ErrAuthFailed)
+	}
+
 	if err := nc.Auth(c.username, c.password); err != nil {
 		return nc, err
 	}

@@ -33,11 +33,23 @@ jobs:
       - name: Lint
         uses: golangci/golangci-lint-action@v9
 
+      # The browser build shares every package with the native one, so it is
+      # only ever one unguarded os/exec or signal call away from breaking.
+      # Compiling it here keeps that from rotting unnoticed.
+      - name: Build browser TUI (js/wasm)
+        run: |
+          GOOS=js GOARCH=wasm go build -ldflags="-s -w" \
+            -o internal/webstatic/term/zlily.wasm ./cmd/zlily-wasm
+          GOOS=js GOARCH=wasm go vet ./internal/... ./cmd/zlily-wasm
+
       - name: Build Go
         run: go build ./...
 
       - name: Vet
         run: go vet ./...
 
+      # The browser client tests (internal/integration/browser_*_test.go) drive
+      # the wasm build under Node; they skip themselves if it is absent. The
+      # runner has Node from the setup step above, so they run here.
       - name: Test
         run: go test -count=1 ./...

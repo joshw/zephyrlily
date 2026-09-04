@@ -162,6 +162,11 @@ type Model struct {
 	// survives the value-copies Model goes through on every Update.
 	processedIDs *dedupSet
 
+	// splashLines is how many items at the head of output belong to the logo.
+	// The splash is built before the terminal's background colour is known, and
+	// redrawing it when the answer arrives means rewriting exactly these.
+	splashLines int
+
 	// sessionToken is the proxy session token that lastSeenID, processedIDs and
 	// the IDs stored on output items all belong to. The proxy numbers messages
 	// from a per-session counter that restarts at 1, and a reconnect always
@@ -405,7 +410,8 @@ func NewLogger() (chan logMsg, *slog.Logger) {
 // State and event history are fetched asynchronously in Init() so that SLCP prompts
 // arriving during the login sync are visible and answerable in the TUI.
 func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
-	logoLines := formatLogo()
+	logoLines := formatLogo(nil) // recoloured once the terminal answers; see splashLines
+	splashLines := len(logoLines)
 	output := make([]OutputItem, 0, len(logoLines)+1+len(startupMsgs))
 	for _, line := range logoLines {
 		output = append(output, OutputItem{Type: "text", Data: line})
@@ -454,13 +460,21 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		scrollAnchor:      -1,
 		renderEpoch:       1, // 1 so zero-valued item caches (epoch 0) read as stale
 		authMode:          !c.HasToken(),
-		authField:         0,
-		usernameInput:     usernameField,
-		passwordInput:     passwordField,
-		inputEvents:       newRing(inputEventRingCap),
-		msgMeta:           newRing(msgMetaRingCap),
-		perf:              newPerfMetrics(),
-		processedIDs:      newDedupSet(),
+		// A client that already holds a token was resumed rather than logged
+		// in, so the session it names is this model's session from the start.
+		// Without this, the first authResultMsg would look like a new session
+		// and needlessly reset the ID bookkeeping.
+		sessionToken: c.Token(),
+		// How many leading output items the splash owns, so it can be redrawn
+		// in place once the terminal reports its background colour.
+		splashLines:   splashLines,
+		authField:     0,
+		usernameInput: usernameField,
+		passwordInput: passwordField,
+		inputEvents:   newRing(inputEventRingCap),
+		msgMeta:       newRing(msgMetaRingCap),
+		perf:          newPerfMetrics(),
+		processedIDs:  newDedupSet(),
 
 		linkPreviewCache:   make(map[string]string),
 		linkPreviewPending: make(map[string]bool),
@@ -668,15 +682,20 @@ func reportSeenCmd(c *client.Client, lastSeenID int64) tea.Cmd {
 
 // Init starts the event listener.
 func (m Model) Init() tea.Cmd {
+	// The splash was drawn before the terminal could be asked what colour it
+	// is; recolourSplash puts that right when the answer arrives.
+	askBackground := func() tea.Msg { return tea.RequestBackgroundColor() }
+
 	if m.authMode {
 		// Ask the stores who logs in here while the dialog is being drawn, so
 		// the answer is usually already on screen by the time it is read.
-		return loadCredsCmd(m.client)
+		return tea.Batch(loadCredsCmd(m.client), askBackground)
 	}
 	return tea.Batch(
 		listenCmd(m.client),
 		listenLogCmd(m.logChan),
 		fetchInitialStateCmd(m.client),
+		askBackground,
 	)
 }
 
@@ -853,6 +872,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.armPagerIfAtBottom()
 		return m, nil
 
+	case tea.BackgroundColorMsg:
+		m = m.recolourSplash(msg)
+		return m, nil
+
 	case authResultMsg:
 		// A reconnect creates a fresh client; adopt it (success or failure, so a
 		// credential re-prompt can retry on it).
@@ -867,6 +890,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// plain retry without re-typing credentials.
 			if m.authMode || errors.Is(msg.err, client.ErrAuthFailed) {
 				m.authMode = true
+				// Whatever the host had stored cannot be good either.
+				forgetSessionToken()
 				m.reconnectPrompt = false
 				m.authError = msg.err.Error()
 				m.authNotice = ""
@@ -902,6 +927,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sessionToken = msg.token
 			m.resetSessionIDs()
 		}
+		// Hand the token to the host so a reload can re-attach to this session
+		// rather than starting at the login prompt. No-op outside the browser.
+		persistSessionToken(msg.token)
 		// Run the identical post-login sequence (state fetch, history replay,
 		// startup memo) for both initial login and reconnect.
 		cmds := []tea.Cmd{
@@ -1783,18 +1811,22 @@ func (m Model) viewAuth() string {
 		dialogContent.WriteString("\n")
 
 		// Remember box. Ticked on arrival means the password above came out of a
-		// store; clearing it is how the user asks for that to be undone.
-		box := "[ ]"
-		if m.authRemember {
-			box = "[x]"
+		// store; clearing it is how the user asks for that to be undone. Builds
+		// with nowhere to put a password omit it entirely rather than offering
+		// a promise they cannot keep — see credsStorable.
+		if credsStorable {
+			box := "[ ]"
+			if m.authRemember {
+				box = "[x]"
+			}
+			rememberLine := box + " Remember password"
+			if m.authField == authFieldRemember {
+				dialogContent.WriteString(cursorStyle.Render(rememberLine))
+			} else {
+				dialogContent.WriteString(lipgloss.NewStyle().Faint(true).Render(rememberLine))
+			}
+			dialogContent.WriteString("\n")
 		}
-		rememberLine := box + " Remember password"
-		if m.authField == authFieldRemember {
-			dialogContent.WriteString(cursorStyle.Render(rememberLine))
-		} else {
-			dialogContent.WriteString(lipgloss.NewStyle().Faint(true).Render(rememberLine))
-		}
-		dialogContent.WriteString("\n")
 
 		if m.authError != "" {
 			errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
@@ -1806,8 +1838,13 @@ func (m Model) viewAuth() string {
 		}
 
 		// Two lines, because the one-line version wraps inside a 40-column
-		// dialog and reads as a mistake.
-		dialogContent.WriteString("\nTab: switch | Space: toggle\nEnter: log in")
+		// dialog and reads as a mistake. Space toggles nothing when there is no
+		// box to toggle, so it is not offered then.
+		hint := "\nTab: switch | Space: toggle\nEnter: log in"
+		if !credsStorable {
+			hint = "\nTab: switch\nEnter: log in"
+		}
+		dialogContent.WriteString(hint)
 
 		if m.quitPending {
 			dialogContent.WriteString("\n\nPress C-c again to exit.")

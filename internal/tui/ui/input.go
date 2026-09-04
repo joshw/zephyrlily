@@ -127,12 +127,23 @@ func (m Model) maybeResizeViewport() Model {
 	return m
 }
 
-// authField numbers the dialog's three lines.
+// authField numbers the dialog's lines.
 const (
 	authFieldUsername = 0
 	authFieldPassword = 1
 	authFieldRemember = 2
 )
+
+// authFieldCount is how many lines the dialog actually has. The remember box is
+// absent on builds with nowhere to store a password (see credsStorable), and
+// then it must not be reachable by Tab either — cycling onto an invisible field
+// is how you get a dialog that swallows keystrokes.
+func authFieldCount() int {
+	if credsStorable {
+		return 3
+	}
+	return 2
+}
 
 // focusAuthField moves the dialog to field n, focusing the textarea that owns
 // it. The remember box is not a textarea, so both are blurred there — which is
@@ -171,11 +182,12 @@ func (m Model) handleAuthKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if keyStr == "shift+tab" || keyStr == "up" {
 			step = -1
 		}
-		return m.focusAuthField((m.authField + step + 3) % 3), nil
+		n := authFieldCount()
+		return m.focusAuthField((m.authField + step + n) % n), nil
 
 	case " ", "space":
 		// Space toggles the box, and types a space anywhere else.
-		if m.authField == authFieldRemember {
+		if m.authField == authFieldRemember && credsStorable {
 			m.authRemember = !m.authRemember
 			return m, nil
 		}

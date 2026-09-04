@@ -413,20 +413,20 @@ func TestPreviewTarget(t *testing.T) {
 	cancel()
 
 	t.Run("an ordinary URL is its own target", func(t *testing.T) {
-		got, ok := previewTarget(ctx, "https://example.com/a", "")
+		got, ok := previewTarget(ctx, nil, "https://example.com/a", "")
 		assert.True(t, ok)
 		assert.Equal(t, "https://example.com/a", got)
 	})
 
 	t.Run("a known short link resolves without asking anyone", func(t *testing.T) {
-		got, ok := previewTarget(ctx, "https://da.gd/XFG5L", "https://www.cnn.com/2026/08/26/nepal")
+		got, ok := previewTarget(ctx, nil, "https://da.gd/XFG5L", "https://www.cnn.com/2026/08/26/nepal")
 		assert.True(t, ok)
 		assert.Equal(t, "https://www.cnn.com/2026/08/26/nepal", got,
 			"a link we shortened ourselves needs no reverse lookup")
 	})
 
 	t.Run("an unresolvable short link gets no preview at all", func(t *testing.T) {
-		_, ok := previewTarget(ctx, "https://da.gd/unknown", "")
+		_, ok := previewTarget(ctx, nil, "https://da.gd/unknown", "")
 		assert.False(t, ok,
 			"previewing a short link directly would describe the shortener, which is worse than silence")
 	})

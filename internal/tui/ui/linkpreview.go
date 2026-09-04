@@ -11,6 +11,7 @@ import (
 	"github.com/joshw/zephyrlily/internal/cmdarg"
 	"github.com/joshw/zephyrlily/internal/linkpreview"
 	"github.com/joshw/zephyrlily/internal/tui/ascify"
+	"github.com/joshw/zephyrlily/internal/tui/client"
 	"github.com/joshw/zephyrlily/internal/urlshorten"
 )
 
@@ -276,7 +277,7 @@ func (m Model) previewCmds(force bool) (Model, []tea.Cmd) {
 			m.linkPreviewPending = make(map[string]bool)
 		}
 		m.linkPreviewPending[sp.url] = true
-		cmds = append(cmds, fetchPreviewCmd(sp.url, m.shortOriginals[sp.url]))
+		cmds = append(cmds, fetchPreviewCmd(m.client, sp.url, m.shortOriginals[sp.url]))
 	}
 	return m, cmds
 }
@@ -398,11 +399,11 @@ func isTitleField(f linkpreview.Field) bool {
 //
 // known is the URL rawURL was shortened from, when this session is the one that
 // shortened it; "" means we do not already know.
-func fetchPreviewCmd(rawURL, known string) tea.Cmd {
+func fetchPreviewCmd(c *client.Client, rawURL, known string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), previewTimeout)
 		defer cancel()
-		target, ok := previewTarget(ctx, rawURL, known)
+		target, ok := previewTarget(ctx, c, rawURL, known)
 		if !ok {
 			// A short link we could not see through. Previewing it anyway would
 			// describe the shortener rather than the destination, which is
@@ -410,7 +411,7 @@ func fetchPreviewCmd(rawURL, known string) tea.Cmd {
 			// to a da.gd link tells the reader precisely nothing.
 			return linkPreviewResultMsg{url: rawURL}
 		}
-		p, err := linkpreview.Fetch(ctx, target)
+		p, err := fetchPreview(ctx, c, target)
 		if err != nil {
 			// A URL we cannot reach simply gets no preview. Reporting the
 			// failure would put noise in the scrollback for something the user
@@ -436,14 +437,14 @@ func fetchPreviewCmd(rawURL, known string) tea.Cmd {
 // and wrote it down. Anything else is put to the service that issued it (da.gd
 // documents "+" for exactly this), which costs one small request against a host
 // that has nothing else to tell us.
-func previewTarget(ctx context.Context, rawURL, known string) (string, bool) {
+func previewTarget(ctx context.Context, c *client.Client, rawURL, known string) (string, bool) {
 	if known != "" {
 		return known, true
 	}
 	if !urlshorten.IsShort(rawURL) {
 		return rawURL, true
 	}
-	long, err := urlshorten.Expand(ctx, rawURL)
+	long, err := expandShortURL(ctx, c, rawURL)
 	if err != nil {
 		return "", false
 	}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/joshw/zephyrlily/internal/tui/client"
 	"github.com/joshw/zephyrlily/internal/urlshorten"
 )
 
@@ -146,7 +147,7 @@ func (m Model) shortenURLAtCursor() (Model, tea.Cmd) {
 		m.shortenPending = make(map[urlOccurrence]bool)
 	}
 	m.shortenPending[key] = true
-	return m, shortenCmd(m.shortener(), sp.url, sp.occ)
+	return m, shortenCmd(m.client, m.shortener(), sp.url, sp.occ)
 }
 
 // firstURLBeforeCursor returns the first URL in s that starts before cursor,
@@ -269,11 +270,11 @@ func (m Model) noteShorten(note string) Model {
 // closure outlives the keystroke that made it: %shorten could select a
 // different one while the request is out, and the answer that comes back is the
 // one this service gave.
-func shortenCmd(svc urlshorten.Service, rawURL string, occ int) tea.Cmd {
+func shortenCmd(c *client.Client, svc urlshorten.Service, rawURL string, occ int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), shortenTimeout)
 		defer cancel()
-		short, err := svc.Shorten(ctx, rawURL)
+		short, err := shortenURL(ctx, c, svc, rawURL)
 		if err != nil {
 			return shortenResultMsg{url: rawURL, occ: occ, err: fmt.Errorf("%s: %w", svc.Name(), err)}
 		}

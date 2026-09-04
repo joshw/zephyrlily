@@ -757,7 +757,7 @@ func (m Model) captureSnapshot(path string) tea.Cmd {
 	}
 	content := buildSnapshot(m, tail)
 	return func() tea.Msg {
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		if err := writeSnapshot(path, content); err != nil {
 			return snapshotResultMsg{err: err, path: path}
 		}
 		return snapshotResultMsg{path: path}

@@ -16,6 +16,14 @@ env:
 before:
   hooks:
     - sh -c 'cd web && npm ci && npm run build'
+    # The browser build of the TUI, embedded by internal/webstatic.
+    #
+    # Deliberately without the u13APIKeyBuild ldflag the native builds carry: a
+    # .wasm served to a browser is a public download, so a credential compiled
+    # into it is readable by anyone who loads the page. The browser client
+    # shortens through the proxy instead (internal/proxy/api/weburl.go), which
+    # is where the key stays.
+    - sh -c 'GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o internal/webstatic/term/zlily.wasm ./cmd/zlily-wasm'
 
 builds:
   - binary: zlily
