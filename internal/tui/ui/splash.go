@@ -9,6 +9,10 @@ import (
 	"github.com/joshw/zephyrlily/internal/version"
 )
 
+// logo.txt is derived from a photograph of Zephyranthes candida by Stan Shebs,
+// used under CC BY-SA 3.0, and is available under that licence rather than the
+// MPL 1.1 covering the rest of this project. See ATTRIBUTION.md.
+//
 //go:embed logo.txt
 var logoArt string
 
