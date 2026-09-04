@@ -75,6 +75,11 @@ func (c *Client) doJSON(req *http.Request, out any) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusNotFound {
+		// The proxy predates these routes. Say that rather than "404", which
+		// reads as "the URL you asked about is missing".
+		return fmt.Errorf("this proxy does not support %s; it is older than the client", req.URL.Path)
+	}
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		if trimmed := string(bytes.TrimSpace(msg)); trimmed != "" {

@@ -1,6 +1,8 @@
 package integration
 
 import (
+	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -122,4 +124,32 @@ func TestE2E_SendWithoutConnectIsAnError(t *testing.T) {
 	t.Cleanup(c.Close)
 	// Deliberately no Connect().
 	require.Error(t, c.Send("/who"))
+}
+
+// Shortening, expanding and previewing all happen on the proxy, whichever
+// client asked. The terminal client used to do it itself, which meant a build
+// from source had no credential and was refused — and put the credential in
+// every client binary rather than in the one place that needs it.
+func TestE2E_TerminalClientShortensThroughTheProxy(t *testing.T) {
+	fake := lilytest.Start(t, lilytest.DefaultWorld())
+	c := client.New(startProxy(t, fake))
+	require.NoError(t, c.Auth("alice", "password"))
+	t.Cleanup(c.Close)
+
+	// The proxy answers these routes; reaching them at all is the point, and a
+	// network failure past that is the upstream service's business.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	_, err := c.Shorten(ctx, "", "https://example.com/something")
+	require.NotContains(t, fmt.Sprint(err), "does not support",
+		"the proxy should expose /shorten")
+
+	_, err = c.ExpandShortURL(ctx, "https://da.gd/aaaa")
+	require.NotContains(t, fmt.Sprint(err), "does not support",
+		"the proxy should expose /urlexpand")
+
+	_, err = c.Preview(ctx, "https://example.com/")
+	require.NotContains(t, fmt.Sprint(err), "does not support",
+		"the proxy should expose /urlpreview")
 }

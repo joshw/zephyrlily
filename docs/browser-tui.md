@@ -193,8 +193,12 @@ credential stays — a `.wasm` served to a browser is a public download, so
 anything compiled into it is readable by anyone who loads the page. The
 release build deliberately omits the `u13APIKeyBuild` ldflag for this target.
 
-Native builds still fetch directly (`internal/tui/ui/weburl_other.go`); the
-browser build calls the proxy (`weburl_js.go`).
+Every client goes through the proxy, not just this one. The terminal client
+could fetch directly and used to, but the credential belongs on the proxy — one
+place, held by whoever runs it — rather than in every client binary that might
+want to shorten something. A client built from source has no key at all, so
+`go run ./cmd/zlily client` shortened locally, found nothing to authenticate
+with, and was refused.
 
 ### Origin checking
 
