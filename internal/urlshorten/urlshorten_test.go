@@ -344,3 +344,23 @@ func TestServicesHonourContextCancellation(t *testing.T) {
 		}
 	}
 }
+
+// Whether a binary carries a credential is otherwise unanswerable without
+// making a request and reading the failure — and a build that lost its key at
+// release time looks exactly like one that never had one.
+func TestKeySource(t *testing.T) {
+	t.Setenv(apiKeyEnv, "")
+	if got := KeySource(); got != "none" && got != "compiled in" {
+		t.Errorf("KeySource() = %q, want none or compiled in", got)
+	}
+
+	t.Setenv(apiKeyEnv, "something")
+	if got := KeySource(); got != "from "+apiKeyEnv {
+		t.Errorf("with the environment set, KeySource() = %q", got)
+	}
+
+	// It must never be the credential itself.
+	if got := KeySource(); strings.Contains(got, "something") {
+		t.Errorf("KeySource() leaked the key: %q", got)
+	}
+}

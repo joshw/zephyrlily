@@ -342,3 +342,19 @@ func firstNonEmpty(vals ...string) string {
 	}
 	return ""
 }
+
+// KeySource says where U13APIKey came from, without revealing it.
+//
+// Whether a given binary carries a credential is otherwise unanswerable
+// without making a request and reading the failure, and a build that quietly
+// lost its key at release time looks exactly like one that never had one.
+func KeySource() string {
+	switch {
+	case os.Getenv(apiKeyEnv) != "":
+		return "from " + apiKeyEnv
+	case u13APIKeyBuild != "":
+		return "compiled in"
+	default:
+		return "none"
+	}
+}

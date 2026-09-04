@@ -27,6 +27,7 @@ import (
 	"github.com/joshw/zephyrlily/internal/tui/client"
 	"github.com/joshw/zephyrlily/internal/tui/teebuf"
 	"github.com/joshw/zephyrlily/internal/tui/ui"
+	"github.com/joshw/zephyrlily/internal/urlshorten"
 	"github.com/joshw/zephyrlily/internal/version"
 )
 
@@ -47,6 +48,12 @@ func main() {
 			return
 		case "version", "-v", "--version":
 			fmt.Println("zlily", version.String())
+			// --verbose reports what the binary was built with. The first line
+			// is left alone so anything parsing it keeps working.
+			if len(os.Args) > 2 && (os.Args[2] == "--verbose" || os.Args[2] == "-V") {
+				fmt.Println("  go:                ", runtime.Version())
+				fmt.Println("  url shortener key: ", urlshorten.KeySource())
+			}
 			return
 		case "help", "-h", "--help":
 			printUsage()
