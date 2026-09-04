@@ -1529,6 +1529,16 @@ func (m Model) handleProxy(msg *api.WSServerMsg) (Model, tea.Cmd) {
 			}
 		}
 
+	case "input":
+		// A line someone typed on this session, echoed by the proxy to every
+		// client attached to it — including this one, which is why submitLine
+		// does not echo what it sends.
+		if d, ok := msg.Data.(map[string]interface{}); ok {
+			if text, ok := d["text"].(string); ok {
+				m.output = append(m.output, OutputItem{Type: "input", Data: text, ID: msg.ID})
+			}
+		}
+
 	case "commandresult":
 		if d, ok := msg.Data.(map[string]interface{}); ok {
 			if linesRaw, ok := d["lines"].([]interface{}); ok {

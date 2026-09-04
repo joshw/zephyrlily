@@ -627,9 +627,6 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 		m.autoPageAnchor = -1
 	}
 
-	// Echo the sent line
-	m.output = append(m.output, OutputItem{Type: "input", Data: line})
-
 	// Reset input state
 	m.historyPos = -1
 	m.historySave = ""
@@ -658,7 +655,15 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 	}
 
 	// Handle client-side commands (%page, %set debug keys, %style, %spell, …).
+	//
+	// Where the echo comes from depends on who handles the line. A command this
+	// client runs itself never reaches the proxy, so it echoes here. Anything
+	// sent onward is echoed by the proxy to every client on the session
+	// (see dispatchLine), so echoing it here too would show it twice.
 	m, localOutput, localCmd, recognized := m.applyLocalCommand(line)
+	if recognized || localCmd != nil {
+		m.output = append(m.output, OutputItem{Type: "input", Data: line})
+	}
 	if localOutput != nil {
 		m.output = append(m.output, OutputItem{Type: "command", Data: localOutput})
 	}
@@ -669,7 +674,11 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 	if !recognized {
 		m = m.trackOutgoingSend(line)
 		if err := m.client.Send(line); err != nil {
-			m.output = append(m.output, OutputItem{Type: "error", Data: err.Error()})
+			// Nothing reached the proxy, so nothing will come back: show the
+			// line here alongside the failure, or it vanishes without trace.
+			m.output = append(m.output,
+				OutputItem{Type: "input", Data: line},
+				OutputItem{Type: "error", Data: err.Error()})
 		}
 	}
 

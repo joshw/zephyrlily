@@ -199,6 +199,7 @@ Every message has the shape:
 |--------|-------------|-------------|
 | `"event"` | `EventData` | A structured Lily event (message, join, rename, …) |
 | `"text"` | `{"text": "…"}` | A raw unformatted text line from the server |
+| `"input"` | `{"text": "…"}` | A line typed on this session, echoed to every attached client. The proxy publishes it when it forwards the line to Lily, so a client should render it rather than echoing what it sends — otherwise the sender shows it twice. |
 | `"commandresult"` | `{"cmd_id": N, "lines": […]}` | Buffered output from a `/command` (sent as one block) |
 | `"clientcommand"` | `{"text": "…"}` | A client-only command (e.g. `%style`) the proxy forwarded for the client to execute locally — typically replayed from the user's `zlilyStartup` memo on login. See [Client-only commands](#client-only-commands-clientcommand). |
 | `"prompt"` | `"text of prompt"` | The current input prompt string. Ignore these when they arrive in the `/events` replay rather than live; see [Pending prompt](#get-state--initial-state-snapshot). |

@@ -241,7 +241,7 @@ func (s *Session) assignID(msg *WSServerMsg) {
 // buffer for catch-up by clients that connect after it was sent.
 func bufferableType(t string) bool {
 	switch t {
-	case "event", "text", "commandresult", "clientcommand", "prompt":
+	case "event", "text", "input", "commandresult", "clientcommand", "prompt":
 		return true
 	}
 	return false
@@ -1027,6 +1027,16 @@ func (sess *Session) dispatchLine(line string, emit func(*WSServerMsg)) error {
 		}
 		return nil
 	}
+	// Echo the line to every client on this session before it goes upstream.
+	//
+	// A session can have several clients attached, and Lily's acknowledgement
+	// ("(message sent to ...)") reaches all of them. Echoing the line itself
+	// only where it was typed left the others showing an acknowledgement for a
+	// message they never saw. The echo is published rather than rendered
+	// locally so that every client — including the one that sent it — shows the
+	// same item, with the same ID, in the same place in the scrollback.
+	sess.publish(&WSServerMsg{Type: "input", Data: TextData{Text: line}})
+
 	// Plain text — forward to Lily. This line answers any prompt Lily was
 	// waiting on; a %-command handled above does not reach Lily, so it leaves
 	// the prompt standing.
