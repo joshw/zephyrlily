@@ -54,6 +54,20 @@ Two things it checks so they fail here rather than in production:
   confusing Docker errors. Static binaries get `distroless/static`, dynamic
   ones get `debian:stable-slim`.
 
+## Pinned images
+
+The generated `docker-compose.yml` pins Traefik to an exact version rather than
+using the `traefik` tag. A floating tag resolves to whatever the host has
+already cached, and a host that has run Traefik before may have one old enough
+to speak Docker API 1.24, which a current daemon refuses:
+
+    Provider connection error ... client version 1.24 is too old.
+    Minimum supported API version is 1.44
+
+Traefik then registers no routers and answers every request with 404, which
+reads as a routing mistake rather than a stale image. Edit the pin in the
+generated file to move it.
+
 ## Generated files
 
 | File | |

@@ -1,8 +1,14 @@
 package deploy
 
+// traefikVersion pins the reverse proxy. Floating tags are a trap here: the
+// deployment is generated onto a host that may already have an old `traefik`
+// cached, and Docker will use it rather than pulling.
+const traefikVersion = "v3.7.12"
+
 // templateData is what the generated files are rendered from.
 type templateData struct {
 	Domain          string
+	TraefikVersion  string
 	Email           string
 	LilyAddr        string
 	Image           string
@@ -15,6 +21,7 @@ type templateData struct {
 func newTemplateData(opts Options, baseImage string) templateData {
 	return templateData{
 		Domain:          opts.Domain,
+		TraefikVersion:  traefikVersion,
 		Email:           opts.Email,
 		LilyAddr:        opts.LilyAddr,
 		Image:           opts.Image,
@@ -74,7 +81,16 @@ services:
     restart: always
 
   reverse-proxy:
-    image: traefik
+    # Pinned, not a floating tag. An unpinned tag resolves to whatever the host has
+    # already cached, which on a machine that has run Traefik before is
+    # whatever it pulled then — and an old Traefik speaks Docker API 1.24,
+    # which a current daemon refuses:
+    #
+    #   Provider connection error ... client version 1.24 is too old.
+    #   Minimum supported API version is 1.44
+    #
+    # Traefik then has no routers at all and answers every request with 404.
+    image: traefik:{{.TraefikVersion}}
     command:
       - --providers.docker
       # Without this, Traefik routes every container on the host, not just the

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -200,5 +201,34 @@ func TestComposeErrorNamesTheRealDirectory(t *testing.T) {
 	}
 	if !strings.Contains(msg, "cd zlily-deploy") {
 		t.Errorf("the real directory is missing:\n%s", msg)
+	}
+}
+
+// The reverse proxy must be pinned. A floating `traefik` tag resolves to
+// whatever the host already has cached, and a host that has run Traefik before
+// may well have a version old enough to speak Docker API 1.24 — which a
+// current daemon refuses outright:
+//
+//	Provider connection error ... client version 1.24 is too old.
+//	Minimum supported API version is 1.44
+//
+// Traefik then registers no routers and answers every request with 404, which
+// looks like a routing mistake rather than a stale image.
+func TestTraefikImageIsPinned(t *testing.T) {
+	compose := read(t, generate(t, nil), "docker-compose.yml")
+
+	m := regexp.MustCompile(`(?m)^\s*image:\s*(traefik\S*)\s*$`).FindStringSubmatch(compose)
+	if m == nil {
+		t.Fatalf("no traefik image line found:\n%s", compose)
+	}
+	image := m[1]
+	if !strings.Contains(image, ":") {
+		t.Errorf("the traefik image is unpinned (%q); it will resolve to whatever is cached", image)
+	}
+	if strings.HasSuffix(image, ":latest") {
+		t.Errorf("the traefik image is pinned to :latest (%q), which is not a pin", image)
+	}
+	if !regexp.MustCompile(`^traefik:v\d+\.\d+\.\d+$`).MatchString(image) {
+		t.Errorf("expected traefik pinned to an exact version, got %q", image)
 	}
 }
