@@ -98,6 +98,18 @@ option (on by default) also puts the archives on a rolling prerelease at the tag
 
     https://github.com/joshw/zephyrlily/releases/download/dev/zephyrlily_Linux_x86_64.tar.gz
 
+To fetch and unpack one in place:
+
+```sh
+curl -fsSL https://github.com/joshw/zephyrlily/releases/download/dev/zephyrlily_Linux_x86_64.tar.gz \
+  | tar -xzf - zlily
+```
+
+`-f` so curl fails on an HTTP error rather than piping an error page into tar,
+and `tar -xzf -` because GNU tar without `-f` reads its compiled-in default
+archive device rather than stdin — the same line without it works on macOS and
+silently fails on Linux.
+
 The tag is replaced by every dev build, so that URL is stable and always points
 at the most recent one. It is marked prerelease, so the newest real release
 stays the one GitHub calls *Latest*, and `dev` does not match the `v*` pattern
