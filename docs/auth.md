@@ -16,7 +16,8 @@ The proxy runs as a localhost-only process. The TUI communicates with it over HT
 
 ## Step 1 — TUI calls `POST /auth`
 
-`cmd/tui/main.go` calls `client.Auth(username, password)`, which POSTs:
+The TUI collects credentials in a modal dialog and `attemptAuthCmd`
+(`internal/tui/ui/ui.go`) calls `client.Auth(username, password)`, which POSTs:
 
 ```json
 { "username": "josh", "password": "..." }
@@ -28,7 +29,9 @@ to the proxy's `/auth` endpoint. The password is never stored or logged by the p
 
 ## Step 2 — Proxy checks for an existing session
 
-`handleAuth` first looks up `username` in `userTokens` (an in-memory `username → token` map). If a live session already exists for that username, it returns the existing token immediately — no new Lily connection is opened and no new token is minted. This handles clients that call `/auth` again after a brief disconnect without tearing down the Lily TCP connection.
+`handleAuth` first looks up `username` in `userTokens` (an in-memory `username → token` map). If a live session already exists for that username, the supplied password is checked against that session's `authVerifier` (a salted SHA-256 of the password that opened it, compared with `subtle.ConstantTimeCompare`). On a match, the existing token is returned immediately — no new Lily connection is opened and no new token is minted. This handles clients that call `/auth` again after a brief disconnect without tearing down the Lily TCP connection.
+
+On a mismatch the proxy returns HTTP 401 and **leaves the live session alone**: tearing it down here would let anyone who knows a username knock that user offline. The check cannot be delegated to Lily, either — a second login for the same handle does not fail, it redirects the session to the new connection (`*** Redirecting old connection to this port ***`), so verifying that way would detach the session being verified.
 
 ---
 
@@ -53,14 +56,16 @@ If Lily rejects the credentials, `conn.Connect()` returns an error and the proxy
 
 ---
 
-## Step 5 — Session creation and history restore
+## Step 5 — Session creation
 
-A new `Session` is built holding the token, username, and Lily connection. The proxy then checks `savedStates[username]` for a previously persisted event buffer and `lastSeenID` (kept across Lily TCP disconnects within the same proxy process). If found, the session is pre-loaded with that history before any client connects. Then:
+A new `Session` is built holding the token, username, the `authVerifier` from step 2, and the Lily connection. Then:
 
 ```
 sessions[token]      = sess
 userTokens[username] = token
 ```
+
+**No history is carried over from a previous session for this username.** A (re)connect always starts a fresh session, because a new Lily login replays the entire login sequence — banner, blurb and review prompts, entity sync — and restarts the message-ID counter. Pre-loading a prior event buffer would mismatch those IDs and suppress the very prompts (e.g. "Please enter a blurb") the user has to answer to finish logging in. The TUI keeps its own scrollback client-side, so nothing visible is lost.
 
 ---
 
@@ -101,13 +106,25 @@ The proxy upgrades the connection, creates a `wsClient`, and adds it to `sess.su
 
 ## Session teardown
 
-When the Lily TCP connection closes (server-side disconnect or network failure):
+When the Lily TCP connection closes (server-side disconnect or network failure), `fanOut` returns and:
 
-1. `fanOut` broadcasts an error message to all WebSocket subscribers
-2. The event buffer and `lastSeenID` are persisted to `savedStates[username]`
+1. Scheduled tasks (`%after` / `%every` / `%cron`) are stopped — their session is gone
+2. `lily connection closed` is broadcast to all WebSocket subscribers
 3. The session is removed from `sessions` and `userTokens`
+4. `sess.conn.Close()` sends our FIN, so the Lily server reaps its side promptly rather than leaving the socket in `CLOSE_WAIT` — that is what lets an immediate reconnect log in instead of waiting for the old session to time out
 
-When the TUI reconnects and calls `/auth` again, step 5 restores the saved state so history and scroll position are preserved.
+Nothing is persisted. When the TUI reconnects it calls `/auth` again and gets a brand-new session and token (step 3 onward).
+
+---
+
+## History and catch-up within a session
+
+Each session keeps a capped in-memory ring of recent events (`eventBuf`, `maxEventBuf` = 5000):
+
+- **First subscriber** (`lastSeenID == 0`): `handleWS` replays the whole ring on connect, so a client that attaches after login still sees the text and interactive prompts that arrived before it got there.
+- **Reconnecting subscriber**: the ring is not replayed. The client asks for what it missed via `GET /events?after=<lastSeenID>` (default 200, max 1000), and reports its position back with `POST /seen`.
+
+Both live and die with the session; neither survives the Lily connection dropping.
 
 ---
 
@@ -115,5 +132,6 @@ When the TUI reconnects and calls `/auth` again, step 5 restores the saved state
 
 - The proxy is intended to run **localhost-only**. Since all traffic is over loopback, the absence of TLS is acceptable for a local tool.
 - If the proxy were ever exposed over a network, TLS would be required to protect both the password (step 1) and the bearer token (step 7).
+- The existing-session shortcut in step 2 verifies the password before returning a token, so a username alone is never enough to reach a live session.
 - Session tokens rotate on each fresh authentication (existing live sessions reuse their current token until they disconnect).
-- The `savedStates` map is keyed by username (stable), not token, so history survives token rotation.
+- Nothing is written to disk: credentials, the password verifier, and the event buffer exist only in the proxy's memory and are dropped when the session ends.

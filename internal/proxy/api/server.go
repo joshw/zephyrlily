@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
@@ -58,6 +60,10 @@ type Session struct {
 	token    string
 	username string
 	conn     *lily.Conn
+
+	// Verifier for the password that opened this session, so a later /auth for
+	// the same username can be checked before its token is handed back.
+	auth *authVerifier
 
 	subsMu      sync.Mutex
 	subscribers map[*wsClient]struct{}
@@ -342,9 +348,21 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return the existing session token if this user is already connected.
+	// Return the existing session token if this user is already connected — but
+	// only to a caller who proves they know the password that opened it. The
+	// check runs here rather than against Lily because a second login for the
+	// same handle does not fail: the server redirects the session to the new
+	// connection ("*** Redirecting old connection to this port ***"), so
+	// verifying that way would detach the very session being verified.
 	if existing, ok := s.userTokens.Load(req.Username); ok {
-		if _, ok := s.sessions.Load(existing.(string)); ok {
+		if v, ok := s.sessions.Load(existing.(string)); ok {
+			// A mismatch leaves the live session untouched: tearing it down here
+			// would turn a wrong password into a way to knock the user offline.
+			if !v.(*Session).auth.matches(req.Password) {
+				slog.Warn("handleAuth: rejected wrong password for live session", "user", req.Username)
+				http.Error(w, lily.ErrAuthFailed.Error(), http.StatusUnauthorized)
+				return
+			}
 			writeJSON(w, AuthResponse{Token: existing.(string)})
 			return
 		}
@@ -366,10 +384,17 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	verifier, err := newAuthVerifier(req.Password)
+	if err != nil {
+		http.Error(w, "token generation failed", http.StatusInternalServerError)
+		return
+	}
+
 	sess := &Session{
 		token:       token,
 		username:    req.Username,
 		conn:        conn,
+		auth:        verifier,
 		subscribers: make(map[*wsClient]struct{}),
 		cmdBuffer:   make(map[int]*cmdCapture),
 		aliases:     commands.NewAliasTable(),
@@ -979,6 +1004,41 @@ func generateToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// authVerifier checks a password against the one that opened a session. Lily
+// itself cannot be asked (a re-login takes the session over instead of
+// failing), so the proxy keeps a salted hash for the lifetime of the session.
+// A single SHA-256 is enough here: this never touches disk, and it only has to
+// hold for as long as the session it guards.
+type authVerifier struct {
+	salt []byte
+	hash []byte
+}
+
+func newAuthVerifier(password string) (*authVerifier, error) {
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, err
+	}
+	return &authVerifier{salt: salt, hash: hashPassword(salt, password)}, nil
+}
+
+// matches reports whether password opened this session. A session with no
+// verifier matches nothing, so a missed initialization denies rather than
+// admits.
+func (v *authVerifier) matches(password string) bool {
+	if v == nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare(hashPassword(v.salt, password), v.hash) == 1
+}
+
+func hashPassword(salt []byte, password string) []byte {
+	h := sha256.New()
+	h.Write(salt)
+	h.Write([]byte(password))
+	return h.Sum(nil)
 }
 
 // msgToWS converts a parsed SLCP message to a WebSocket server message.
