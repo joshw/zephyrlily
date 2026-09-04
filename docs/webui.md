@@ -75,6 +75,11 @@ python3 -m http.server 8000 -d web/dist
 
 Then visit `http://localhost:8000` in your browser.
 
+Note that a proxy started with `--web` now serves the browser TUI at `/`, not
+this app. Pass `--web-root=spa` to put the Svelte UI back on the root path; it
+is otherwise reachable only by its asset paths, since its build references them
+absolutely and it cannot be served from a prefix.
+
 ## Features
 
 ### Implemented

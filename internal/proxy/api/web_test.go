@@ -21,7 +21,7 @@ import (
 func termMux(t *testing.T) http.Handler {
 	t.Helper()
 	mux := http.NewServeMux()
-	require.NoError(t, addWebHandler(mux))
+	require.NoError(t, addWebHandler(mux, "term"))
 	return mux
 }
 
@@ -148,4 +148,45 @@ func TestBuildEndpointIsNotReachableFromTheSPARoot(t *testing.T) {
 	// One level too high: must not look like a successful answer.
 	wrong := get(t, h, "/build", [2]string{"Accept", "*/*"})
 	require.NotEqual(t, http.StatusOK, wrong.Code)
+}
+
+// The bare domain should give you the browser TUI: it is the real client, and
+// nobody should have to be told to add /term to a URL.
+func TestRootServesTheBrowserTUI(t *testing.T) {
+	mux := http.NewServeMux()
+	require.NoError(t, addWebHandler(mux, "term"))
+
+	res := get(t, mux, "/", [2]string{"Accept", "text/html"})
+	require.Equal(t, http.StatusFound, res.Code, "the root should redirect to the TUI")
+	require.Equal(t, "/term/", res.Header().Get("Location"))
+
+	// Found, not Moved Permanently: browsers cache a permanent redirect
+	// indefinitely, and this is a setting that can be changed back.
+	require.NotEqual(t, http.StatusMovedPermanently, res.Code)
+
+	// Only the root moves. The Svelte build references its assets by absolute
+	// path, so everything else must still reach it.
+	deep := get(t, mux, "/assets/whatever.js", [2]string{"Accept", "*/*"})
+	require.NotEqual(t, http.StatusFound, deep.Code, "only / should redirect")
+}
+
+func TestWebRootSPARestoresTheOldBehaviour(t *testing.T) {
+	mux := http.NewServeMux()
+	require.NoError(t, addWebHandler(mux, "spa"))
+
+	res := get(t, mux, "/", [2]string{"Accept", "text/html"})
+	require.Equal(t, http.StatusOK, res.Code, "with --web-root=spa the root should serve the Svelte app")
+	require.Contains(t, res.Body.String(), "<html")
+}
+
+// Whichever root is chosen, /term/ keeps working: it is the URL in the docs and
+// in anything already shared.
+func TestTermPathWorksUnderBothRoots(t *testing.T) {
+	for _, root := range []string{"term", "spa"} {
+		mux := http.NewServeMux()
+		require.NoError(t, addWebHandler(mux, root))
+		res := get(t, mux, "/term/", [2]string{"Accept", "text/html"})
+		require.Equal(t, http.StatusOK, res.Code, "/term/ should serve the TUI with --web-root=%s", root)
+		require.Contains(t, res.Body.String(), "ZLILY_BUILD")
+	}
 }

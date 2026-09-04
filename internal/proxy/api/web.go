@@ -123,7 +123,7 @@ func acceptsHTML(r *http.Request) bool {
 
 // addWebHandler registers the SPA handler on the mux.  API routes registered
 // before this call take priority because Go's ServeMux prefers longer prefixes.
-func addWebHandler(mux *http.ServeMux) error {
+func addWebHandler(mux *http.ServeMux, webRoot string) error {
 	distFS, err := webstatic.FS()
 	if err != nil {
 		return err
@@ -140,8 +140,38 @@ func addWebHandler(mux *http.ServeMux) error {
 		buildID: webstatic.TermBuildID(),
 	}))
 	mux.Handle("/term", http.RedirectHandler("/term/", http.StatusMovedPermanently))
-	mux.Handle("/", spaHandler{fs: http.FS(distFS)})
+
+	// What the bare domain gives you. The browser TUI is the real client, so it
+	// is the default; --web-root=spa restores the Svelte app.
+	//
+	// Only the root path moves. The Svelte build references its assets by
+	// absolute path (/assets/...), so serving it from a prefix would break it,
+	// and it stays the handler for everything else.
+	spa := spaHandler{fs: http.FS(distFS)}
+	if webRoot == "spa" {
+		mux.Handle("/", spa)
+		return nil
+	}
+	mux.Handle("/", rootRedirect{to: "/term/", otherwise: spa})
 	return nil
+}
+
+// rootRedirect sends the bare root somewhere else and leaves every other path
+// to the handler it wraps.
+type rootRedirect struct {
+	to        string
+	otherwise http.Handler
+}
+
+func (h rootRedirect) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		// Found rather than Moved Permanently: a permanent redirect is cached
+		// by browsers indefinitely, and this one is a configuration choice
+		// that can be changed back.
+		http.Redirect(w, r, h.to, http.StatusFound)
+		return
+	}
+	h.otherwise.ServeHTTP(w, r)
 }
 
 // termHandler serves the browser TUI.

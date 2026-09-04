@@ -89,6 +89,7 @@ func cmdServer(args []string) {
 	webTLS := fs.Bool("web-tls", false, "serve the web UI over HTTPS")
 	webCert := fs.String("web-cert", "", "TLS certificate PEM for web UI (default: self-signed)")
 	webKey := fs.String("web-key", "", "TLS private key PEM for web UI (default: self-signed)")
+	webRoot := fs.String("web-root", "term", `what "/" serves: "term" (the browser TUI) or "spa" (the Svelte app)`)
 	behindProxy := fs.Bool("behind-proxy", false, "trust X-Forwarded-For (only when a reverse proxy fronts this)")
 	maxSessions := fs.Int("max-sessions", 0, "cap on concurrent sessions (0 = default)")
 	authMaxFailures := fs.Int("auth-max-failures", 0, "failed logins per client before a lockout (0 = default)")
@@ -111,6 +112,7 @@ func cmdServer(args []string) {
 		AuthMaxFailures:   *authMaxFailures,
 		ServeWeb:          *webUI, WebTLS: *webTLS,
 		WebCertFile: *webCert, WebKeyFile: *webKey,
+		WebRoot: *webRoot,
 	}
 	if *webUI {
 		fmt.Fprintln(os.Stderr, "Web UI:", webURL(*listen, *webTLS))
