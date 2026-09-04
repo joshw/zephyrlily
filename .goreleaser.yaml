@@ -15,7 +15,6 @@ env:
 
 before:
   hooks:
-    - sh -c 'cd web && npm ci && npm run build'
     # The browser build of the TUI, embedded by internal/webstatic.
     #
     # Deliberately without the u13APIKeyBuild ldflag the native builds carry: a

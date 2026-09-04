@@ -19,8 +19,5 @@ import (
 // 39 MB, then 60 MB, growing with each rebuild until a release binary is
 // hundreds of megabytes.
 
-// FS returns an empty filesystem.
-func FS() (fs.FS, error) { return fstest.MapFS{}, nil }
-
 // TermFS returns an empty filesystem.
 func TermFS() (fs.FS, error) { return fstest.MapFS{}, nil }

@@ -45,8 +45,7 @@ type Config struct {
 	AuthMaxFailures   int  // failed /auth attempts per client before a lockout
 
 	// Web UI
-	ServeWeb    bool   // serve the embedded browser clients
-	WebRoot     string // what "/" is: "term" (the browser TUI) or "spa"
+	ServeWeb    bool   // serve the embedded browser client
 	WebTLS      bool   // serve the web interface over HTTPS
 	WebCertFile string // path to TLS cert PEM (empty = self-signed)
 	WebKeyFile  string // path to TLS key PEM (empty = self-signed)
@@ -326,7 +325,7 @@ func (s *Server) RunWithListener(ctx context.Context, l net.Listener) error {
 
 	// Mount the web UI catch-all last so API routes take priority.
 	if s.cfg.ServeWeb {
-		if err := addWebHandler(mux, s.cfg.WebRoot); err != nil {
+		if err := addWebHandler(mux); err != nil {
 			return fmt.Errorf("web handler: %w", err)
 		}
 	}

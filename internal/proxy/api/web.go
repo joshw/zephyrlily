@@ -12,7 +12,6 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -71,107 +70,40 @@ func generateSelfSignedCert() (tls.Certificate, error) {
 	return tls.X509KeyPair(certPEM, keyPEM)
 }
 
-// spaHandler serves a compiled SPA: known files are served directly, and any
-// path that doesn't resolve to a real file falls back to index.html so that
-// client-side routing works after a browser reload.
-type spaHandler struct {
-	fs http.FileSystem
-}
-
-func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/")
-	if path == "" {
-		path = "index.html"
-	}
-
-	f, err := h.fs.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Fall back to index.html for SPA deep-linking — but only for a
-			// request that is actually a navigation. Answering a fetch() with
-			// a page of HTML and a 200 turns every mistaken URL into a silent
-			// success: the caller reads markup where it expected data and has
-			// no way to tell. A relative fetch that resolves one level too
-			// high is exactly that mistake, and it is invisible until someone
-			// wonders why a comparison never matches.
-			if !acceptsHTML(r) {
-				http.NotFound(w, r)
-				return
-			}
-			r2 := r.Clone(r.Context())
-			r2.URL.Path = "/"
-			http.FileServer(h.fs).ServeHTTP(w, r2)
-			return
-		}
-	} else {
-		_ = f.Close()
-	}
-	http.FileServer(h.fs).ServeHTTP(w, r)
-}
-
-// acceptsHTML reports whether the request looks like a browser navigation
-// rather than a programmatic fetch. Browsers ask for text/html when following
-// a link or typing an address; fetch() and XHR default to */*.
-func acceptsHTML(r *http.Request) bool {
-	for _, accept := range r.Header.Values("Accept") {
-		if strings.Contains(accept, "text/html") {
-			return true
-		}
-	}
-	return false
-}
-
-// addWebHandler registers the SPA handler on the mux.  API routes registered
-// before this call take priority because Go's ServeMux prefers longer prefixes.
-func addWebHandler(mux *http.ServeMux, webRoot string) error {
-	distFS, err := webstatic.FS()
-	if err != nil {
-		return err
-	}
+// addWebHandler registers the browser client on the mux.  API routes
+// registered before this call take priority because Go's ServeMux prefers
+// longer prefixes.
+func addWebHandler(mux *http.ServeMux) error {
 	termFS, err := webstatic.TermFS()
 	if err != nil {
 		return err
 	}
-	// The browser build of the TUI, at its own prefix so it and the Svelte SPA
-	// can be served side by side. Registered before "/" only for readability;
-	// ServeMux picks the longer pattern regardless.
 	mux.Handle("/term/", http.StripPrefix("/term/", termHandler{
 		fs:      http.FS(termFS),
 		buildID: webstatic.TermBuildID(),
 	}))
 	mux.Handle("/term", http.RedirectHandler("/term/", http.StatusMovedPermanently))
 
-	// What the bare domain gives you. The browser TUI is the real client, so it
-	// is the default; --web-root=spa restores the Svelte app.
-	//
-	// Only the root path moves. The Svelte build references its assets by
-	// absolute path (/assets/...), so serving it from a prefix would break it,
-	// and it stays the handler for everything else.
-	spa := spaHandler{fs: http.FS(distFS)}
-	if webRoot == "spa" {
-		mux.Handle("/", spa)
-		return nil
-	}
-	mux.Handle("/", rootRedirect{to: "/term/", otherwise: spa})
+	// The bare domain gives you the terminal; nobody should have to be told to
+	// add /term to a URL. Everything else here is a 404 — the Svelte app that
+	// used to catch unknown paths is no longer built.
+	mux.Handle("/", rootRedirect{to: "/term/"})
 	return nil
 }
 
-// rootRedirect sends the bare root somewhere else and leaves every other path
-// to the handler it wraps.
-type rootRedirect struct {
-	to        string
-	otherwise http.Handler
-}
+// rootRedirect sends the bare root to the browser client, and answers anything
+// else with a 404.
+type rootRedirect struct{ to string }
 
 func (h rootRedirect) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/" {
-		// Found rather than Moved Permanently: a permanent redirect is cached
-		// by browsers indefinitely, and this one is a configuration choice
-		// that can be changed back.
-		http.Redirect(w, r, h.to, http.StatusFound)
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
 		return
 	}
-	h.otherwise.ServeHTTP(w, r)
+	// Found rather than Moved Permanently: a permanent redirect is cached by
+	// browsers indefinitely, and where the root points is a choice that may
+	// change again.
+	http.Redirect(w, r, h.to, http.StatusFound)
 }
 
 // termHandler serves the browser TUI.
@@ -186,9 +118,9 @@ func (h rootRedirect) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // immutable and cached hard. Only index.html is revalidated, and it is small
 // and carries an ETag, so the usual answer is a 304.
 //
-// Unlike spaHandler this does not fall back to index.html: a missing file here
-// means a missing build artifact, and answering with HTML would turn that into
-// an opaque WebAssembly parse error rather than a 404.
+// A missing file here is a missing build artifact and is answered with a 404;
+// falling back to index.html would turn that into an opaque WebAssembly parse
+// error instead.
 type termHandler struct {
 	fs      http.FileSystem
 	buildID string

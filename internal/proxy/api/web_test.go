@@ -21,7 +21,7 @@ import (
 func termMux(t *testing.T) http.Handler {
 	t.Helper()
 	mux := http.NewServeMux()
-	require.NoError(t, addWebHandler(mux, "term"))
+	require.NoError(t, addWebHandler(mux))
 	return mux
 }
 
@@ -106,87 +106,33 @@ func TestTermBuildEndpointReportsTheBuild(t *testing.T) {
 	require.Equal(t, "no-store", res.Header().Get("Cache-Control"))
 }
 
-// The build ID has to change when the assets do, or none of the above helps.
-func TestTermBuildIDIsStableAndContentDerived(t *testing.T) {
-	require.Equal(t, webstatic.TermBuildID(), webstatic.TermBuildID(), "must be stable within a run")
-	require.Len(t, webstatic.TermBuildID(), 12)
-	require.NotContains(t, webstatic.TermBuildID(), "/", "must be safe in a URL")
-}
-
-// The SPA falls back to index.html so client-side routing survives a reload.
-// That fallback must not answer programmatic requests, though: a fetch() that
-// resolves to the wrong path would get a page of HTML and a 200, and read it
-// as data. That is not hypothetical — the browser client polls a relative
-// "build" URL, and on a page URL without its trailing slash that resolves one
-// level too high, landing here. The symptom was an update banner that appeared
-// on every load and could not be dismissed by reloading.
-func TestSPAFallbackOnlyAnswersNavigations(t *testing.T) {
+// The bare domain gives you the terminal: nobody should have to be told to add
+// /term to a URL.
+func TestRootRedirectsToTheBrowserTUI(t *testing.T) {
 	h := termMux(t)
 
-	// A fetch(): no text/html in Accept.
-	res := get(t, h, "/build", [2]string{"Accept", "*/*"})
-	require.Equal(t, http.StatusNotFound, res.Code,
-		"a programmatic request for an unknown path must 404, not receive the SPA:\n%s",
-		res.Body.String())
-
-	// A navigation: the fallback is what makes deep links work.
-	res = get(t, h, "/some/deep/link",
-		[2]string{"Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
-	require.Equal(t, http.StatusOK, res.Code, "deep links should still reach the SPA")
-	require.Contains(t, res.Body.String(), "<html", "the fallback should serve the SPA page")
-}
-
-// The build endpoint answers only on its real path. Reaching it by any other
-// route would mean the page is comparing against something else entirely.
-func TestBuildEndpointIsNotReachableFromTheSPARoot(t *testing.T) {
-	h := termMux(t)
-
-	correct := get(t, h, "/term/build")
-	require.Equal(t, http.StatusOK, correct.Code)
-	require.Regexp(t, `^[0-9a-f]{12}$`, strings.TrimSpace(correct.Body.String()))
-
-	// One level too high: must not look like a successful answer.
-	wrong := get(t, h, "/build", [2]string{"Accept", "*/*"})
-	require.NotEqual(t, http.StatusOK, wrong.Code)
-}
-
-// The bare domain should give you the browser TUI: it is the real client, and
-// nobody should have to be told to add /term to a URL.
-func TestRootServesTheBrowserTUI(t *testing.T) {
-	mux := http.NewServeMux()
-	require.NoError(t, addWebHandler(mux, "term"))
-
-	res := get(t, mux, "/", [2]string{"Accept", "text/html"})
-	require.Equal(t, http.StatusFound, res.Code, "the root should redirect to the TUI")
+	res := get(t, h, "/", [2]string{"Accept", "text/html"})
+	require.Equal(t, http.StatusFound, res.Code)
 	require.Equal(t, "/term/", res.Header().Get("Location"))
-
 	// Found, not Moved Permanently: browsers cache a permanent redirect
-	// indefinitely, and this is a setting that can be changed back.
+	// indefinitely, and where the root points may change again.
 	require.NotEqual(t, http.StatusMovedPermanently, res.Code)
-
-	// Only the root moves. The Svelte build references its assets by absolute
-	// path, so everything else must still reach it.
-	deep := get(t, mux, "/assets/whatever.js", [2]string{"Accept", "*/*"})
-	require.NotEqual(t, http.StatusFound, deep.Code, "only / should redirect")
 }
 
-func TestWebRootSPARestoresTheOldBehaviour(t *testing.T) {
-	mux := http.NewServeMux()
-	require.NoError(t, addWebHandler(mux, "spa"))
-
-	res := get(t, mux, "/", [2]string{"Accept", "text/html"})
-	require.Equal(t, http.StatusOK, res.Code, "with --web-root=spa the root should serve the Svelte app")
-	require.Contains(t, res.Body.String(), "<html")
-}
-
-// Whichever root is chosen, /term/ keeps working: it is the URL in the docs and
-// in anything already shared.
-func TestTermPathWorksUnderBothRoots(t *testing.T) {
-	for _, root := range []string{"term", "spa"} {
-		mux := http.NewServeMux()
-		require.NoError(t, addWebHandler(mux, root))
-		res := get(t, mux, "/term/", [2]string{"Accept", "text/html"})
-		require.Equal(t, http.StatusOK, res.Code, "/term/ should serve the TUI with --web-root=%s", root)
-		require.Contains(t, res.Body.String(), "ZLILY_BUILD")
+// With the Svelte app no longer built, nothing catches unknown paths. They must
+// 404 rather than be answered with a page, or a mistyped fetch reads markup as
+// data — which is how an update banner once got stuck on every load.
+func TestUnknownPathsAre404(t *testing.T) {
+	h := termMux(t)
+	for _, p := range []string{"/build", "/assets/index.js", "/some/deep/link"} {
+		res := get(t, h, p, [2]string{"Accept", "text/html"})
+		require.Equal(t, http.StatusNotFound, res.Code, "%s should be a 404", p)
 	}
+}
+
+// /term/ keeps working: it is the URL in the docs and in anything shared.
+func TestTermPathStillServesTheClient(t *testing.T) {
+	res := get(t, termMux(t), "/term/", [2]string{"Accept", "text/html"})
+	require.Equal(t, http.StatusOK, res.Code)
+	require.Contains(t, res.Body.String(), "ZLILY_BUILD")
 }

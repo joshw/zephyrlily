@@ -35,7 +35,8 @@ func TestBrowserBuildEmbedsNothing(t *testing.T) {
 	}
 }
 
-// The native build must still embed them, or the proxy serves nothing.
+// The native build must still embed the browser client, or the proxy serves
+// nothing at /term/. The Svelte app is deliberately not among them any more.
 func TestNativeBuildEmbedsAssets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the compiler")
@@ -46,10 +47,15 @@ func TestNativeBuildEmbedsAssets(t *testing.T) {
 		t.Fatalf("go list: %v\n%s", err, out)
 	}
 	files := string(out)
-	for _, want := range []string{"term/index.html", "term/term.js", "dist/index.html"} {
+	for _, want := range []string{"term/index.html", "term/term.js"} {
 		if !strings.Contains(files, want) {
 			t.Errorf("the native build does not embed %s:\n%s", want, files)
 		}
+	}
+	// Nothing from the Svelte app: it is no longer built, and embedding it
+	// would put Node back in the path of every build of this project.
+	if strings.Contains(files, "dist/") {
+		t.Errorf("the Svelte build output is embedded again:\n%s", files)
 	}
 }
 

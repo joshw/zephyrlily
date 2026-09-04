@@ -25,9 +25,9 @@ The primary client is a feature-rich terminal interface built with [Bubble Tea](
 
 The terminal client also compiles to WebAssembly and runs in a browser tab — the same model, keymap and rendering code, with xterm.js standing in for the terminal. Run `zlily server --web` and open `/term/`. See [Browser TUI](docs/browser-tui.md).
 
-### Web UI (Experimental)
+### Web UI (not built)
 
-A separate browser-native client is available in the `web/` directory. Built with Svelte and Vite, it provides a Discord-like interface for basic chat and presence tracking. See [Web UI Documentation](docs/webui.md) for details on building and running it.
+A separate browser-native Svelte client exists in the `web/` directory. It is no longer built or embedded — the browser TUI above overtook it, and carrying it meant every build needed Node. The source is kept for a future optional build; see [Web UI Documentation](docs/webui.md).
 
 ## Install
 

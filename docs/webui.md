@@ -1,3 +1,17 @@
+> **Not built by default.**
+>
+> This app is no longer compiled or embedded, and `--web` serves the
+> [browser TUI](browser-tui.md) instead. The browser TUI runs the real client
+> rather than reimplementing it, which is where the effort went; keeping this
+> one in the build meant every build of the project needed Node.
+>
+> The source is kept for a future optional build. Reviving it means restoring
+> the `//go:embed dist` in `internal/webstatic`, a handler for it, and the
+> `npm ci && npm run build` step in CI and `.goreleaser.yaml` — ideally behind a
+> build tag, so that a default build still needs nothing but Go.
+>
+> Everything below describes it as it was.
+
 # ZephyrLily Web Interface (Experimental)
 
 The ZephyrLily project includes an experimental web-based client for the Lily server, built with [Svelte](https://svelte.dev/) and [Vite](https://vitejs.dev/). This document describes the web UI architecture, how to run it, and its current capabilities.

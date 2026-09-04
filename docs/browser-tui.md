@@ -32,9 +32,9 @@ go build ./cmd/zlily
 Then open `http://localhost:7888/` — the bare root redirects to the browser
 TUI. Log in through the usual auth dialog.
 
-`/term/` still works and is where the assets live; only the root moved. The
-Svelte web UI is no longer what `/` gives you; `--web-root=spa` restores that if
-you want it.
+`/term/` still works and is where the assets live; only the root moved. Any
+other path is a 404 — the Svelte app that used to catch unknown paths is no
+longer built (see docs/webui.md).
 
 For access from anywhere but localhost, serve it over TLS — either
 `--web-tls --web-cert/--web-key`, or a reverse proxy in front. `--web-tls` on
