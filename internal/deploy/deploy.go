@@ -278,6 +278,34 @@ func composeCommand() ([]string, error) {
 // substituted by the caller, which knows it.
 const composeHint = "<deployment directory>"
 
+// legacyComposeNote explains a failure that the standalone docker-compose
+// produces against a current Docker daemon, and says nothing otherwise.
+//
+// docker-compose 1.x reads ContainerConfig out of an image inspection, a field
+// recent Docker Engine no longer returns, and it only does so when replacing an
+// existing container. So the first deploy succeeds and the second dies in a
+// Python traceback ending:
+//
+//	container.image_config['ContainerConfig'].get('Volumes') or {}
+//	KeyError: 'ContainerConfig'
+//
+// Nothing in the deployment causes it and nothing in the deployment can avoid
+// it, so the least this can do is name it.
+func legacyComposeNote(compose []string, dir string) string {
+	if len(compose) != 1 { // the plugin, invoked as "docker compose"
+		return ""
+	}
+	return "\n\n" +
+		"That may be docker-compose 1.x against a current Docker daemon, which fails when it\n" +
+		"replaces an existing container (KeyError: 'ContainerConfig'). Recreating from scratch\n" +
+		"avoids it:\n" +
+		"    cd " + dir + " && docker-compose down && docker-compose up -d --build\n" +
+		"\n" +
+		"docker-compose 1.x is end-of-life. Installing the Compose plugin fixes this properly,\n" +
+		"and zlily deploy prefers it when present:\n" +
+		"    https://docs.docker.com/compose/install/linux/"
+}
+
 // composeUp builds and starts the stack.
 func composeUp(opts Options) error {
 	compose, err := composeCommand()
@@ -294,7 +322,7 @@ func composeUp(opts Options) error {
 	cmd.Stdout = opts.Out
 	cmd.Stderr = opts.Out
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s up: %w", shown, err)
+		return fmt.Errorf("%s up: %w%s", shown, err, legacyComposeNote(compose, opts.Dir))
 	}
 
 	_, _ = fmt.Fprintf(opts.Out, "\n  https://%s/term/\n", opts.Domain)

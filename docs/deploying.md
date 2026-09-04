@@ -19,6 +19,20 @@ That writes `./zlily-deploy/` and runs `docker compose up -d --build`. Add
 - Docker, with Compose available either way: as the CLI plugin (`docker
   compose`) or as the older standalone binary (`docker-compose`). `zlily deploy`
   probes for both and uses whichever runs.
+
+  The plugin is worth preferring. docker-compose 1.x is end-of-life and fails
+  against a current Docker daemon whenever it *replaces* an existing container,
+  because it reads a field (`ContainerConfig`) that recent Docker Engine no
+  longer returns:
+
+      container.image_config['ContainerConfig'].get('Volumes') or {}
+      KeyError: 'ContainerConfig'
+
+  So the first deploy works and the second dies in a Python traceback. Nothing
+  in the deployment causes it or can avoid it. `docker-compose down` first, and
+  it creates rather than replaces:
+
+      cd zlily-deploy && docker-compose down && docker-compose up -d --build
 - Run it **on the Linux host you are deploying to** (see below).
 
 Use `--staging` for the first run against a new domain. It requests from Let's

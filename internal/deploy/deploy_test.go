@@ -232,3 +232,30 @@ func TestTraefikImageIsPinned(t *testing.T) {
 		t.Errorf("expected traefik pinned to an exact version, got %q", image)
 	}
 }
+
+// docker-compose 1.x against a current Docker daemon dies in a Python
+// traceback when it replaces an existing container, because it reads a field
+// (ContainerConfig) that recent Docker Engine no longer returns. Nothing in
+// the deployment causes it and nothing in it can avoid it, so a failure on
+// that path has to at least name it.
+func TestLegacyComposeFailureIsExplained(t *testing.T) {
+	note := legacyComposeNote([]string{"/usr/bin/docker-compose"}, "zlily-deploy")
+	if note == "" {
+		t.Fatal("no explanation for a failure under the standalone docker-compose")
+	}
+	for _, want := range []string{
+		"ContainerConfig",                 // the error they will have seen
+		"docker-compose down",             // what unblocks them now
+		"cd zlily-deploy",                 // in the right directory
+		"docs.docker.com/compose/install", // and how to stop hitting it
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("the note does not mention %q:\n%s", want, note)
+		}
+	}
+
+	// The plugin does not have this problem; saying so would be noise.
+	if n := legacyComposeNote([]string{"docker", "compose"}, "zlily-deploy"); n != "" {
+		t.Errorf("explained a legacy failure for the plugin:\n%s", n)
+	}
+}
