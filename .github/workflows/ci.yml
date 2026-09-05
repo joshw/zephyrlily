@@ -40,3 +40,26 @@ jobs:
       # runner has Node from the setup step above, so they run here.
       - name: Test
         run: go test -count=1 ./...
+
+  # The Python client library lives in this repo precisely so that a change to
+  # internal/proxy/api and the client that consumes it are tested on the same
+  # commit. Its suite runs against an in-process fake proxy, so it needs no Go
+  # build and no Lily server.
+  python-client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/python
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --locked
+
+      - name: Test
+        run: uv run pytest -q
