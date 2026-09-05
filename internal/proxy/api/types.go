@@ -22,6 +22,12 @@ type InfoResponse struct {
 	// saved credentials by it: the proxy's own address is no good for that, since
 	// the embedded proxy takes a fresh ephemeral port on every run.
 	LilyAddr string `json:"lily_addr"`
+
+	// Version is this proxy's build. A client released separately from the
+	// proxy — the Python library in clients/python, say — has no other way to
+	// tell what it is talking to, and this endpoint is the only one it can ask
+	// before authenticating.
+	Version string `json:"version"`
 }
 
 // SessionResponse is returned by GET /session: confirmation that a token still

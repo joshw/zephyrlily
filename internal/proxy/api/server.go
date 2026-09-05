@@ -25,6 +25,7 @@ import (
 	"github.com/joshw/zephyrlily/internal/lily"
 	"github.com/joshw/zephyrlily/internal/proxy/commands"
 	"github.com/joshw/zephyrlily/internal/slcp"
+	"github.com/joshw/zephyrlily/internal/version"
 )
 
 const (
@@ -367,7 +368,7 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, InfoResponse{LilyAddr: s.cfg.LilyAddr})
+	writeJSON(w, InfoResponse{LilyAddr: s.cfg.LilyAddr, Version: version.String()})
 }
 
 // handleAuth authenticates a user against the Lily server and returns a token.

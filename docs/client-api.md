@@ -29,10 +29,12 @@ Facts a client needs before it can log in. Takes no token — the caller has non
 
 **Response `200 OK`**
 ```json
-{ "lily_addr": "rpi.lily.org:7777" }
+{ "lily_addr": "rpi.lily.org:7777", "version": "0.10.2" }
 ```
 
 `lily_addr` is the Lily server this proxy connects to. Clients that remember credentials key them by it: the proxy's own address is no good for that, because the TUI's embedded proxy takes a fresh ephemeral port on every run.
+
+`version` is the proxy's own build. A client released separately from the proxy — the Python library in [clients/python](../clients/python) — has no other way to tell what it is talking to, and this is the only endpoint it can ask before authenticating.
 
 **Errors**
 
