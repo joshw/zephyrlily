@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -27,6 +27,10 @@ EVENTS_PAGE = 1000
 # (internal/proxy/api/server.go handleState). Our own deadline has to clear
 # that, or we abandon a login that was about to succeed.
 STATE_TIMEOUT = 90.0
+
+# /fetch, /store and /shorten each wait on a round trip to Lily or to an
+# outside service; the proxy gives up at 10s, so clear that before failing.
+FETCH_TIMEOUT = 20.0
 
 
 def normalize_base_url(addr: str) -> str:
@@ -221,6 +225,79 @@ class ZlilyClient:
             "/seen", json={"last_seen_id": last_id}, headers=self._auth_headers
         )
         r.raise_for_status()
+
+    # ── stored content ───────────────────────────────────────────────────────
+
+    async def fetch(
+        self, kind: str = "info", target: str = "me", name: str = ""
+    ) -> list[str]:
+        """`GET /fetch` — read a user's /info or a named memo.
+
+        Lines come back with Lily's `* ` prefix already stripped, and an empty
+        list means there is no such content. Useful for keeping a bot's data
+        on the server, where it can be edited by anyone with access rather
+        than only by whoever can reach the bot's filesystem.
+        """
+        params: dict[str, str] = {"type": kind, "target": target}
+        if name:
+            params["name"] = name
+        r = await self._http.get(
+            "/fetch", params=params, headers=self._auth_headers, timeout=FETCH_TIMEOUT
+        )
+        r.raise_for_status()
+        return list(r.json().get("lines") or [])
+
+    async def store(
+        self,
+        lines: Sequence[str],
+        kind: str = "info",
+        target: str = "me",
+        name: str = "",
+    ) -> None:
+        """`POST /store` — replace a user's /info or a named memo.
+
+        The proxy allows one store at a time per session and answers 409 while
+        another is in flight.
+        """
+        r = await self._http.post(
+            "/store",
+            json={"type": kind, "target": target, "name": name, "lines": list(lines)},
+            headers=self._auth_headers,
+            timeout=FETCH_TIMEOUT,
+        )
+        r.raise_for_status()
+
+    # ── names and links ──────────────────────────────────────────────────────
+
+    async def expand(self, partial: str, valid_dest_only: bool = False) -> list[Entity]:
+        """`GET /expand` — find entities whose name matches a partial string.
+
+        Exact matches come first, then prefix matches. The reference clients
+        expand only when there is exactly one match, treating none or several
+        as "leave it alone".
+        """
+        params: dict[str, str] = {"q": partial}
+        if valid_dest_only:
+            params["valid_dest_only"] = "1"
+        r = await self._http.get("/expand", params=params, headers=self._auth_headers)
+        r.raise_for_status()
+        return [Entity.from_json(e) for e in (r.json().get("matches") or [])]
+
+    async def shorten(self, url: str, service: str = "") -> str:
+        """`POST /shorten` — shorten a URL through the proxy.
+
+        Going through the proxy rather than calling a shortener directly means
+        a bot inherits whatever service and API key the proxy was built with,
+        and gains nothing to configure. An empty `service` takes the default.
+        """
+        r = await self._http.post(
+            "/shorten",
+            json={"service": service, "url": url},
+            headers=self._auth_headers,
+            timeout=FETCH_TIMEOUT,
+        )
+        r.raise_for_status()
+        return r.json().get("short", "")
 
     # ── WebSocket ────────────────────────────────────────────────────────────
 

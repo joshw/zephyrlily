@@ -493,3 +493,29 @@ async def test_a_bot_with_no_owners_takes_no_orders(harness):
     harness.cursor = len(harness.proxy.received)
     harness.proxy.push_event("private", ALICE, recips=[BOT], value="$join -lounge")
     await harness.expect_silence(0.3)
+
+
+# ── the session's passthroughs ───────────────────────────────────────────────
+
+
+async def test_session_wraps_stored_content_and_shortening(harness):
+    """A bot should never have to reach past the session for these."""
+    harness.proxy.stored[("memo", "cj-admin", "sayings")] = ["a saying"]
+    harness.proxy.short_urls["https://example.com/long"] = "https://s.example/x"
+
+    assert await harness.session.fetch("memo", "cj-admin", "sayings") == ["a saying"]
+    await harness.session.store(["new"], "memo", "cj-admin", "sayings")
+    assert await harness.session.fetch("memo", "cj-admin", "sayings") == ["new"]
+    assert await harness.session.shorten("https://example.com/long") == "https://s.example/x"
+    assert [e.name for e in await harness.session.expand("Alice")] == ["Alice"]
+
+
+async def test_the_passthroughs_fail_clearly_before_connecting():
+    """A clear error beats an AttributeError on a None client."""
+    from zlilybot.errors import Disconnected
+
+    session = Session(ProxyRunner(mode="attach", url="http://127.0.0.1:1"), "bot", "pw")
+    with pytest.raises(Disconnected):
+        await session.fetch("info")
+    with pytest.raises(Disconnected):
+        await session.shorten("https://example.com/")

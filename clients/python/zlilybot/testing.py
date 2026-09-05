@@ -76,6 +76,17 @@ class FakeProxy:
         self.auth_calls = 0
         self.seen_calls: list[int] = []
         self.rename_should_fail = False
+
+        # Stored content, keyed by (type, target, name) — what /fetch reads and
+        # /store writes.
+        self.stored: dict[tuple[str, str, str], list[str]] = {}
+
+        # URL shortening. `short_urls` pins specific answers; anything else gets
+        # a stable made-up one, and `shorten_fails` makes the service refuse.
+        self.short_urls: dict[str, str] = {}
+        self.short_prefix = "https://s.example/"
+        self.shorten_fails = False
+        self.shorten_calls: list[str] = []
         # When set, /state blocks until a pending prompt is answered, the way
         # the real proxy waits on the SLCP sync (server.go handleState).
         self.state_gated_on_prompt = False
@@ -306,6 +317,40 @@ class FakeProxy:
             self.seen_calls.append(value)
             session.last_seen_id = max(session.last_seen_id, value)
             return 204, None
+
+        if path == "/fetch":
+            key = (
+                query.get("type", ["info"])[0],
+                query.get("target", ["me"])[0],
+                query.get("name", [""])[0],
+            )
+            return 200, {"lines": list(self.stored.get(key, []))}
+
+        if path == "/store":
+            data = json.loads(body or b"{}")
+            key = (
+                data.get("type", "info"),
+                data.get("target", "me"),
+                data.get("name", ""),
+            )
+            self.stored[key] = list(data.get("lines") or [])
+            return 204, None
+
+        if path == "/expand":
+            partial = query.get("q", [""])[0].lower()
+            exact = [e for e in self.entities if e.get("name", "").lower() == partial]
+            matches = exact or [
+                e for e in self.entities if e.get("name", "").lower().startswith(partial)
+            ]
+            return 200, {"matches": matches}
+
+        if path == "/shorten":
+            data = json.loads(body or b"{}")
+            url = data.get("url", "")
+            self.shorten_calls.append(url)
+            if self.shorten_fails:
+                return 502, {"error": "shortener unavailable"}
+            return 200, {"short": self.short_urls.get(url, f"{self.short_prefix}{abs(hash(url)) % 100000:05d}")}
 
         return 404, {"error": "not found"}
 

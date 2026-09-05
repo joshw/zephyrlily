@@ -198,3 +198,90 @@ async def test_info_reports_the_proxy_build():
             assert info["lily_addr"] == "fake.lily.org:7777"
         finally:
             await client.aclose()
+
+
+# ── stored content, names and links ──────────────────────────────────────────
+#
+# The endpoints a bot needs beyond the message stream: keeping data on the
+# server, resolving partial names, and shortening URLs through the proxy.
+
+
+async def test_fetch_returns_stored_lines():
+    from zlilybot import ZlilyClient
+    from zlilybot.testing import FakeProxy
+
+    async with FakeProxy() as proxy:
+        proxy.stored[("memo", "cj-admin", "sayings")] = ["one", "two"]
+        client = ZlilyClient(proxy.base_url)
+        try:
+            await client.auth("bot", "pw")
+            assert await client.fetch("memo", "cj-admin", "sayings") == ["one", "two"]
+            # Absent content is an empty list, not an error.
+            assert await client.fetch("memo", "cj-admin", "absent") == []
+        finally:
+            await client.aclose()
+
+
+async def test_store_then_fetch_round_trips():
+    from zlilybot import ZlilyClient
+    from zlilybot.testing import FakeProxy
+
+    async with FakeProxy() as proxy:
+        client = ZlilyClient(proxy.base_url)
+        try:
+            await client.auth("bot", "pw")
+            await client.store(["a", "b"], "memo", "cj-admin", "notes")
+            assert await client.fetch("memo", "cj-admin", "notes") == ["a", "b"]
+        finally:
+            await client.aclose()
+
+
+async def test_expand_prefers_an_exact_match():
+    from zlilybot import ZlilyClient
+    from zlilybot.testing import FakeProxy
+
+    async with FakeProxy() as proxy:
+        client = ZlilyClient(proxy.base_url)
+        try:
+            await client.auth("bot", "pw")
+            assert [e.name for e in await client.expand("Alice")] == ["Alice"]
+            # A prefix that matches nothing exactly still finds candidates.
+            assert [e.name for e in await client.expand("te")] == ["test"]
+            assert await client.expand("nothing") == []
+        finally:
+            await client.aclose()
+
+
+async def test_shorten_goes_through_the_proxy():
+    """A bot inherits the proxy's shortener and key rather than configuring
+    a service of its own."""
+    from zlilybot import ZlilyClient
+    from zlilybot.testing import FakeProxy
+
+    async with FakeProxy() as proxy:
+        proxy.short_urls["https://example.com/a/very/long/path"] = "https://s.example/abc"
+        client = ZlilyClient(proxy.base_url)
+        try:
+            await client.auth("bot", "pw")
+            got = await client.shorten("https://example.com/a/very/long/path")
+            assert got == "https://s.example/abc"
+            assert proxy.shorten_calls == ["https://example.com/a/very/long/path"]
+        finally:
+            await client.aclose()
+
+
+async def test_a_failing_shortener_raises():
+    import httpx
+
+    from zlilybot import ZlilyClient
+    from zlilybot.testing import FakeProxy
+
+    async with FakeProxy() as proxy:
+        proxy.shorten_fails = True
+        client = ZlilyClient(proxy.base_url)
+        try:
+            await client.auth("bot", "pw")
+            with pytest.raises(httpx.HTTPStatusError):
+                await client.shorten("https://example.com/")
+        finally:
+            await client.aclose()

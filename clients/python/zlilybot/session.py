@@ -16,7 +16,7 @@ from typing import AsyncIterator, Awaitable, Callable, Sequence
 from .client import State, ZlilyClient
 from .entities import Entities, same_name, to_lily_name
 from .errors import AuthError, Disconnected, NameUnavailable, TransientAuthError
-from .events import ServerMessage
+from .events import Entity, ServerMessage
 from .proxy import ProxyRunner
 
 log = logging.getLogger(__name__)
@@ -114,6 +114,41 @@ class Session:
 
     async def emote(self, dest: str, text: str) -> None:
         await self.send(f"{dest};:{text}")
+
+    # ── stored content, names and links ──────────────────────────────────────
+    #
+    # Thin passthroughs, so a bot never has to reach past the session for the
+    # ordinary things. Each raises Disconnected rather than AttributeError when
+    # called before the session is up.
+
+    async def fetch(
+        self, kind: str = "info", target: str = "me", name: str = ""
+    ) -> list[str]:
+        """Read a user's /info or a named memo."""
+        return await self._client().fetch(kind=kind, target=target, name=name)
+
+    async def store(
+        self,
+        lines: Sequence[str],
+        kind: str = "info",
+        target: str = "me",
+        name: str = "",
+    ) -> None:
+        """Replace a user's /info or a named memo."""
+        await self._client().store(lines, kind=kind, target=target, name=name)
+
+    async def expand(self, partial: str, valid_dest_only: bool = False) -> list[Entity]:
+        """Find entities whose name matches a partial string."""
+        return await self._client().expand(partial, valid_dest_only=valid_dest_only)
+
+    async def shorten(self, url: str, service: str = "") -> str:
+        """Shorten a URL using the proxy's configured service."""
+        return await self._client().shorten(url, service=service)
+
+    def _client(self) -> ZlilyClient:
+        if self.client is None:
+            raise Disconnected("session is not connected")
+        return self.client
 
     @property
     def my_name(self) -> str:

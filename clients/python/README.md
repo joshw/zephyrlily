@@ -74,6 +74,22 @@ and call `super().on_admin(...)` to keep these.
 public message, the sender alone for a private one — and handles emote-only
 discussions, where plain speech needs a leading quote.
 
+## Stored content, names and links
+
+A session also wraps the proxy endpoints beyond the message stream:
+
+```python
+sayings = await session.fetch("memo", "cj-admin", "sayings")   # GET /fetch
+await session.store(lines, "memo", "cj-admin", "sayings")      # POST /store
+matches = await session.expand("emac")                          # GET /expand
+short   = await session.shorten(long_url)                       # POST /shorten
+```
+
+`fetch`/`store` read and write a user's `/info` or a named memo, which is a
+convenient place to keep a bot's data where anyone with lily access can edit it.
+`shorten` uses whatever service the proxy was built with, so a bot inherits its
+API key and has nothing to configure.
+
 ## Running Lily commands
 
 `await session.run_command("/who bob")` sends a command and returns the lines it

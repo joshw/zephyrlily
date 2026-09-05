@@ -380,6 +380,32 @@ For memos, `"name"` is required.
 
 ---
 
+### `POST /shorten` — Shorten a URL
+
+Shortens a URL using the service the proxy was built with, so a client inherits the configured service and its API key rather than carrying credentials of its own.
+
+**Request body**
+```json
+{ "url": "https://example.com/a/very/long/path", "service": "" }
+```
+
+`service` names one of the compiled-in services; an empty string uses the proxy's default. `zlily version --verbose` reports whether this build carries a shortener key.
+
+**Response `200 OK`**
+```json
+{ "short": "https://s.u13.net/abc12" }
+```
+
+**Errors**
+| Status | Meaning |
+|--------|---------|
+| 400 | Missing `url`, or an unknown `service` |
+| 401 | Missing or unrecognised token |
+| 405 | Method not POST |
+| 502 | The shortening service failed or timed out |
+
+---
+
 ## Proxy-side commands (`%command`)
 
 Commands sent over the WebSocket with `text` starting with `%` are handled by the proxy, not forwarded to Lily. They return a `commandresult` message.
