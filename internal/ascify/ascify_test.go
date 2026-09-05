@@ -266,3 +266,18 @@ func TestStringIsAlwaysASCII(t *testing.T) {
 		}
 	}
 }
+
+// TestSharpS pins the sharp s to its standard transliteration. It used to map
+// to "B", which copies the glyph's shape rather than its meaning -- the one
+// thing CharMap exists not to do -- and rendered "straße" as "straBe".
+func TestSharpS(t *testing.T) {
+	for in, want := range map[string]string{
+		"straße": "strasse",
+		"STRAẞE": "STRASSE",
+		"Weiß":   "Weiss",
+	} {
+		if got := String(in); got != want {
+			t.Errorf("String(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

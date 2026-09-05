@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 	"golang.org/x/text/unicode/runenames"
@@ -107,7 +108,7 @@ var CharMap = map[rune]interface{}{
 	'\u00DB': &Map{"U", "U^"}, // capital U circumflex Û
 	'\u00DC': &Map{"U", "U:"}, // capital U umlaut Ü
 	'\u00DD': &Map{"Y", "Y'"}, // capital Y acute Ý
-	'\u00DF': "B",             // German sharp s ß
+	'\u00DF': "ss",            // German sharp s ß
 	'\u00E0': &Map{"a", "a`"}, // small a grave à
 	'\u00E1': &Map{"a", "a'"}, // small a acute á
 	'\u00E2': &Map{"a", "a^"}, // small a circumflex â
@@ -417,7 +418,7 @@ var latinFallback = map[rune]string{
 	'œ': "oe", // small ligature oe
 	'Ŧ': "T",  // capital T with stroke
 	'ŧ': "t",  // small t with stroke
-	'ẞ': "B",  // capital sharp s (matches the existing small sharp s)
+	'ẞ': "SS", // capital sharp s
 	'ſ': "s",  // long s
 	'ƀ': "b",  // small b with stroke
 	'Ə': "E",  // capital schwa
@@ -532,6 +533,15 @@ func ascify(r rune, depth int) (string, bool) {
 
 // isSpace reports whether r is a Unicode space, line or paragraph separator.
 // NEL is included because it is a line break wearing a control codepoint.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
 func isSpace(r rune) bool {
 	return unicode.In(r, unicode.Zs, unicode.Zl, unicode.Zp) || r == '\u0085'
 }
@@ -641,6 +651,13 @@ func lineArt(r rune) (string, bool) {
 // non-ASCII character is rendered as its Unicode name in brackets (e.g.
 // "[SNOWMAN]"), or "[U+XXXX]" if unnamed.
 func String(s string) string {
+	// Almost every line is already ASCII, and Ascify passes those runes through
+	// unchanged, so returning early is equivalent and skips the allocation.
+	// This matters because Conn.Send folds every outbound line.
+	if isASCII(s) {
+		return s
+	}
+
 	var b strings.Builder
 	var prevScript byte
 	for _, r := range s {

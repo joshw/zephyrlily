@@ -270,6 +270,12 @@ The `text` field is forwarded verbatim to the Lily server. Commands starting wit
 
 An empty `text` is valid and sends a blank line to Lily (used to re-prompt).
 
+**Encoding.** `text` may contain Unicode. SLCP itself is 7-bit ASCII, but the
+proxy folds every outbound line to an ASCII approximation before it reaches the
+wire (`Conn.Send`, `internal/ascify`), so a client does not have to transcode.
+A client that shows the user what it is about to send — as the TUI does — may
+still want to fold on input so the two agree; the fold is idempotent.
+
 ---
 
 ### `POST /seen` — Report scroll position

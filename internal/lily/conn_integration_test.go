@@ -225,3 +225,26 @@ func TestConn_CloseClosesEvents(t *testing.T) {
 		t.Fatal("Events channel was not closed after Close()")
 	}
 }
+
+// TestSendFoldsToASCII covers the protocol contract at the one place every
+// outbound line passes through. SLCP is 7-bit ASCII in both directions, and a
+// client that does not transcode (anything but our own TUI) would otherwise put
+// raw UTF-8 on the wire.
+func TestSendFoldsToASCII(t *testing.T) {
+	fake := lilytest.Start(t, lilytest.DefaultWorld())
+	conn := connectSynced(t, fake)
+
+	require.NoError(t, conn.Send("-test;he said \u201ccaf\u00e9\u201d \u2014 gru\u00dfe"))
+	fake.WaitCommand(t, `-test;he said "cafe" -- grusse`)
+}
+
+// TestSendLeavesASCIIAlone guards the fast path: ordinary lines must arrive
+// byte for byte, punctuation and all.
+func TestSendLeavesASCIIAlone(t *testing.T) {
+	fake := lilytest.Start(t, lilytest.DefaultWorld())
+	conn := connectSynced(t, fake)
+
+	const line = `-test;plain ASCII: "quotes", a-dash, 100% & /slashes/`
+	require.NoError(t, conn.Send(line))
+	fake.WaitCommand(t, line)
+}

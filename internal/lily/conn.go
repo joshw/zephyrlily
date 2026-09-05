@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/joshw/zephyrlily/internal/ascify"
 	"github.com/joshw/zephyrlily/internal/version"
 
 	"github.com/joshw/zephyrlily/internal/slcp"
@@ -289,7 +290,15 @@ func (c *Conn) State() *State {
 }
 
 // Send writes a raw command line to the server.
+//
+// The line is folded to ASCII first. SLCP carries 7-bit ASCII in both
+// directions (docs/slcp-protocol.md), and this is the one place every outbound
+// line passes through, so doing it here holds the protocol contract for every
+// client rather than asking each of them to remember. The TUI still ascifies
+// on input so the user sees what will actually be sent; this is the backstop
+// for clients that do not, and a no-op for the ASCII text that is the norm.
 func (c *Conn) Send(line string) error {
+	line = ascify.String(line)
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	slog.Debug("lily: send", "line", line)

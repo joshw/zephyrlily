@@ -8,9 +8,9 @@ import (
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/joshw/zephyrlily/internal/ascify"
 	"github.com/joshw/zephyrlily/internal/cmdarg"
 	"github.com/joshw/zephyrlily/internal/linkpreview"
-	"github.com/joshw/zephyrlily/internal/tui/ascify"
 	"github.com/joshw/zephyrlily/internal/tui/client"
 	"github.com/joshw/zephyrlily/internal/urlshorten"
 )

@@ -30,10 +30,13 @@ implementation lives in:
   real-time `%NOTIFY` events at any time, interleaved with the bounded
   responses to commands the client has issued.
 - **All text over SLCP is ASCII.** The protocol carries no multi-byte or
-  extended encoding; both directions are 7-bit ASCII. ZephyrLily transcodes
-  any non-ASCII input the user types down to an ASCII approximation *before*
-  sending (`internal/tui/ascify`), so the wire stays within the protocol's
-  ASCII contract.
+  extended encoding; both directions are 7-bit ASCII. `Conn.Send`
+  (`internal/lily/conn.go`) folds every outbound line to an ASCII approximation
+  (`internal/ascify`), so the wire stays within the protocol's ASCII contract no
+  matter which client produced the line. The TUI also folds as the user types
+  (`internal/tui/ui/input.go`), so what they see in the input area is what will
+  actually be sent; the fold in `Conn.Send` is idempotent, and a no-op for the
+  ASCII text that is the norm.
 
 ### Line categories
 

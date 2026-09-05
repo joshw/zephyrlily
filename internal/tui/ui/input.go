@@ -8,8 +8,8 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/joshw/zephyrlily/internal/ascify"
 	"github.com/joshw/zephyrlily/internal/cmdarg"
-	"github.com/joshw/zephyrlily/internal/tui/ascify"
 )
 
 // syncTextarea updates the textarea to match inputValue and inputCursor.
