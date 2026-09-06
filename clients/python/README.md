@@ -90,6 +90,24 @@ convenient place to keep a bot's data where anyone with lily access can edit it.
 `shorten` uses whatever service the proxy was built with, so a bot inherits its
 API key and has nothing to configure.
 
+## Flood protection
+
+`Throttle` limits how fast one person can drive the bot. It is keyed by sender
+rather than by destination on purpose: a per-discussion budget lets a flooder
+exhaust it and silence the bot for everyone else in the room.
+
+```python
+verdict = self.throttle.check(m.nick)
+if verdict is Verdict.IGNORE:
+    await self.session.send(f"/ignore {to_lily_name(m.nick)} all")
+if verdict is not Verdict.OK:
+    return
+```
+
+It reports `OK`, `WARN` (just tripped), `SILENT` (already on notice) and
+`IGNORE` (tripped again). Whether to act on `IGNORE` is the bot's decision --
+ignoring a real person at the server is strong enough to be asked for.
+
 ## Running Lily commands
 
 `await session.run_command("/who bob")` sends a command and returns the lines it

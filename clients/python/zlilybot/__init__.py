@@ -15,12 +15,14 @@ from .errors import (
 from .events import Entity, Event, Message, ServerMessage, unwrap_emote
 from .proxy import ProxyHandle, ProxyRunner, resolve_zlily
 from .session import Session
+from .throttle import Throttle, Verdict
 
 __all__ = [
     "Bot", "Session", "ZlilyClient", "State",
     "ProxyRunner", "ProxyHandle", "resolve_zlily",
     "Entities", "Entity", "Event", "Message", "ServerMessage",
     "to_lily_name", "same_name", "unwrap_emote",
+    "Throttle", "Verdict",
     "ZlilyError", "ConfigError", "ProxyStartError",
     "AuthError", "TransientAuthError", "NameUnavailable", "Disconnected",
 ]
