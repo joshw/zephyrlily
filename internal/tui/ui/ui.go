@@ -313,8 +313,19 @@ type Model struct {
 	storedLastSeenID     int64 // lastSeenID from proxy at startup, used to restore scroll position
 	needsPositionRestore bool  // true until we have window size to set scroll position
 
-	// Reconnect prompt: shown when the Lily connection drops.
+	// Reconnect prompt: shown when the Lily connection drops, and when the
+	// silent retry below has run out of attempts.
 	reconnectPrompt bool
+
+	// Silent reconnect. A proxy socket that drops is re-established without
+	// asking (see autoReconnectAttempts): reconnectAttempt counts consecutive
+	// failures, reconnectNotified records that the outage has been mentioned
+	// in the scrollback so a long one is mentioned exactly once, and
+	// quietResume suppresses the "Connected to ..." banner for a reconnect
+	// that landed back on the same session and so announced no news.
+	reconnectAttempt  int
+	reconnectNotified bool
+	quietResume       bool
 
 	// Authentication dialog
 	authMode       bool
@@ -648,16 +659,110 @@ func listenLogCmd(logChan <-chan logMsg) tea.Cmd {
 	}
 }
 
-// reconnectCmd re-runs the login against the proxy using the stored credentials
-// and yields an authResultMsg, so reconnection follows the exact same path as
-// the initial login (state fetch, history replay, startup memo) — the only
-// difference being that the user is not prompted for credentials unless the
-// stored ones are rejected.
+// reconnectCmd re-establishes the connection and yields an authResultMsg, so
+// reconnection follows the exact same path as the initial login (state fetch,
+// history replay, startup memo) — the only difference being that the user is
+// not prompted for credentials unless the stored ones are rejected.
+//
+// It tries to re-attach to the existing proxy session first. That is what a
+// dropped socket usually needs: the session, its Lily connection and its
+// message-ID space are all still there, and the client catches up on what it
+// missed from the event ring exactly as it does after a reload. Only when the
+// session is genuinely gone does it fall back to a full login, which builds a
+// new Lily session and renumbers everything from 1.
 func reconnectCmd(c *client.Client) tea.Cmd {
+	return func() tea.Msg { return reconnectNow(c) }
+}
+
+// autoReconnectCmd is reconnectCmd after a delay, for the silent retry loop.
+func autoReconnectCmd(c *client.Client, delay time.Duration) tea.Cmd {
 	return func() tea.Msg {
-		nc, err := c.Reconnect()
-		return authResultMsg{newClient: nc, token: nc.Token(), err: err}
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		return reconnectNow(c)
 	}
+}
+
+func reconnectNow(c *client.Client) authResultMsg {
+	if c.HasToken() {
+		nc, err := c.Resume()
+		if err == nil {
+			return authResultMsg{newClient: nc, token: nc.Token()}
+		}
+		slog.Debug("session resume failed, logging in again", "err", err)
+		// Resume retired the old client; carry on from the one it handed back,
+		// which holds the same credentials.
+		c = nc
+	}
+	nc, err := c.Reconnect()
+	return authResultMsg{newClient: nc, token: nc.Token(), err: err}
+}
+
+// Silent reconnect backoff. A dropped socket is retried without involving the
+// user at all, because the causes are overwhelmingly transient and none of
+// them are anything the user can answer a question about: a slept laptop, a
+// tab the browser paused or discarded, a Wi-Fi change, an idle connection
+// reaped by something in the middle.
+//
+// The delays are short at first (a blip is usually recoverable immediately)
+// and settle at autoReconnectMaxDelay, which with autoReconnectAttempts spends
+// roughly two minutes trying before falling back to asking. Something still
+// broken after two minutes is an outage rather than a blip, and by then the
+// user deserves to be told rather than watched over.
+const (
+	autoReconnectAttempts = 10
+	autoReconnectMaxDelay = 15 * time.Second
+)
+
+// autoReconnectDelay is how long to wait before attempt n (1-based).
+func autoReconnectDelay(n int) time.Duration {
+	d := time.Duration(1<<uint(n-1)) * time.Second
+	if d > autoReconnectMaxDelay {
+		return autoReconnectMaxDelay
+	}
+	return d
+}
+
+// beginAutoReconnect starts re-establishing a dropped connection, immediately
+// and without saying anything: a socket that comes back within the second
+// should read as nothing having happened at all. If the first attempt fails,
+// retryAutoReconnect starts saying so.
+func (m Model) beginAutoReconnect() (tea.Model, tea.Cmd) {
+	// The login dialog, the prompt and an attempt already in flight each mean
+	// someone is already dealing with this connection.
+	if m.authMode || m.reconnectPrompt || m.authInProgress {
+		return m, nil
+	}
+	m.reconnectAttempt = 0
+	m.authInProgress = true
+	// Debug rather than output: this is deliberately invisible to the user,
+	// but a drop that keeps recurring should still be readable in %debug and
+	// in a snapshot attached to a bug report.
+	slog.Debug("proxy connection dropped, reconnecting")
+	return m, autoReconnectCmd(m.client, 0)
+}
+
+// retryAutoReconnect schedules the next silent attempt, or gives up and asks.
+// The first failure is what puts a line in the scrollback: until then the user
+// has no reason to know the socket went anywhere, and after it they need to
+// know why what they type is not going anywhere either.
+func (m Model) retryAutoReconnect(err error) (tea.Model, tea.Cmd) {
+	if m.reconnectAttempt >= autoReconnectAttempts {
+		m.reconnectPrompt = true
+		m.reconnectNotified = false
+		m.output = append(m.output, OutputItem{Type: "error", Data: "reconnect failed: " + err.Error()})
+		m = m.syncViewportContent()
+		return m, nil
+	}
+	m.reconnectAttempt++
+	if !m.reconnectNotified {
+		m.reconnectNotified = true
+		m.output = append(m.output, OutputItem{Type: "text", Data: "(connection lost — reconnecting…)"})
+		m = m.syncViewportContent()
+	}
+	m.authInProgress = true
+	return m, autoReconnectCmd(m.client, autoReconnectDelay(m.reconnectAttempt))
 }
 
 // reportSeenNow reports lastSeenID to the proxy immediately. It is a one-shot:
@@ -893,6 +998,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Whatever the host had stored cannot be good either.
 				forgetSessionToken()
 				m.reconnectPrompt = false
+				// The silent retry is over: this needs the user, and the
+				// dialog they are about to answer says so better than a
+				// "(reconnected)" note afterwards would.
+				m.reconnectAttempt = 0
+				m.reconnectNotified = false
 				m.authError = msg.err.Error()
 				m.authNotice = ""
 				m.authPassword = ""
@@ -904,16 +1014,30 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m, forget := m.credsAfterRejection(msg.username, msg.password)
 				return m, forget
 			}
-			m.reconnectPrompt = true
-			m.output = append(m.output, OutputItem{Type: "error", Data: "reconnect failed: " + msg.err.Error()})
-			m = m.syncViewportContent()
-			return m, nil
+			// Not a credential problem, so it is the network or the proxy:
+			// keep trying on the user's behalf rather than handing them a
+			// question whose only useful answer is "yes, obviously".
+			return m.retryAutoReconnect(msg.err)
 		}
 		m.authMode = false
 		m.authenticated = true
 		m.authInProgress = false
 		m.reconnectPrompt = false
 		m.authError = ""
+		// A reconnect that landed back on the session it left has no news to
+		// report: same server, same identity, same ID space. Say so only if
+		// the outage lasted long enough to have been mentioned.
+		sameSession := msg.token != "" && msg.token == m.sessionToken
+		m.quietResume = sameSession && m.reconnectAttempt == 0 && !m.reconnectNotified
+		if m.reconnectNotified {
+			m.reconnectNotified = false
+			m.output = append(m.output, OutputItem{Type: "text", Data: "(reconnected)"})
+			m.quietResume = sameSession
+		}
+		if m.reconnectAttempt > 0 || m.quietResume {
+			slog.Debug("reconnected to the proxy", "attempts", m.reconnectAttempt+1, "sameSession", sameSession)
+		}
+		m.reconnectAttempt = 0
 		// Credential bookkeeping runs on the credentials that just worked, which
 		// on a reconnect are the ones the client replayed rather than anything
 		// typed into the dialog.
@@ -963,8 +1087,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case serverEventMsg:
 		if msg.msg == nil {
-			m.reconnectPrompt = true
-			return m, nil
+			// The proxy socket closed. Note that this is the transport dying,
+			// not the Lily session: that arrives as an "error" event instead
+			// (see handleProxy) and does still ask, because a /detach is a
+			// deliberate act and logging back in over it would fight the user.
+			// A transport drop is nobody's decision, so fix it silently.
+			return m.beginAutoReconnect()
 		}
 
 		// Only collect the JSON transcript while the debug pane is open: the
@@ -1078,7 +1206,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// rendered before it was known are stale.
 			m.renderEpoch++
 		}
-		if m.state != nil && m.state.Whoami != "" {
+		// A silent re-attach to the same session re-runs this path only to
+		// backfill what the dead socket missed. Announcing the connection
+		// again would put a "Connected to ..." banner in the scrollback every
+		// time the laptop woke up, reporting nothing that changed.
+		quiet := m.quietResume
+		m.quietResume = false
+		if m.state != nil && m.state.Whoami != "" && !quiet {
 			displayName := m.state.Whoami
 			for _, e := range m.state.Entities {
 				if e.Handle == m.state.Whoami && e.Kind == "user" {

@@ -380,6 +380,35 @@ func (c *Client) readLoop() {
 	}
 }
 
+// Resume re-opens the WebSocket for the proxy session this client already
+// holds, without logging in again. It returns a fresh Client carrying the same
+// token, credentials and address, because a Client whose read loop has exited
+// has closed its Events channel and cannot be listened to a second time.
+//
+// This is the right recovery for a socket that died underneath a session that
+// did not: a laptop that slept, a tab the browser paused, an idle NAT entry
+// that got reaped. The proxy session (and with it the Lily connection, the
+// message-ID space and the event ring the client catches up from) is still
+// there, so re-attaching costs one handshake and loses nothing. Reconnect, by
+// contrast, builds a whole new Lily session and is what to fall back to when
+// this fails because the session really is gone.
+func (c *Client) Resume() (*Client, error) {
+	// The caller is abandoning c either way, so retire it before anything can
+	// fail and leave two clients holding sockets for one session.
+	c.Close()
+	nc := newClient(c.proxyAddr, c.secure)
+	nc.token = c.token
+	nc.username = c.username
+	nc.password = c.password
+	if c.token == "" {
+		return nc, errors.New("no session to resume")
+	}
+	if err := nc.Connect(); err != nil {
+		return nc, fmt.Errorf("resume: %w", err)
+	}
+	return nc, nil
+}
+
 // Reconnect closes the current connection and returns a fresh Client using the
 // same proxy address and stored credentials — i.e. it re-runs the normal login
 // path without re-prompting the user. The caller should replace its client

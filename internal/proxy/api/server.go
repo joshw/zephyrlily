@@ -33,6 +33,35 @@ const (
 	keepalivePongTimeout  = 5 * time.Second
 )
 
+// WebSocket keepalive for the client leg (browser or native TUI <-> proxy).
+//
+// Nothing else keeps that socket busy: it carries Lily traffic and nothing
+// more, and the Lily-side keepalive above is answered with a pong that fanOut
+// consumes rather than forwarding. A quiet channel therefore means a TCP
+// connection with no bytes on it for as long as the quiet lasts, which
+// Traefik, NAT tables and mobile carriers all eventually reap -- leaving a
+// client that looks connected until the next thing it tries to send.
+//
+// A ping every wsPingInterval keeps the connection warm and, when it has died
+// anyway, makes that fact arrive as a read error the client can act on instead
+// of as silence.
+const (
+	defaultWSPingInterval = 30 * time.Second
+	wsPingTimeout         = 10 * time.Second
+)
+
+// maxClientMessage bounds one inbound message from a client. The library
+// default is 32KiB, which a long paste can exceed — and exceeding it does not
+// reject the message, it closes the connection, which is another way for the
+// socket to die for reasons the user never sees. (The client leg in the other
+// direction is already unlimited: see SetReadLimit in internal/tui/client,
+// where command results can legitimately be enormous.)
+//
+// A megabyte is far past any command a person types or pastes, while still
+// bounding what an unfriendly client can make the proxy allocate — which
+// matters now that serving a browser build means being reachable off-host.
+const maxClientMessage = 1 << 20
+
 // Config holds proxy server configuration.
 type Config struct {
 	ListenAddr      string // e.g. ":7888"
@@ -44,6 +73,11 @@ type Config struct {
 	TrustProxyHeaders bool // believe X-Forwarded-For (only behind a trusted reverse proxy)
 	MaxSessions       int  // cap on concurrent sessions, and so on Lily connections
 	AuthMaxFailures   int  // failed /auth attempts per client before a lockout
+
+	// WSPingInterval is how often to ping a connected client; see the note on
+	// defaultWSPingInterval, which applies when this is zero. Shorten it in
+	// front of something that reaps idle connections faster than that.
+	WSPingInterval time.Duration
 
 	// Web UI
 	ServeWeb    bool   // serve the embedded browser client
@@ -189,6 +223,8 @@ type wsClient struct {
 	queue  []*WSServerMsg
 	closed bool
 	wake   chan struct{} // 1-buffered nudge: queue went non-empty
+
+	pingInterval time.Duration // keepalive period; see defaultWSPingInterval
 }
 
 // enqueue appends msg to the client's outbound queue and nudges writeLoop.
@@ -280,6 +316,15 @@ func New(cfg Config) *Server {
 		cfg:       cfg,
 		authLimit: newAuthLimiter(cfg.AuthMaxFailures, defaultAuthWindow, defaultAuthLockout),
 	}
+}
+
+// wsPingInterval is the configured client keepalive period, or the default
+// when unset.
+func (s *Server) wsPingInterval() time.Duration {
+	if s.cfg.WSPingInterval > 0 {
+		return s.cfg.WSPingInterval
+	}
+	return defaultWSPingInterval
 }
 
 // maxSessions is the configured session cap, or the default when unset.
@@ -574,12 +619,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = ws.CloseNow() }()
+	ws.SetReadLimit(maxClientMessage)
 
 	ctx := r.Context()
 	client := &wsClient{
-		ws:   ws,
-		ctx:  ctx,
-		wake: make(chan struct{}, 1),
+		ws:           ws,
+		ctx:          ctx,
+		wake:         make(chan struct{}, 1),
+		pingInterval: s.wsPingInterval(),
 	}
 
 	sess.subsMu.Lock()
@@ -1048,6 +1095,9 @@ func (sess *Session) dispatchLine(line string, emit func(*WSServerMsg)) error {
 // writeLoop drains the outbound queue and writes messages to the WebSocket.
 // It exits on a write error, on shutdown, or when the connection context ends.
 func (c *wsClient) writeLoop() {
+	ping := time.NewTicker(c.pingInterval)
+	defer ping.Stop()
+
 	for {
 		c.mu.Lock()
 		batch := c.queue
@@ -1068,10 +1118,29 @@ func (c *wsClient) writeLoop() {
 		}
 		select {
 		case <-c.wake:
+		case <-ping.C:
+			// Ping from here rather than a goroutine of its own: writeLoop is
+			// the connection's only writer, and coder/websocket permits just
+			// one. The pong is read by readLoop, which is always parked in a
+			// read and so handles control frames as they arrive.
+			if err := c.pingPeer(); err != nil {
+				slog.Debug("ws keepalive failed, dropping client", "err", err)
+				// readLoop is blocked on a socket that is not coming back;
+				// closing it is what unblocks it and retires this client.
+				_ = c.ws.CloseNow()
+				return
+			}
 		case <-c.ctx.Done():
 			return
 		}
 	}
+}
+
+// pingPeer sends one WebSocket ping and waits up to wsPingTimeout for the pong.
+func (c *wsClient) pingPeer() error {
+	ctx, cancel := context.WithTimeout(c.ctx, wsPingTimeout)
+	defer cancel()
+	return c.ws.Ping(ctx)
 }
 
 // sessionFromRequest extracts the session token from the Authorization header

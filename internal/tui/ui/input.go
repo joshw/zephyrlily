@@ -785,6 +785,10 @@ func (m Model) handleReconnectKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "y", "Y", "enter", "ctrl+m", "ctrl+j":
 		m.reconnectPrompt = false
 		m.authInProgress = true
+		// reconnectAttempt is pinned at its exhausted value on purpose: having
+		// been asked once, a failure should come straight back to the user
+		// rather than disappearing into another two minutes of silent retries.
+		m.reconnectAttempt = autoReconnectAttempts
 		m.output = append(m.output, OutputItem{Type: "text", Data: "(reconnecting…)"})
 		m = m.syncViewportContent()
 		return m, reconnectCmd(m.client)
