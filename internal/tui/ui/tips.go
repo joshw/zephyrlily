@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/joshw/zephyrlily/internal/cmdarg"
 )
@@ -804,12 +805,37 @@ func loadTipsCmd() tea.Cmd {
 	return func() tea.Msg { return tipsLoadedMsg{off: loadTipsOff()} }
 }
 
+// showTip queues a boxed random tip to be appended after whatever the command
+// prints. It does not set tipShown: asking for a tip is not the same as being
+// told one, so it does not spend the session's automatic tip.
+//
+// The box is an output item rather than pre-rendered lines so that it reflows
+// when the terminal is resized, exactly like the tip shown at login. See
+// renderTipBox and Model.extraOutput.
+func (m Model) showTip() Model {
+	m.extraOutput = append(m.extraOutput,
+		OutputItem{Type: "tip", Data: tipNotice(randomTip())})
+	return m
+}
+
+// handleTipCommand implements '%tip': one tip, boxed, on request.
+//
+// Separate from '%tips' because they are different questions. '%tips' is the
+// setting -- on or off, and what it is now; '%tip' is "show me one", which is
+// the thing people reach for once they know the pool exists, and which should
+// not need reading past a status line to get.
+func (m Model) handleTipCommand(fields []string) (Model, []string) {
+	if len(fields) > 1 {
+		return m, []string{"Usage: %tip   (see also '%tips on|off' and '%help tips')"}
+	}
+	return m.showTip(), nil
+}
+
 // handleTipsCommand implements '%tips [on|off]'.
 //
-// Bare '%tips' shows a tip rather than only reporting the setting, which is a
-// small departure from %page and %mouse. Those toggle something you can see the
-// effect of; a tip you have to wait a session for is not, and "show me one now"
-// is the thing people actually want from the command.
+// Bare '%tips' reports the setting and shows one, which is a small departure
+// from %page and %mouse. Those toggle something you can see the effect of; a
+// tip you would otherwise wait a session for is not.
 func (m Model) handleTipsCommand(fields []string) (Model, []string) {
 	if len(fields) > 2 {
 		return m, []string{"Usage: %tips [on|off]"}
@@ -829,15 +855,65 @@ func (m Model) handleTipsCommand(fields []string) (Model, []string) {
 		}
 		if !on {
 			lines = append(lines,
-				"'%help tips' still lists them, and '%tips' still shows one.")
+				"'%help tips' still lists them, and '%tip' still shows one.")
 		}
 		return m, lines
 	}
 
-	// Bare %tips: a fresh one, whatever the setting. Asking counts as wanting
-	// it, and it does not spend the session's automatic tip.
-	lines := []string{"Feature tips: " + onOff(m.tipsEnabled), ""}
-	return m, append(lines, tipNotice(randomTip())...)
+	// Bare %tips: the setting, and a fresh tip whatever that setting is.
+	return m.showTip(), []string{"Feature tips: " + onOff(m.tipsEnabled)}
+}
+
+// tipBoxMinInner is the narrowest text column worth drawing a border around.
+// Below it the box costs more of the line than it earns, so the blank lines
+// alone set the tip apart.
+const tipBoxMinInner = 24
+
+// renderTipBox draws a tip inside a rule, with a blank line above and below.
+//
+// It is done at render time rather than baked into the output item, because the
+// terminal can be resized after a tip has scrolled by: renderOutputItem is
+// re-run for every item whenever the render width changes (see renderEpoch), so
+// a box built here reflows and one built from fixed strings would not.
+//
+// The pool's lines are pre-wrapped for a full-width terminal, which is wider
+// than the inside of the box, so they are re-wrapped here through the same
+// helpers ordinary output uses.
+func renderTipBox(lines []string, width int) []string {
+	// Match wrapCommandLines: the usable column stops two short of the width.
+	inner := width - 2 - 4 // two border columns, and a space inside each
+	if inner < tipBoxMinInner {
+		out := []string{""}
+		out = append(out, wrapCommandLines(lines, width)...)
+		return append(out, "")
+	}
+
+	var body []string
+	for _, line := range lines {
+		for _, wrapped := range strings.Split(wrapKeepURLs(line, inner), "\n") {
+			body = append(body, charWrapLinkify(wrapped, inner)...)
+		}
+	}
+
+	rule := strings.Repeat("\u2500", inner+2)
+	bar := tipBorderStyle.Render("\u2502")
+	out := []string{
+		"",
+		tipBorderStyle.Render("\u256d" + rule + "\u256e"),
+	}
+	for _, line := range body {
+		// lipgloss.Width, not len: charWrapLinkify may have wrapped a URL in
+		// OSC8 escapes, which take no columns but plenty of bytes.
+		pad := inner - lipgloss.Width(line)
+		if pad < 0 {
+			pad = 0
+		}
+		out = append(out, bar+" "+line+strings.Repeat(" ", pad)+" "+bar)
+	}
+	return append(out,
+		tipBorderStyle.Render("\u2570"+rule+"\u256f"),
+		"",
+	)
 }
 
 // lookupTip finds a tip by name, case-insensitively like every other command
@@ -885,7 +961,7 @@ func tipsListing() []string {
 	}
 	lines = append(lines,
 		"",
-		"'%help tips <name>' reads one in full, and '%tips' shows a fresh one now.",
+		"'%help tips <name>' reads one in full, and '%tip' shows a fresh one now.",
 		"'%tips off' stops the per-session tip; put it in a zlilyStartup memo to",
 		"keep it off everywhere.",
 	)

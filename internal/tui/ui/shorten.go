@@ -93,7 +93,7 @@ func (m Model) maybeShortenHint() Model {
 	}
 	m.shortenHintShown = true
 	m.tipShown = true
-	m.output = append(m.output, OutputItem{Type: "command", Data: tipNotice(t)})
+	m.output = append(m.output, OutputItem{Type: "tip", Data: tipNotice(t)})
 	return m.syncViewportContent()
 }
 

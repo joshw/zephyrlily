@@ -124,4 +124,10 @@ var (
 	searchMatchStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("3")). // yellow
 				Foreground(lipgloss.Color("0"))  // black
+
+	// The rule around a feature tip. Cyan to match the login dialog, which is
+	// the thing on screen just before it: a tip arrives unasked, so it is drawn
+	// as a notice from zlily rather than as another line of conversation.
+	tipBorderStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("6")) // cyan
 )

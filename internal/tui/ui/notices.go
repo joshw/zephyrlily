@@ -45,8 +45,12 @@ const (
 // a notice is still worth showing is a question about the state it would be
 // shown in. It returns a Model so a notice can record that it fired.
 type pendingNotice struct {
-	name   string // for %debug snapshot and test failures
-	render func(Model) (Model, []string)
+	name string // for %debug snapshot and test failures
+	// itemType is the OutputItem.Type to append the notice as, which is what
+	// decides how it is drawn: a tip is ruled off, the mosh hint reads as
+	// ordinary command output.
+	itemType string
+	render   func(Model) (Model, []string)
 }
 
 // pendingNoticeNames lists a queue by name, for %debug snapshot.
@@ -125,7 +129,7 @@ func (m Model) noticeSettle() (Model, tea.Cmd) {
 	var lines []string
 	m, lines = n.render(m)
 	if lines != nil {
-		m.output = append(m.output, OutputItem{Type: "command", Data: lines})
+		m.output = append(m.output, OutputItem{Type: n.itemType, Data: lines})
 		// Our own output must not read as movement on the next tick, or a
 		// second queued notice would always wait an extra gap for nothing.
 		m.noticeOutputLen = len(m.output)
@@ -193,7 +197,7 @@ func (m Model) queueSessionNoticesWhenReady() (Model, tea.Cmd) {
 // hint may have spent this session's tip in the meantime (see maybeShortenHint)
 // and there is then nothing to pick.
 func sessionTipNotice() pendingNotice {
-	return pendingNotice{name: "session tip", render: func(m Model) (Model, []string) {
+	return pendingNotice{name: "session tip", itemType: "tip", render: func(m Model) (Model, []string) {
 		if !m.tipsEnabled || m.tipShown {
 			return m, nil
 		}

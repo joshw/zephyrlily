@@ -140,6 +140,6 @@ func TestLocalCommandNamesIgnoreCase(t *testing.T) {
 	require.True(t, handled)
 	assert.Equal(t, []string{
 		"Feature tips: off",
-		"'%help tips' still lists them, and '%tips' still shows one.",
+		"'%help tips' still lists them, and '%tip' still shows one.",
 	}, out)
 }

@@ -667,6 +667,7 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 	if localOutput != nil {
 		m.output = append(m.output, OutputItem{Type: "command", Data: localOutput})
 	}
+	m = m.takeExtraOutput()
 	if localCmd != nil {
 		m = m.syncViewportContent()
 		return m, localCmd
@@ -684,6 +685,18 @@ func (m Model) submitLine(line string) (Model, tea.Cmd) {
 
 	m = m.syncViewportContent()
 	return m, nil
+}
+
+// takeExtraOutput appends and clears anything a local command left in
+// extraOutput. Called after the command's own lines, so a boxed tip lands below
+// both the echoed input line and any status line the command printed.
+func (m Model) takeExtraOutput() Model {
+	if len(m.extraOutput) == 0 {
+		return m
+	}
+	m.output = append(m.output, m.extraOutput...)
+	m.extraOutput = nil
+	return m
 }
 
 // applyLocalCommand handles a command line the client interprets itself (one the
@@ -768,9 +781,14 @@ func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
 	}
 
 	// %tips [on|off] controls the once-per-session feature tip, and with no
-	// argument shows one. See tips.go.
+	// argument reports the setting and shows one. %tip just shows one. See
+	// tips.go; the two names are matched exactly, so neither catches the other.
 	if fields := strings.Fields(line); len(fields) > 0 && cmdarg.Is(fields[0], "%tips") {
 		m, lines := m.handleTipsCommand(fields)
+		return m, lines, nil, true
+	}
+	if fields := strings.Fields(line); len(fields) > 0 && cmdarg.Is(fields[0], "%tip") {
+		m, lines := m.handleTipCommand(fields)
 		return m, lines, nil, true
 	}
 

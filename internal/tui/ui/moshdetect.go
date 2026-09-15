@@ -98,7 +98,7 @@ func moshServerInPS(out string) bool {
 // and someone who turned the workaround on during the wait - here, or in the
 // zlilyStartup memo replaying behind us - does not need telling about it.
 func moshHintNotice() pendingNotice {
-	return pendingNotice{name: "mosh hint", render: func(m Model) (Model, []string) {
+	return pendingNotice{name: "mosh hint", itemType: "command", render: func(m Model) (Model, []string) {
 		if m.reserveLastColumn {
 			return m, nil
 		}

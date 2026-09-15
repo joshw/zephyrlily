@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -57,7 +58,8 @@ func TestTipsDoNotDriftFromReality(t *testing.T) {
 	// applyLocalCommand/handleLocalCommand rather than anything enumerable.
 	tuiCommands := map[string]bool{
 		"help": true, "debug": true, "set": true, "mouse": true, "page": true,
-		"linkpreview": true, "shorten": true, "tips": true, "style": true,
+		"linkpreview": true, "shorten": true, "tips": true, "tip": true,
+		"style": true,
 		"spell": true, "info": true, "memo": true,
 		"save-password": true, "forget-password": true,
 		// Owned by the proxy's session managers rather than its command
@@ -191,10 +193,13 @@ func TestTipsCommand(t *testing.T) {
 		assert.False(t, loadTipsOff())
 	})
 
-	t.Run("bare %tips shows one", func(t *testing.T) {
+	t.Run("bare %tips reports the setting and shows one", func(t *testing.T) {
 		m := Model{tipsEnabled: true}
-		_, out := m.handleTipsCommand([]string{"%tips"})
-		assert.Contains(t, strings.Join(out, " "), "Tip: ")
+		m, out := m.handleTipsCommand([]string{"%tips"})
+		assert.Contains(t, strings.Join(out, " "), "Feature tips: on")
+		// The tip itself is a boxed item, not lines; see TestTipCommand.
+		require.Len(t, m.extraOutput, 1)
+		assert.Equal(t, "tip", m.extraOutput[0].Type)
 	})
 
 	t.Run("asking for one does not spend the session's tip", func(t *testing.T) {
@@ -205,9 +210,10 @@ func TestTipsCommand(t *testing.T) {
 
 	t.Run("and works with tips off", func(t *testing.T) {
 		m := Model{tipsEnabled: false}
-		_, out := m.handleTipsCommand([]string{"%tips"})
-		assert.Contains(t, strings.Join(out, " "), "Tip: ",
-			"off stops the automatic one, not the command")
+		m, out := m.handleTipsCommand([]string{"%tips"})
+		assert.Contains(t, strings.Join(out, " "), "Feature tips: off")
+		assert.Len(t, m.extraOutput, 1,
+			"off stops the automatic tip, not the command")
 	})
 
 	t.Run("rejects nonsense", func(t *testing.T) {
@@ -287,5 +293,144 @@ func TestTipsDefaultToOn(t *testing.T) {
 		m, _ = m.noticeSettle()
 		assert.Contains(t, saying(m), "Tip: ")
 		assert.True(t, m.tipShown)
+	})
+}
+
+func TestRenderTipBox(t *testing.T) {
+	notice := tipNotice(specimen(t))
+
+	t.Run("a blank line sets it off above and below", func(t *testing.T) {
+		out := renderTipBox(notice, 80)
+		require.Greater(t, len(out), 2)
+		assert.Equal(t, "", out[0])
+		assert.Equal(t, "", out[len(out)-1])
+	})
+
+	t.Run("every line of the box is the same width", func(t *testing.T) {
+		// The invariant the whole thing rests on. Padding is computed per line,
+		// so nothing but this enforces it, and a right-hand rule out of true
+		// reads as a rendering bug rather than as a box.
+		for _, width := range []int{80, 72, 60, 40, 30} {
+			out := renderTipBox(notice, width)
+			body := out[1 : len(out)-1]
+			want := lipgloss.Width(body[0])
+			assert.LessOrEqual(t, want, width-2,
+				"the box leaves the last column alone, as wrapCommandLines does")
+			for i, line := range body {
+				assert.Equal(t, want, lipgloss.Width(line),
+					"width %d, box line %d is out of true", width, i)
+			}
+		}
+	})
+
+	t.Run("an OSC8 link does not throw the padding off", func(t *testing.T) {
+		// charWrapLinkify wraps a URL in escapes that cost bytes and no
+		// columns, so measuring with len instead of lipgloss.Width would push
+		// the rule out by the length of every link in the tip.
+		withOSC8(t, true)
+		out := renderTipBox([]string{
+			"Tip: a link",
+			"Open https://example.com/a/fairly/long/path/here now.",
+			"A plain line for comparison.",
+		}, 80)
+		body := out[1 : len(out)-1]
+		want := lipgloss.Width(body[0])
+		for i, line := range body {
+			assert.Equal(t, want, lipgloss.Width(line), "box line %d is out of true", i)
+		}
+	})
+
+	t.Run("too narrow to box, but still set apart", func(t *testing.T) {
+		out := renderTipBox(notice, tipBoxMinInner)
+		assert.Equal(t, "", out[0])
+		assert.Equal(t, "", out[len(out)-1])
+		assert.NotContains(t, strings.Join(out, "\n"), "\u256d",
+			"better no box than a mangled one")
+	})
+
+	t.Run("the tip item type draws it", func(t *testing.T) {
+		m := Model{width: 80}
+		out := m.renderOutputItem(OutputItem{Type: "tip", Data: notice})
+		assert.Contains(t, strings.Join(out, "\n"), "\u256d")
+	})
+}
+
+func TestTipCommand(t *testing.T) {
+	t.Setenv("ZLILY_CONFIG_DIR", t.TempDir())
+
+	// Both commands hand the box back through extraOutput rather than as lines,
+	// so that it is a "tip" item drawn at the current width and reflowed on a
+	// resize -- and so that it lands below the echoed input line.
+	boxed := func(t *testing.T, m Model) OutputItem {
+		t.Helper()
+		require.Len(t, m.extraOutput, 1, "one boxed tip queued")
+		it := m.extraOutput[0]
+		assert.Equal(t, "tip", it.Type)
+		lines, ok := it.Data.([]string)
+		require.True(t, ok)
+		assert.Contains(t, strings.Join(lines, " "), "Tip: ")
+		return it
+	}
+
+	t.Run("%tip shows one and says nothing else", func(t *testing.T) {
+		m := Model{tipsEnabled: true}
+		m, out := m.handleTipCommand([]string{"%tip"})
+		assert.Nil(t, out, "no status line to read past")
+		boxed(t, m)
+	})
+
+	t.Run("%tip works with tips off", func(t *testing.T) {
+		m := Model{tipsEnabled: false}
+		m, _ = m.handleTipCommand([]string{"%tip"})
+		boxed(t, m)
+	})
+
+	t.Run("%tip does not spend the session tip", func(t *testing.T) {
+		m := Model{tipsEnabled: true}
+		m, _ = m.handleTipCommand([]string{"%tip"})
+		assert.False(t, m.tipShown, "asking is not the same as being told")
+	})
+
+	t.Run("%tip takes no arguments", func(t *testing.T) {
+		m := Model{tipsEnabled: true}
+		m, out := m.handleTipCommand([]string{"%tip", "mouse"})
+		assert.Contains(t, strings.Join(out, " "), "Usage: %tip")
+		assert.Empty(t, m.extraOutput, "and shows nothing")
+	})
+
+	t.Run("bare %tips boxes its tip too", func(t *testing.T) {
+		m := Model{tipsEnabled: true}
+		m, out := m.handleTipsCommand([]string{"%tips"})
+		assert.Equal(t, []string{"Feature tips: on"}, out, "the setting, then the box")
+		boxed(t, m)
+	})
+
+	t.Run("the box lands below the echoed line", func(t *testing.T) {
+		// extraOutput is drained by the caller, after the input echo and the
+		// command's own lines; appending from the handler would invert that.
+		m := Model{tipsEnabled: true, width: 80}
+		m, out, _, ok := m.applyLocalCommand("%tips")
+		require.True(t, ok)
+		m.output = append(m.output, OutputItem{Type: "input", Data: "%tips"})
+		m.output = append(m.output, OutputItem{Type: "command", Data: out})
+		m = m.takeExtraOutput()
+
+		require.Len(t, m.output, 3)
+		assert.Equal(t, "input", m.output[0].Type)
+		assert.Equal(t, "command", m.output[1].Type)
+		assert.Equal(t, "tip", m.output[2].Type)
+		assert.Empty(t, m.extraOutput, "drained")
+	})
+
+	t.Run("%tip and %tips do not catch each other", func(t *testing.T) {
+		m := Model{tipsEnabled: true}
+		_, out, _, ok := m.applyLocalCommand("%tips")
+		require.True(t, ok)
+		assert.Contains(t, strings.Join(out, " "), "Feature tips:",
+			"%tips is the setting")
+
+		_, out, _, ok = m.applyLocalCommand("%TIP")
+		require.True(t, ok)
+		assert.Nil(t, out, "%tip is just the tip, and folds case")
 	})
 }

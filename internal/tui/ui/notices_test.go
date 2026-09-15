@@ -32,7 +32,7 @@ func saying(m Model) string {
 
 // fixedNotice is a notice that always says the same thing.
 func fixedNotice(text string) pendingNotice {
-	return pendingNotice{name: text, render: func(m Model) (Model, []string) {
+	return pendingNotice{name: text, itemType: "command", render: func(m Model) (Model, []string) {
 		return m, []string{text}
 	}}
 }
@@ -285,4 +285,19 @@ func TestTipsLoadedMsgHonoursOff(t *testing.T) {
 	before := len(m.output)
 	m, _ = m.noticeSettle()
 	assert.Len(t, m.output, before, "a stored 'off' means no tip at login")
+}
+
+// A tip is ruled off because it arrived unasked; the mosh hint is advice about
+// the display and reads as ordinary command output.
+func TestNoticeItemTypes(t *testing.T) {
+	assert.Equal(t, "tip", sessionTipNotice().itemType)
+	assert.Equal(t, "command", moshHintNotice().itemType)
+
+	m := noticeModel(t)
+	m.stateReady, m.tipsLoaded = true, true
+	m, _ = m.queueSessionNoticesWhenReady()
+	m, _ = m.noticeSettle()
+	require.NotEmpty(t, m.output)
+	assert.Equal(t, "tip", m.output[len(m.output)-1].Type,
+		"the queued tip is appended as a boxed item")
 }

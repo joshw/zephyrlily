@@ -285,6 +285,13 @@ func (m Model) renderOutputItem(item OutputItem) []string {
 			return wrapCommandLines(lines, width)
 		}
 
+	// A feature tip: the same lines as a "command" item, but ruled off and set
+	// apart by a blank line, because it arrived unasked. See renderTipBox.
+	case "tip":
+		if lines, ok := item.Data.([]string); ok {
+			return renderTipBox(lines, width)
+		}
+
 	case "event":
 		if d, ok := item.Data.(map[string]interface{}); ok {
 			whoami := ""

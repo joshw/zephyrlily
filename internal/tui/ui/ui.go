@@ -236,6 +236,17 @@ type Model struct {
 	tipsEnabled bool
 	tipShown    bool
 
+	// extraOutput holds items a client-side command wants appended after its
+	// own output, for a command whose result is not plain text -- today only
+	// the boxed tip of %tip and %tips.
+	//
+	// It exists because applyLocalCommand returns []string, which both callers
+	// append as a "command" item, and a box has to be a "tip" item to be drawn
+	// at the current width. Appending from inside the handler instead would put
+	// the box above the echo of the line that asked for it. Drained by the
+	// caller; see takeExtraOutput.
+	extraOutput []OutputItem
+
 	// shortenHintShown records that the M-s reminder has been printed, so it is
 	// offered once a session rather than at every URL.
 	shortenHintShown bool
@@ -1770,6 +1781,7 @@ func (m Model) handleProxy(msg *api.WSServerMsg) (Model, tea.Cmd) {
 				if out != nil {
 					m.output = append(m.output, OutputItem{Type: "command", Data: out, ID: msg.ID})
 				}
+				m = m.takeExtraOutput()
 			}
 		}
 
