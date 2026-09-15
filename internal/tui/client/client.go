@@ -23,6 +23,15 @@ import (
 // to decide whether to re-prompt for credentials.
 var ErrAuthFailed = errors.New("invalid username or password")
 
+// ErrSessionGone indicates the proxy no longer has the session a client holds
+// a token for: it ended (the Lily connection closed), or the proxy restarted
+// and never heard of it. Like ErrAuthFailed it means "ask the user to log in",
+// but it is a separate answer because the cause is different and the wording
+// the TUI shows should be too — "invalid username or password" for a session
+// that simply ended reads as an accusation about a password the user never
+// typed.
+var ErrSessionGone = errors.New("session ended")
+
 // Client is a connection from the TUI to the proxy.
 type Client struct {
 	proxyAddr string // e.g. "localhost:7888"
@@ -97,17 +106,37 @@ func (c *Client) ResumeSession(token string) (string, error) {
 	}
 	c.token = token
 
-	var sr api.SessionResponse
 	req, err := http.NewRequest(http.MethodGet, c.httpURL("/session"), nil)
 	if err != nil {
 		c.token = ""
 		return "", err
 	}
-	if err := c.doJSON(req, &sr); err != nil {
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		// The proxy could not be reached — which says nothing about the
+		// session, and a page loading a second before the network is ready
+		// hits this. Drop the token from this client so HasToken() is honest
+		// and the login dialog appears, but report it as what it is: the
+		// caller discards the token it has stored on ErrAuthFailed, and doing
+		// that here would throw away a live session over a bad second.
+		c.token = ""
+		return "", fmt.Errorf("session check: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
 		// The token is stale, or this proxy has never heard of it. Drop it so
 		// HasToken() is honest and the caller falls back to logging in.
 		c.token = ""
-		return "", fmt.Errorf("%w: %s", ErrAuthFailed, err)
+		if resp.StatusCode == http.StatusUnauthorized {
+			return "", fmt.Errorf("%w: the proxy does not know this session", ErrAuthFailed)
+		}
+		return "", fmt.Errorf("session check: HTTP %s", resp.Status)
+	}
+	var sr api.SessionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		c.token = ""
+		return "", fmt.Errorf("session check: %w", err)
 	}
 	// A session is not usable until its WebSocket is open: the TUI reads events
 	// from it and Send writes commands to it. Auth's caller pairs Auth with
@@ -404,9 +433,38 @@ func (c *Client) Resume() (*Client, error) {
 		return nc, errors.New("no session to resume")
 	}
 	if err := nc.Connect(); err != nil {
+		// A failed WebSocket dial does not say why it failed, and in the
+		// browser build it cannot: the JS WebSocket API never exposes the
+		// handshake's HTTP status, so "the proxy has forgotten this session"
+		// and "the network was away for a second" arrive as the same error.
+		// Ask over HTTP, where the status is visible, before concluding the
+		// session is gone — mistaking a blip for a dead session costs the user
+		// the session itself, because the caller answers that by dropping the
+		// stored token and putting up the login dialog.
+		if nc.sessionGone() {
+			return nc, fmt.Errorf("resume: %w", ErrSessionGone)
+		}
 		return nc, fmt.Errorf("resume: %w", err)
 	}
 	return nc, nil
+}
+
+// sessionGone reports whether the proxy has definitively disowned this client's
+// token. Only an explicit 401 counts: a proxy that could not be reached at all,
+// or that answered anything else, leaves the session possibly alive, and the
+// caller should keep retrying rather than tear it down.
+func (c *Client) sessionGone() bool {
+	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, c.httpURL("/session"), nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode == http.StatusUnauthorized
 }
 
 // Reconnect closes the current connection and returns a fresh Client using the
@@ -420,12 +478,14 @@ func (c *Client) Reconnect() (*Client, error) {
 	nc := newClient(c.proxyAddr, c.secure)
 
 	// A client resumed from a stored token holds no password, so there is
-	// nothing to log back in with. Say so as an auth failure: that is what the
-	// TUI turns into a credential prompt, whereas a generic error becomes an
-	// offer to retry that could never succeed.
+	// nothing to log back in with. Say so as ErrSessionGone: that, like a
+	// credential rejection, is what the TUI turns into a login prompt, whereas
+	// a generic error becomes an offer to retry that could never succeed. It is
+	// deliberately not ErrAuthFailed — nothing here was rejected, and the user
+	// should not be told their password was wrong when they never gave one.
 	if c.password == "" {
 		nc.username = c.username
-		return nc, fmt.Errorf("%w: session ended and no password was stored", ErrAuthFailed)
+		return nc, fmt.Errorf("%w: log in again to start a new one", ErrSessionGone)
 	}
 
 	if err := nc.Auth(c.username, c.password); err != nil {

@@ -200,3 +200,40 @@ func TestAutoReconnectDelay_BacksOffAndCaps(t *testing.T) {
 	assert.Greater(t, total, 60*time.Second)
 	assert.Less(t, total, 5*time.Minute)
 }
+
+// A session the proxy has disowned cannot be re-attached to, so that failure
+// goes to the dialog as well — but it must not read as a rejected password,
+// because nobody typed one.
+func TestAutoReconnect_EndedSessionAsksForALogin(t *testing.T) {
+	m := newDedupModel(t)
+	m = authOK(t, m, "token-A")
+	m = dropSocket(t, m)
+
+	upd, _ := m.Update(authResultMsg{err: fmt.Errorf("resume: %w", client.ErrSessionGone)})
+	m = upd.(Model)
+
+	assert.True(t, m.authMode, "a session that has ended needs a fresh login")
+	assert.False(t, m.reconnectPrompt)
+	assert.NotContains(t, m.authError, "invalid username or password",
+		"the user never gave a password here; do not tell them it was wrong")
+}
+
+// The failure this whole path exists for: a browser tab holding only a session
+// token, whose socket dies for a second. Resume failing for a reason other than
+// "the session is gone" must stay in the retry loop — logging in again would
+// abandon a session that is still sitting on the proxy, and for a token-only
+// client it cannot even do that, so the user lands in a login dialog because
+// the network blinked.
+func TestAutoReconnect_UnreachableProxyKeepsRetrying(t *testing.T) {
+	m := newDedupModel(t)
+	m = authOK(t, m, "token-A")
+	m = dropSocket(t, m)
+
+	upd, cmd := m.Update(authResultMsg{err: fmt.Errorf("resume: ws connect: %w", errors.New("dial tcp: refused"))})
+	m = upd.(Model)
+
+	assert.False(t, m.authMode, "a network blip must not demand credentials")
+	assert.NotNil(t, cmd, "another attempt must be scheduled")
+	assert.Equal(t, 1, m.reconnectAttempt)
+	assert.True(t, containsLine(m, "connection lost"))
+}

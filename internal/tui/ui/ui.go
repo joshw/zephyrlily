@@ -720,10 +720,21 @@ func reconnectNow(c *client.Client) authResultMsg {
 		if err == nil {
 			return authResultMsg{newClient: nc, token: nc.Token()}
 		}
-		slog.Debug("session resume failed, logging in again", "err", err)
 		// Resume retired the old client; carry on from the one it handed back,
 		// which holds the same credentials.
 		c = nc
+		// Only a session the proxy has actually disowned justifies a full
+		// login. Any other failure is the network, the session is most likely
+		// still sitting there, and logging in again would abandon it — or, for
+		// a client resumed from a token alone (every browser tab), fail as a
+		// credential rejection and drop the user into a login dialog over one
+		// bad second. Report the failure instead and let the retry loop have
+		// another go at the token it still holds.
+		if !errors.Is(err, client.ErrSessionGone) {
+			slog.Debug("session resume failed, will retry", "err", err)
+			return authResultMsg{newClient: nc, token: nc.Token(), err: err}
+		}
+		slog.Debug("session is gone, logging in again", "err", err)
 	}
 	nc, err := c.Reconnect()
 	return authResultMsg{newClient: nc, token: nc.Token(), err: err}
@@ -1020,11 +1031,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			m.authInProgress = false
-			// Re-prompt for credentials when they were rejected, or whenever the
-			// initial credential dialog is already showing. A non-auth failure
-			// during a reconnect (proxy unreachable, ws error) instead offers a
-			// plain retry without re-typing credentials.
-			if m.authMode || errors.Is(msg.err, client.ErrAuthFailed) {
+			// Re-prompt for credentials when they were rejected, when the
+			// session they belonged to is gone for good, or whenever the
+			// initial credential dialog is already showing. Any other failure
+			// during a reconnect (proxy unreachable, ws error) instead keeps
+			// retrying without re-typing credentials — the session is probably
+			// still there waiting.
+			if m.authMode || errors.Is(msg.err, client.ErrAuthFailed) ||
+				errors.Is(msg.err, client.ErrSessionGone) {
 				m.authMode = true
 				// Whatever the host had stored cannot be good either.
 				forgetSessionToken()

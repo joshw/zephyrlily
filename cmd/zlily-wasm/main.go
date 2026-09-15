@@ -20,6 +20,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -110,9 +111,18 @@ func (b *bridge) run(c *client.Client, out io.Writer, cols, rows int, token stri
 	// and the model falls back to its login dialog exactly as before.
 	if token != "" {
 		if user, err := c.ResumeSession(token); err != nil {
-			slog.Debug("stored session token rejected", "err", err)
-			if forget := js.Global().Get("zlilySaveToken"); forget.Type() == js.TypeFunction {
-				forget.Invoke(js.Null())
+			slog.Debug("stored session token not resumed", "err", err)
+			// Only a token the proxy actually turned down is discarded. A load
+			// that could not reach the proxy at all — a page opened before the
+			// network was ready, a proxy mid-restart — says nothing about the
+			// session, and forgetting the token there would strand a live
+			// session that the next reload could have walked straight back
+			// into. The login dialog appears either way; the difference is
+			// whether there is anything left to resume afterwards.
+			if errors.Is(err, client.ErrAuthFailed) {
+				if forget := js.Global().Get("zlilySaveToken"); forget.Type() == js.TypeFunction {
+					forget.Invoke(js.Null())
+				}
 			}
 		} else {
 			startup = append(startup, "Resumed your session as "+user+".")
