@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/joshw/zephyrlily/internal/proxy/commands"
+	"github.com/joshw/zephyrlily/internal/tui/client"
 )
 
 func TestTipPoolIntegrity(t *testing.T) {
@@ -251,4 +252,40 @@ func TestHelpSummaryIsStable(t *testing.T) {
 	for range 5 {
 		assert.Equal(t, first, tuiHelpSummary())
 	}
+}
+
+// Tips are on unless the user has turned them off.
+//
+// Worth pinning explicitly: every other test here sets tipsEnabled itself, so
+// the default in New and the "absent means on" reading of the store were both
+// load-bearing and unguarded - either could have been flipped or dropped
+// without failing anything.
+func TestTipsDefaultToOn(t *testing.T) {
+	t.Setenv("ZLILY_CONFIG_DIR", t.TempDir()) // a machine with no settings file
+
+	t.Run("a fresh model has them on", func(t *testing.T) {
+		logChan, _ := NewLogger()
+		m := New(client.New(""), logChan)
+		assert.True(t, m.tipsEnabled, "on before the stored setting is even read")
+	})
+
+	t.Run("no stored setting reads as on", func(t *testing.T) {
+		assert.False(t, loadTipsOff(), "nothing stored is not the same as off")
+	})
+
+	t.Run("and such a session gets its tip", func(t *testing.T) {
+		m := noticeModel(t)
+		// The real read path, not a hand-made message.
+		upd, _ := m.Update(loadTipsCmd()())
+		m = upd.(Model)
+		require.True(t, m.tipsEnabled)
+
+		m.stateReady = true
+		m, _ = m.queueSessionNoticesWhenReady()
+		require.NotEmpty(t, m.pendingNotices, "a tip should be queued")
+
+		m, _ = m.noticeSettle()
+		assert.Contains(t, saying(m), "Tip: ")
+		assert.True(t, m.tipShown)
+	})
 }

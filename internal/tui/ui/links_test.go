@@ -9,10 +9,27 @@ import (
 )
 
 // TestMain pins osc8Enabled on so tests are deterministic regardless of the
-// TERM the test environment happens to have (under screen it defaults off).
+// TERM the test environment happens to have (under screen it defaults off),
+// and points the settings directory at a scratch one.
+//
+// The scratch directory is not a nicety. '%tips on|off' writes the setting
+// through to internal/tui/creds, so any test driving that command edits a real
+// config.json -- the developer's own -- unless it remembered to override the
+// location first. One of them did forget, and left a tips_off key in a real
+// dotfile. Setting it here means nothing in the package can reach the real
+// directory by omission; tests that want their own still call t.Setenv.
 func TestMain(m *testing.M) {
 	osc8Enabled = true
-	os.Exit(m.Run())
+	dir, err := os.MkdirTemp("", "zlily-ui-test")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("ZLILY_CONFIG_DIR", dir); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dir) // before Exit: os.Exit runs no deferred calls
+	os.Exit(code)
 }
 
 // withOSC8 sets osc8Enabled for the duration of one test.
