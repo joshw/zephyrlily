@@ -206,6 +206,42 @@ func TestRememberUser(t *testing.T) {
 	require.Equal(t, "josh2", LastUser(testHost))
 }
 
+func TestTipsOff(t *testing.T) {
+	isolate(t)
+	require.False(t, TipsOff(), "no setting yet, so tips are on")
+
+	require.NoError(t, SetTipsOff(true))
+	require.True(t, TipsOff())
+
+	require.NoError(t, SetTipsOff(false))
+	require.False(t, TipsOff())
+}
+
+// The setting shares a file with the remembered usernames, and neither may
+// clobber the other.
+func TestTipsOffKeepsTheLogins(t *testing.T) {
+	isolate(t)
+	require.NoError(t, RememberUser(testHost, testUser))
+	require.NoError(t, SetTipsOff(true))
+
+	require.Equal(t, testUser, LastUser(testHost), "the username survived")
+	require.True(t, TipsOff())
+
+	require.NoError(t, RememberUser(testHost, "josh2"))
+	require.True(t, TipsOff(), "and the setting survived a later login")
+}
+
+// Same reasoning as the usernames: a corrupt convenience file must not make a
+// setting permanently unsettable.
+func TestTipsOffSurvivesACorruptConfig(t *testing.T) {
+	dir := isolate(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte("{not json"), 0o600))
+
+	require.False(t, TipsOff())
+	require.NoError(t, SetTipsOff(true))
+	require.True(t, TipsOff())
+}
+
 // The username file is a convenience, so a corrupt one must not stop a login.
 func TestRememberUserSurvivesACorruptConfig(t *testing.T) {
 	dir := isolate(t)

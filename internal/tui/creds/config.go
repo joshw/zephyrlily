@@ -16,6 +16,14 @@ type config struct {
 	// asking — it is what lets the dialog open with the cursor on the password
 	// field even when no password is stored.
 	Logins map[string]string `json:"logins,omitempty"`
+
+	// TipsOff suppresses the once-per-session feature tip (%tips off).
+	//
+	// A pointer so that an absent field reads as "never said" rather than as
+	// "tips on". The two are the same thing today, but a default that changes
+	// later should not silently flip the setting of everyone who once turned
+	// tips off and had it written as the zero value.
+	TipsOff *bool `json:"tips_off,omitempty"`
 }
 
 func loadConfig() (config, error) {
@@ -94,5 +102,31 @@ func RememberUser(host, user string) error {
 		return nil
 	}
 	cfg.Logins[host] = user
+	return saveConfig(cfg)
+}
+
+// TipsOff reports whether the user has turned feature tips off. An unreadable
+// or absent settings file means they have not.
+func TipsOff() bool {
+	cfg, err := loadConfig()
+	if err != nil || cfg.TipsOff == nil {
+		return false
+	}
+	return *cfg.TipsOff
+}
+
+// SetTipsOff records whether feature tips are suppressed.
+func SetTipsOff(off bool) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		// Start over rather than refuse, for the same reason RememberUser does:
+		// one bad byte in a convenience file should not make a setting
+		// permanently unsettable.
+		cfg = config{}
+	}
+	if cfg.TipsOff != nil && *cfg.TipsOff == off {
+		return nil
+	}
+	cfg.TipsOff = &off
 	return saveConfig(cfg)
 }

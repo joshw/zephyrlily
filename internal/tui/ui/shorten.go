@@ -74,18 +74,26 @@ type shortenResultMsg struct {
 //
 // Once per session, on the theory that the reminder is for people who have not
 // met the feature; anyone who has stops needing it after the first time.
+//
+// It is the 'shorten' entry in the tip pool (tips.go), printed here rather than
+// waiting for a login to offer it at random, because this is the moment it is
+// worth reading. It spends the session's one tip either way: whichever of this
+// and the login tip comes first, the other stays quiet, so a session is never
+// two unsolicited notices.
 func (m Model) maybeShortenHint() Model {
-	if m.shortenHintShown || m.inputValue == "" {
+	if m.shortenHintShown || !m.tipsEnabled || m.tipShown || m.inputValue == "" {
 		return m
 	}
 	if len(inputURLSpans(m.inputValue)) == 0 {
 		return m
 	}
+	t, ok := lookupTip("shorten")
+	if !ok {
+		return m
+	}
 	m.shortenHintShown = true
-	m.output = append(m.output, OutputItem{Type: "command", Data: []string{
-		"Tip: M-s shortens the first URL before the cursor, keeping the site",
-		"name in brackets after it. See '%help shorten'.",
-	}})
+	m.tipShown = true
+	m.output = append(m.output, OutputItem{Type: "command", Data: tipNotice(t)})
 	return m.syncViewportContent()
 }
 

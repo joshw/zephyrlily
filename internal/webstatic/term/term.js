@@ -132,6 +132,30 @@ globalThis.zlilySaveToken = (token) => {
   }
 };
 
+// Client settings the Go side would keep in ~/.config/zlily/config.json on a
+// real machine (currently just the %tips toggle). A reload resumes the existing
+// proxy session rather than logging in again, so the zlilyStartup memo — the
+// other way a client setting persists — is never replayed here and cannot be
+// where these live. See internal/tui/ui/tipspref_js.go.
+const PREF_PREFIX = 'zlily.pref.';
+
+globalThis.zlilyLoadPref = (key) => {
+  try {
+    return localStorage.getItem(PREF_PREFIX + key);
+  } catch (e) {
+    return null; // no storage: the Go side takes the default
+  }
+};
+
+globalThis.zlilySavePref = (key, value) => {
+  try {
+    if (value === null || value === undefined) localStorage.removeItem(PREF_PREFIX + key);
+    else localStorage.setItem(PREF_PREFIX + key, value);
+  } catch (e) {
+    /* not fatal: the setting just does not survive the reload */
+  }
+};
+
 // The Go side calls this for `%debug snapshot` (M-x), which on a real terminal
 // writes a file. The snapshot quotes the input line and recent keystrokes, so
 // it stays on the user's machine: this hands it to the browser's download

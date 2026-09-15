@@ -52,8 +52,10 @@ func TestMoshHintLines(t *testing.T) {
 
 // TestMoshHintFlow drives the message sequence the login path produces.
 //
-// The settle loop is stepped by feeding moshSettleMsg directly, so these run at
-// full speed and assert the pacing rules rather than the wall clock.
+// The settle loop is stepped by feeding noticeSettleMsg directly, so these run
+// at full speed and assert the pacing rules rather than the wall clock. The
+// hint is the only thing queued here; the queue itself is exercised in
+// notices_test.go.
 func TestMoshHintFlow(t *testing.T) {
 	newModel := func(t *testing.T) Model {
 		t.Helper()
@@ -62,8 +64,7 @@ func TestMoshHintFlow(t *testing.T) {
 		m.authMode = false
 		m = sizeTo(t, m, 80, 24)
 		m.moshProbed = true
-		m.moshHintSettling = true
-		m.moshHintOutputLen = len(m.output)
+		m, _ = m.queueNotice(moshHintNotice())
 		return m
 	}
 	feed := func(m Model, msgs ...tea.Msg) Model {
@@ -84,7 +85,7 @@ func TestMoshHintFlow(t *testing.T) {
 	}
 
 	t.Run("a mosh-server on the machine is worth a word", func(t *testing.T) {
-		m := feed(newModel(t), moshPSMsg{found: true}, moshSettleMsg{})
+		m := feed(newModel(t), moshPSMsg{found: true}, noticeSettleMsg{})
 		assert.Contains(t, lastOutput(m), "may be using mosh")
 	})
 
@@ -93,14 +94,14 @@ func TestMoshHintFlow(t *testing.T) {
 	// process there is nothing to say, whatever the terminal claims.
 	t.Run("no mosh-server means silence", func(t *testing.T) {
 		before := newModel(t)
-		m := feed(before, moshPSMsg{found: false}, moshSettleMsg{})
+		m := feed(before, moshPSMsg{found: false}, noticeSettleMsg{})
 		assert.Len(t, m.output, len(before.output), "no hint appended")
 	})
 
 	t.Run("silent when the workaround is already on", func(t *testing.T) {
 		before := newModel(t)
 		before.reserveLastColumn = true
-		m := feed(before, moshPSMsg{found: true}, moshSettleMsg{})
+		m := feed(before, moshPSMsg{found: true}, noticeSettleMsg{})
 		assert.Len(t, m.output, len(before.output),
 			"nothing to suggest to someone who already turned it on")
 	})
@@ -112,14 +113,14 @@ func TestMoshHintFlow(t *testing.T) {
 		before.moshPSFound = true
 		before.prompt = "Please enter a blurb, or hit <enter> for none"
 
-		m, cmd := before.moshHintSettle()
+		m, cmd := before.noticeSettle()
 		assert.Len(t, m.output, len(before.output), "must not print over a prompt")
-		assert.False(t, m.moshHintDone, "still waiting, not given up")
+		assert.Len(t, m.pendingNotices, 1, "still queued, not given up")
 		require.NotNil(t, cmd, "must keep looking")
 
 		// Prompt answered: the next tick is free to speak.
 		m.prompt = ""
-		m, _ = m.moshHintSettle()
+		m, _ = m.noticeSettle()
 		assert.Contains(t, lastOutput(m), "may be using mosh")
 	})
 
@@ -127,11 +128,11 @@ func TestMoshHintFlow(t *testing.T) {
 		before := newModel(t)
 		before.moshPSFound = true
 		before.prompt = "review now?"
-		before.moshHintWaited = moshPromptCap
+		before.noticeWaited = noticeBusyCap
 
-		m, cmd := before.moshHintSettle()
+		m, cmd := before.noticeSettle()
 		assert.Len(t, m.output, len(before.output), "never printed")
-		assert.True(t, m.moshHintDone, "gave up")
+		assert.Empty(t, m.pendingNotices, "gave up")
 		assert.Nil(t, cmd, "and stopped ticking")
 	})
 
@@ -144,31 +145,31 @@ func TestMoshHintFlow(t *testing.T) {
 		for range 3 {
 			m.output = append(m.output, OutputItem{Type: "text", Data: "review line"})
 			var cmd tea.Cmd
-			m, cmd = m.moshHintSettle()
+			m, cmd = m.noticeSettle()
 			assert.NotEqual(t, "command", m.output[len(m.output)-1].Type,
 				"deferred while output is still moving")
 			require.NotNil(t, cmd, "and still looking")
 		}
 
 		// Nothing new this tick: now it speaks.
-		m, _ = m.moshHintSettle()
+		m, _ = m.noticeSettle()
 		assert.Contains(t, lastOutput(m), "may be using mosh")
 	})
 
 	t.Run("a busy channel does not defer it forever", func(t *testing.T) {
 		m := newModel(t)
 		m.moshPSFound = true
-		m.moshHintWaited = moshQuietCap
+		m.noticeWaited = noticeQuietCap
 		m.output = append(m.output, OutputItem{Type: "text", Data: "still chatting"})
 
-		m, _ = m.moshHintSettle()
+		m, _ = m.noticeSettle()
 		assert.Contains(t, lastOutput(m), "may be", "the cap wins over the lull")
 	})
 
 	t.Run("says it once", func(t *testing.T) {
-		m := feed(newModel(t), moshPSMsg{found: true}, moshSettleMsg{})
+		m := feed(newModel(t), moshPSMsg{found: true}, noticeSettleMsg{})
 		n := len(m.output)
-		m = feed(m, moshSettleMsg{}, moshSettleMsg{})
+		m = feed(m, noticeSettleMsg{}, noticeSettleMsg{})
 		assert.Len(t, m.output, n, "later ticks add nothing")
 	})
 }

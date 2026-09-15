@@ -6,7 +6,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -40,42 +39,18 @@ import (
 // even when it fires. A wrong answer then costs one suggestion the user can
 // ignore; no behaviour changes on it.
 
-// When to say it. The hint is a note about the display, so it can wait for a
-// gap; what it must not do is land in the middle of something the user is being
-// asked to answer. Logging in ends with Lily's own prompts ("enter a blurb",
-// "review now?") and then the review itself, and an unsolicited three lines
-// arriving between the question and the answer is what this pacing avoids.
-//
-// So: nothing before the initial state fetch returns, which is gated on the
-// login sync and so happens only once those prompts are answered; then nothing
-// while any prompt is outstanding; then wait for the output to go quiet, which
-// is what puts it after the review rather than through the middle of it.
-//
-// The quiet wait is capped, because a busy channel may never fall silent and
-// the alternative to an imperfect moment is never saying it at all. The prompt
-// check has a much longer cap of its own and no override: printing over a
-// question is the one outcome worth giving up on the hint entirely to avoid.
-const (
-	moshSettleTick = 1500 * time.Millisecond
-	moshQuietCap   = 45 * time.Second
-	moshPromptCap  = 5 * time.Minute
-)
+// When to say it is not decided here. The hint is a note about the display, so
+// it can wait for a gap rather than landing in the middle of something the user
+// is being asked to answer; that pacing is shared with every other unsolicited
+// notice and lives in notices.go.
 
 // moshPSMsg carries the result of the process-table check.
 type moshPSMsg struct{ found bool }
 
-// moshSettleMsg is one tick of the wait for a good moment to speak up.
-type moshSettleMsg struct{}
-
 // detectMoshCmd starts the probe. Deciding what to say with the answer is paced
-// separately; see moshSettleMsg.
+// separately; see notices.go.
 func detectMoshCmd() tea.Cmd {
 	return func() tea.Msg { return moshPSMsg{found: moshServerRunning()} }
-}
-
-// moshSettleCmd schedules the next look for a gap.
-func moshSettleCmd() tea.Cmd {
-	return tea.Tick(moshSettleTick, func(time.Time) tea.Msg { return moshSettleMsg{} })
 }
 
 // moshServerRunning reports whether this user owns a mosh-server process.
@@ -114,45 +89,21 @@ func moshServerInPS(out string) bool {
 	return false
 }
 
-// moshHintSettle is one tick of the wait: show the hint if this is a good
-// moment, otherwise look again shortly.
-func (m Model) moshHintSettle() (Model, tea.Cmd) {
-	if m.moshHintDone {
-		return m, nil
-	}
-	m.moshHintWaited += moshSettleTick
-
-	// Never speak over a question. This one has no override: if the user leaves
-	// a prompt standing that long, dropping the hint is the right outcome.
-	if m.prompt != "" {
-		if m.moshHintWaited >= moshPromptCap {
-			m.moshHintDone = true
+// moshHintNotice is the hint as a queued notice (see notices.go for the
+// pacing).
+//
+// Both reasons for saying nothing are evaluated when the notice fires rather
+// than when it was queued, which is what the deferred render is for. Minutes
+// can pass in between: the probe may not have answered yet at queueing time,
+// and someone who turned the workaround on during the wait - here, or in the
+// zlilyStartup memo replaying behind us - does not need telling about it.
+func moshHintNotice() pendingNotice {
+	return pendingNotice{name: "mosh hint", render: func(m Model) (Model, []string) {
+		if m.reserveLastColumn {
 			return m, nil
 		}
-		return m, moshSettleCmd()
-	}
-
-	// Wait for the output to stop moving, which is what keeps this out of the
-	// middle of the review. Capped: a busy channel might never go quiet, and an
-	// imperfect moment beats never saying it.
-	moved := len(m.output) != m.moshHintOutputLen
-	m.moshHintOutputLen = len(m.output)
-	if moved && m.moshHintWaited < moshQuietCap {
-		return m, moshSettleCmd()
-	}
-
-	m.moshHintDone = true
-	// Say nothing if the workaround is already on: someone who turned it on,
-	// here or while the probes were in flight, does not need telling.
-	if m.reserveLastColumn {
-		return m, nil
-	}
-	lines := moshHintLines(m.moshPSFound)
-	if lines == nil {
-		return m, nil
-	}
-	m.output = append(m.output, OutputItem{Type: "command", Data: lines})
-	return m.syncViewportContent(), nil
+		return m, moshHintLines(m.moshPSFound)
+	}}
 }
 
 // moshHintLines is the suggestion. Nil when there is nothing worth saying.

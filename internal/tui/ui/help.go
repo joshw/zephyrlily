@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"maps"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -273,7 +275,7 @@ var tuiHelp = map[string][]string{
 		"anyone who can run commands as you can read it.",
 		"",
 		"Saved passwords are keyed by Lily server and username, so the same",
-		"handle on two servers keeps two entries. A saved password Lily rejects",
+		"username on two servers keeps two entries. A saved password Lily rejects",
 		"is removed automatically rather than offered again at the next login.",
 	},
 	"style": {
@@ -387,6 +389,15 @@ func (m Model) handleLocalCommand(line string) (localOutput []string, handled bo
 		if topic == "keys" {
 			return m.keys.KeyBindingHelp(), true, nil
 		}
+		// '%help tips' lists the feature tips and '%help tips <name>' reads one.
+		// Handled, not forwarded: the proxy has no idea about tips and would
+		// answer "No help available for: tips" underneath the listing.
+		if topic == "tips" {
+			if len(args) >= 2 {
+				return tipHelp(args[1]), true, nil
+			}
+			return tipsListing(), true, nil
+		}
 		if lines, ok := tuiHelp[topic]; ok {
 			return lines, true, nil
 		}
@@ -431,14 +442,20 @@ func (m Model) handleLocalCommand(line string) (localOutput []string, handled bo
 }
 
 // tuiHelpSummary builds the short listing injected above the proxy's %help output.
+//
+// keys and tips are listed by hand because neither is a tuiHelp topic: one is
+// generated from the key map, the other from the tip pool.
 func tuiHelpSummary() []string {
 	lines := []string{
 		"TUI2-specific commands (use '%help <topic>' for details):",
 		"  keys - Key binding reference",
+		"  tips - Feature tips ('%help tips <name>' for one)",
 	}
-	for topic, text := range tuiHelp {
+	// Sorted, so that running %help twice prints the same thing in the same
+	// order; ranging the map directly does not.
+	for _, topic := range slices.Sorted(maps.Keys(tuiHelp)) {
 		desc := ""
-		for _, l := range text {
+		for _, l := range tuiHelp[topic] {
 			if l != "" {
 				desc = l
 				break

@@ -126,4 +126,20 @@ func TestLocalCommandNamesIgnoreCase(t *testing.T) {
 	out, handled, _ = m.handleLocalCommand("%MEMO EDIT")
 	assert.True(t, handled)
 	assert.Equal(t, []string{"Usage: %memo edit [target] <name>"}, out)
+
+	// %help tips and the tip names under it.
+	lower, handledLower, _ = m.handleLocalCommand("%help tips shorten")
+	upper, handledUpper, _ = m.handleLocalCommand("%HELP TIPS SHORTEN")
+	require.True(t, handledLower, "%help tips shorten should be handled")
+	assert.Equal(t, handledLower, handledUpper)
+	assert.Equal(t, lower, upper)
+
+	// %tips and its on/off argument.
+	t.Setenv("ZLILY_CONFIG_DIR", t.TempDir())
+	_, out, _, handled = m.applyLocalCommand("%TIPS OFF")
+	require.True(t, handled)
+	assert.Equal(t, []string{
+		"Feature tips: off",
+		"'%help tips' still lists them, and '%tips' still shows one.",
+	}, out)
 }

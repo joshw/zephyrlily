@@ -515,7 +515,32 @@ func TestShortenHint(t *testing.T) {
 		got := hintLines(m)
 		require.Len(t, got, 1, "the reminder should be offered exactly once")
 		assert.Contains(t, got[0], "M-s", "it should name the key")
-		assert.Contains(t, got[0], "%help shorten", "it should point at the details")
+		// The hint is the 'shorten' entry in the tip pool, so it points at the
+		// details the way every tip does; that topic in turn names %help shorten.
+		assert.Contains(t, got[0], "%help tips shorten", "it should point at the details")
+		shorten, ok := lookupTip("shorten")
+		require.True(t, ok, "the hint is the pool entry, so there must be one")
+		assert.Contains(t, strings.Join(shorten.long, " "), "%help shorten",
+			"and that entry should hand off to the command's own help")
+	})
+
+	t.Run("it spends the session's tip", func(t *testing.T) {
+		m := typeLine(shortenModel("", 0), "see https://example.com/a")
+		require.Len(t, hintLines(m), 1)
+		assert.True(t, m.tipShown,
+			"a session gets one unsolicited tip, and this was it")
+
+		// So the login tip, whenever it gets its quiet gap, withdraws.
+		_, lines := sessionTipNotice().render(m)
+		assert.Nil(t, lines, "no second notice in the same session")
+	})
+
+	t.Run("%tips off silences it", func(t *testing.T) {
+		m := shortenModel("", 0)
+		m.tipsEnabled = false
+		m = typeLine(m, "see https://example.com/a")
+		assert.Empty(t, hintLines(m), "tips off means no unsolicited tips")
+		assert.False(t, m.shortenHintShown)
 	})
 
 	t.Run("a second URL does not repeat it", func(t *testing.T) {

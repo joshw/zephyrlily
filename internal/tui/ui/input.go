@@ -767,6 +767,13 @@ func (m Model) applyLocalCommand(line string) (Model, []string, tea.Cmd, bool) {
 		return m, lines, nil, true
 	}
 
+	// %tips [on|off] controls the once-per-session feature tip, and with no
+	// argument shows one. See tips.go.
+	if fields := strings.Fields(line); len(fields) > 0 && cmdarg.Is(fields[0], "%tips") {
+		m, lines := m.handleTipsCommand(fields)
+		return m, lines, nil, true
+	}
+
 	// %save-password / %forget-password: the stores are on this machine, so the
 	// proxy never sees these (see credentials.go).
 	if fields := strings.Fields(line); len(fields) > 0 {

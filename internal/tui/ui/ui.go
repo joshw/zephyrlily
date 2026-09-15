@@ -211,12 +211,30 @@ type Model struct {
 	// is as much as anything available to us can establish.
 	moshProbed  bool
 	moshPSFound bool
-	// Pacing for when the hint may be shown; see the timing note in
-	// moshdetect.go. moshHintSettling means the wait is running.
-	moshHintSettling  bool
-	moshHintDone      bool
-	moshHintOutputLen int
-	moshHintWaited    time.Duration
+
+	// Unsolicited notices (the mosh hint, the session tip) and the pacing that
+	// decides when one may be printed; see notices.go. noticeSettling means the
+	// wait is running, and one notice is printed per quiet gap.
+	pendingNotices  []pendingNotice
+	noticeSettling  bool
+	noticeOutputLen int
+	noticeWaited    time.Duration
+
+	// noticesQueued records that the once-per-session notices have been queued.
+	// The post-login path they are queued from runs again on every reconnect,
+	// which is a new proxy session but the same sitting at the terminal.
+	//
+	// stateReady and tipsLoaded are the two things queueing waits on; see
+	// queueSessionNoticesWhenReady for why there are two.
+	noticesQueued bool
+	stateReady    bool
+	tipsLoaded    bool
+
+	// Feature tips (see tips.go). tipsEnabled is the %tips toggle, persisted
+	// per user; tipShown records that this session has had its one tip, which
+	// is what keeps the contextual M-s hint and the login tip from both firing.
+	tipsEnabled bool
+	tipShown    bool
 
 	// shortenHintShown records that the M-s reminder has been printed, so it is
 	// offered once a session rather than at every URL.
@@ -468,6 +486,7 @@ func New(c *client.Client, logChan <-chan logMsg, startupMsgs ...string) Model {
 		reserveLastColumn: false, // off by default: costs a column. See reservedColumns.
 		pagerEnabled:      true,
 		linkPreviewOn:     true,
+		tipsEnabled:       true, // until loadTipsCmd says otherwise
 		scrollAnchor:      -1,
 		renderEpoch:       1, // 1 so zero-valued item caches (epoch 0) read as stale
 		authMode:          !c.HasToken(),
@@ -794,13 +813,14 @@ func (m Model) Init() tea.Cmd {
 	if m.authMode {
 		// Ask the stores who logs in here while the dialog is being drawn, so
 		// the answer is usually already on screen by the time it is read.
-		return tea.Batch(loadCredsCmd(m.client), askBackground)
+		return tea.Batch(loadCredsCmd(m.client), askBackground, loadTipsCmd())
 	}
 	return tea.Batch(
 		listenCmd(m.client),
 		listenLogCmd(m.logChan),
 		fetchInitialStateCmd(m.client),
 		askBackground,
+		loadTipsCmd(),
 	)
 }
 
@@ -1082,8 +1102,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.moshPSFound = msg.found
 		return m, nil
 
-	case moshSettleMsg:
-		return m.moshHintSettle()
+	case noticeSettleMsg:
+		return m.noticeSettle()
+
+	case tipsLoadedMsg:
+		m.tipsEnabled = !msg.off
+		m.tipsLoaded = true
+		return m.queueSessionNoticesWhenReady()
 
 	case serverEventMsg:
 		if msg.msg == nil {
@@ -1289,12 +1314,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// client-only commands it contains arrive as "clientcommand" events.
 		replayCmds = append(replayCmds, reportSeenNow(m.client, m.lastSeenID))
 		// Reaching here means the login sync finished, so Lily's own login
-		// prompts have been answered: only now may the mosh hint start looking
-		// for a gap. See the timing note in moshdetect.go.
-		if m.moshProbed && !m.moshHintSettling && !m.moshHintDone {
-			m.moshHintSettling = true
-			m.moshHintOutputLen = len(m.output)
-			replayCmds = append(replayCmds, moshSettleCmd())
+		// prompts have been answered: only now may an unsolicited notice start
+		// looking for a gap. See the timing note in notices.go.
+		m.stateReady = true
+		var noticeCmd tea.Cmd
+		m, noticeCmd = m.queueSessionNoticesWhenReady()
+		if noticeCmd != nil {
+			replayCmds = append(replayCmds, noticeCmd)
 		}
 		return m, tea.Batch(replayCmds...)
 

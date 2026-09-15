@@ -364,6 +364,11 @@ func buildSnapshot(m Model, rendererTail []byte) string {
 	fmt.Fprintf(&b, "items=%d renderepoch=%d lastseenid=%d autopageanchor=%d pager=%v mouse=%v scrollanchor=%d\n",
 		len(m.output), m.renderEpoch, m.lastSeenID, m.autoPageAnchor,
 		m.pagerEnabled, m.mouseEnabled, m.scrollAnchor)
+	// An unsolicited notice appends lines nobody asked for, so a display bug
+	// report wants to know one was about to (or just did) land. See notices.go.
+	fmt.Fprintf(&b, "notices settling=%v waited=%s tips=%v tipshown=%v pending=[%s]\n",
+		m.noticeSettling, m.noticeWaited, m.tipsEnabled, m.tipShown,
+		strings.Join(pendingNoticeNames(m.pendingNotices), " "))
 	start := len(m.output) - 30
 	if start < 0 {
 		start = 0
