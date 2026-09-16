@@ -90,6 +90,11 @@ type Server struct {
 	conn   net.Conn
 	nextID int
 
+	// wire serializes multi-line sequences that must reach the client
+	// unbroken — a %begin/%end command bracket, the sync block — against the
+	// asynchronous lines a test Pushes. See Push.
+	wire sync.Mutex
+
 	// Commands receives each client line read after the handshake completes.
 	Commands chan string
 
@@ -118,8 +123,22 @@ func Start(t testing.TB, opt Options) *Server {
 // Addr returns the host:port to use as a lily address.
 func (s *Server) Addr() string { return s.ln.Addr().String() }
 
-// Push writes raw SLCP lines to the connected client (e.g. async %NOTIFY events).
+// Push writes raw SLCP lines to the connected client (e.g. async %NOTIFY events),
+// never splitting a %begin/%end bracket this server is in the middle of writing.
+//
+// That serialization is load-bearing, not tidiness. A client's Auth returns at
+// "*** Connected ***", several writes before the sync tail (the leafed reply to
+// /where me) and the startup memo fetch that follows it, so a test pushing the
+// moment Auth returns is racing both brackets. An untagged line that lands
+// inside one is attributed to that command by the proxy — exactly one capture
+// is open, so the line is taken for its output — and is swallowed rather than
+// published as an event. On a fast machine the brackets are microseconds wide
+// and the race essentially never lands; on a loaded CI runner it does, and the
+// failure it produces ("the proxy never buffered these") points nowhere near
+// the cause.
 func (s *Server) Push(lines ...string) {
+	s.wire.Lock()
+	defer s.wire.Unlock()
 	for _, l := range lines {
 		s.write(l)
 	}
@@ -240,6 +259,7 @@ func (s *Server) handshake(r *bufio.Reader) error {
 		s.write("*** Connected ***")
 	}
 
+	s.wire.Lock()
 	s.write("%SLCP-SYNC START")
 	s.write("%DATA NAME=whoami VALUE=" + s.opt.Whoami)
 	for _, l := range s.opt.Setup {
@@ -247,6 +267,7 @@ func (s *Server) handshake(r *bufio.Reader) error {
 	}
 	s.write("%SLCP-SYNC END")
 	s.write("%connected " + s.opt.Whoami)
+	s.wire.Unlock()
 
 	// On %connected the client sends "#$# client zlily <ver>" then "/where me".
 	// Read until we see /where, answering it as a leafed command so the client's
@@ -258,11 +279,13 @@ func (s *Server) handshake(r *bufio.Reader) error {
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if strings.Contains(line, "/where") {
+			s.wire.Lock()
 			s.write("%begin [1] /where me")
 			if s.opt.WhereResponse != "" {
 				s.write(s.opt.WhereResponse)
 			}
 			s.write("%end [1]")
+			s.wire.Unlock()
 			return nil
 		}
 	}
@@ -292,6 +315,8 @@ func (s *Server) sendCommand(cmd string, lines []string) {
 	s.nextID++
 	s.mu.Unlock()
 
+	s.wire.Lock()
+	defer s.wire.Unlock()
 	s.write(fmt.Sprintf("%%begin [%d] %s", id, cmd))
 	for _, l := range lines {
 		s.write(l)
