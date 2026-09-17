@@ -151,11 +151,8 @@ func charWrapLinkify(line string, width int) []string {
 	}
 	var spans []urlSpan
 	for _, loc := range urlPattern.FindAllStringIndex(line, -1) {
-		s, e := loc[0], loc[1]
-		for e > s && strings.IndexByte(trailingURLPunct, line[e-1]) != -1 {
-			e--
-		}
-		spans = append(spans, urlSpan{s, e, linkID.Add(1)})
+		s := loc[0]
+		spans = append(spans, urlSpan{s, trimURLEnd(line, s, loc[1]), linkID.Add(1)})
 	}
 
 	// render emits line[a:b], wrapping any portion inside a URL span in an OSC8

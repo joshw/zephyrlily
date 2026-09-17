@@ -112,10 +112,8 @@ func inputURLSpans(s string) []urlSpan {
 	seen := make(map[string]int, len(locs))
 	spans := make([]urlSpan, 0, len(locs))
 	for _, loc := range locs {
-		start, end := loc[0], loc[1]
-		for end > start && strings.IndexByte(trailingURLPunct, s[end-1]) != -1 {
-			end--
-		}
+		start := loc[0]
+		end := trimURLEnd(s, start, loc[1])
 		if end <= start {
 			continue
 		}

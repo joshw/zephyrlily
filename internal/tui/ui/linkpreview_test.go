@@ -102,6 +102,59 @@ func TestInputURLSpans(t *testing.T) {
 	}
 }
 
+// Parentheses are legal in a URL and common in DOI-style article ids. The span
+// has to cover the whole thing: when it stopped at "(", the preview ghost was
+// drawn in the middle of the pasted URL, so its tail read as preview text and
+// the fetch went out for a truncated address.
+func TestInputURLSpansKeepsParenthesesInURL(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			"article id with parens",
+			"look at https://www.cell.com/current-biology/fulltext/S0960-9822(26)01110-3 today",
+			"https://www.cell.com/current-biology/fulltext/S0960-9822(26)01110-3",
+		},
+		{
+			"balanced parens at the very end",
+			"https://en.wikipedia.org/wiki/Cream_(band)",
+			"https://en.wikipedia.org/wiki/Cream_(band)",
+		},
+		{
+			"url inside a parenthesised aside",
+			"(see https://example.com/x) for more",
+			"https://example.com/x",
+		},
+		{
+			"parenthesised aside around a url with parens",
+			"(see https://en.wikipedia.org/wiki/Cream_(band))",
+			"https://en.wikipedia.org/wiki/Cream_(band)",
+		},
+		{
+			"aside then sentence punctuation",
+			"(see https://example.com/x).",
+			"https://example.com/x",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := inputURLSpans(tc.line)
+			if len(got) != 1 {
+				t.Fatalf("got %d spans %v, want 1", len(got), got)
+			}
+			if got[0].url != tc.want {
+				t.Errorf("url = %q, want %q", got[0].url, tc.want)
+			}
+			start := strings.Index(tc.line, tc.want)
+			if got[0].start != start || got[0].end != start+len(tc.want) {
+				t.Errorf("span = [%d,%d), want [%d,%d)",
+					got[0].start, got[0].end, start, start+len(tc.want))
+			}
+		})
+	}
+}
+
 // The display string weaves previews in; inputValue must stay exactly what the
 // user typed, since that is what gets sent.
 func TestInputDisplayLeavesInputValueAlone(t *testing.T) {

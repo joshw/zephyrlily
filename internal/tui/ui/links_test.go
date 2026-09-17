@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -92,4 +94,30 @@ func TestOSC8OverlongURL_PlainTextOnly(t *testing.T) {
 	assert.Equal(t, "frag", osc8Link(url, "frag", 1))
 	in := "see " + url + " there"
 	assert.Equal(t, in, linkifyText(in))
+}
+
+// Scrollback linkification has the same parenthesis rule as the input line:
+// parens inside a URL are part of the link target, while the ")" closing a
+// parenthesised aside is shown but left outside it.
+func TestLinkifyKeepsParenthesesInURL(t *testing.T) {
+	withOSC8(t, true)
+
+	cell := "https://www.cell.com/current-biology/fulltext/S0960-9822(26)01110-3"
+	out := linkifyText("read " + cell + " today")
+	assert.Contains(t, out, "\x1b]8;;"+cell+"\x1b\\"+cell+"\x1b]8;;\x1b\\")
+
+	start, end, clean := urlSpanInWord(cell)
+	assert.Equal(t, 0, start)
+	assert.Equal(t, len(cell), end)
+	assert.Equal(t, cell, clean)
+
+	// An aside's closing paren is not part of the target, and stays visible.
+	aside := "(see https://example.com/x)."
+	out = linkifyText(aside)
+	assert.Contains(t, out, "\x1b]8;;https://example.com/x\x1b\\https://example.com/x\x1b]8;;\x1b\\")
+	assert.Equal(t, aside, ansi.Strip(out), "visible text is unchanged")
+
+	_, end, clean = urlSpanInWord("(https://en.wikipedia.org/wiki/Cream_(band))")
+	assert.Equal(t, "https://en.wikipedia.org/wiki/Cream_(band)", clean)
+	assert.Equal(t, len("(https://en.wikipedia.org/wiki/Cream_(band)"), end)
 }

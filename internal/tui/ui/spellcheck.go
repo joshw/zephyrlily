@@ -286,5 +286,6 @@ func buildSkipRegions(input string) []bool {
 func isURLChar(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) ||
 		r == '.' || r == '/' || r == ':' || r == '-' || r == '_' ||
-		r == '~' || r == '?' || r == '#' || r == '&' || r == '=' || r == '+'
+		r == '~' || r == '?' || r == '#' || r == '&' || r == '=' || r == '+' ||
+		r == '(' || r == ')'
 }
