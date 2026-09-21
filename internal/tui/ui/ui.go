@@ -1276,7 +1276,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.output = append(m.output, OutputItem{Type: "text", Data: ""})
 		}
 		if len(msg.events) > 0 {
-			slog.Info(fmt.Sprintf("loaded %d events from history (proxy buffer: %d)", len(msg.events), msg.state.EventBufSize))
+			// The same goes for this count: an INFO line lands in the
+			// scrollback, and a tab whose socket keeps dropping stacked one per
+			// silent re-attach. Keep it for %debug and snapshots instead.
+			level := slog.LevelInfo
+			if quiet {
+				level = slog.LevelDebug
+			}
+			slog.Log(context.Background(), level, fmt.Sprintf("loaded %d events from history (proxy buffer: %d)", len(msg.events), msg.state.EventBufSize))
 		}
 		// The replay below drops prompt events wholesale, so Lily's pending
 		// prompt comes from the /state snapshot instead — but only one this
@@ -1900,7 +1907,16 @@ func (m *Model) restorePosition() {
 		offset = 0
 	}
 	m.viewport.SetYOffset(offset)
-	m.lastSeenID = m.storedLastSeenID
+	// Adopt the stored mark only when it is ahead of what this model has
+	// already seen. On a resume it is usually behind — the proxy's copy is only
+	// as fresh as the last report that reached it — and taking it wholesale
+	// rewound lastSeenID, which then got reported straight back. The proxy's
+	// CAS ignores a lower value, so its mark stuck where it was and every
+	// subsequent resume replayed (and re-skipped) the same span of history,
+	// printing the same "loaded N events" line each time.
+	if m.storedLastSeenID > m.lastSeenID {
+		m.lastSeenID = m.storedLastSeenID
+	}
 	m.needsPositionRestore = false
 }
 

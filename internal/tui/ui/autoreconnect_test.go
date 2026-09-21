@@ -1,9 +1,12 @@
 package ui
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,6 +93,79 @@ func TestAutoReconnect_SameSessionResumeIsSilent(t *testing.T) {
 	assert.False(t, containsLine(m, "Connected to"),
 		"the connection banner reports nothing that changed")
 	assert.False(t, m.quietResume, "the flag is consumed by the replay it applies to")
+}
+
+// recordedLog is a slog handler that keeps each record's level and message.
+type recordedLog struct {
+	mu   sync.Mutex
+	recs []slog.Record
+}
+
+func (h *recordedLog) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recordedLog) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.recs = append(h.recs, r)
+	return nil
+}
+func (h *recordedLog) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordedLog) WithGroup(string) slog.Handler      { return h }
+
+// levelOf reports the level of the first record whose message contains substr.
+func (h *recordedLog) levelOf(substr string) (slog.Level, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.recs {
+		if strings.Contains(r.Message, substr) {
+			return r.Level, true
+		}
+	}
+	return 0, false
+}
+
+func recordSlog(t *testing.T) *recordedLog {
+	t.Helper()
+	h := &recordedLog{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return h
+}
+
+// The history count is an INFO line, and INFO lines land in the scrollback. A
+// browser tab whose socket kept dropping stacked one per silent re-attach —
+// dozens of "loaded 44 events from history" above the conversation. A quiet
+// resume keeps it to the debug pane; a login that announces itself still shows it.
+func TestAutoReconnect_SameSessionResumeKeepsHistoryCountOutOfScrollback(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		token string
+		want  slog.Level
+	}{
+		{"same session", "token-A", slog.LevelDebug},
+		{"new session", "token-B", slog.LevelInfo},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := recordSlog(t)
+			m := newDedupModel(t)
+			m = authOK(t, m, "token-A")
+			m = dropSocket(t, m)
+			m = authOK(t, m, tc.token)
+
+			upd, _ := m.Update(initialStateMsg{
+				state: &api.StateResponse{
+					Whoami: "wilmesj", Server: "lily.example.org",
+					LastSeenID: 1, EventBufSize: 3,
+				},
+				events: []api.WSServerMsg{textMsg(2, "missed one"), textMsg(3, "missed two")},
+			})
+			_ = upd.(Model)
+
+			level, ok := logs.levelOf("events from history")
+			require.True(t, ok, "the history count is still logged")
+			assert.Equal(t, tc.want, level)
+		})
+	}
 }
 
 // A reconnect that had to build a new session does announce itself: new Lily
