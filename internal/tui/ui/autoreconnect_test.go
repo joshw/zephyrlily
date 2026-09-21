@@ -17,10 +17,13 @@ import (
 )
 
 // dropSocket delivers the nil event listenCmd yields when the proxy WebSocket
-// has closed under the client.
+// has closed under the client the model is currently using.
 func dropSocket(t *testing.T, m Model) Model {
 	t.Helper()
-	upd, cmd := m.Update(serverEventMsg{msg: nil})
+	upd, cmd := m.Update(serverEventMsg{
+		gen:         m.client.Gen(),
+		closeReason: "close code 1006: unexpected EOF",
+	})
 	require.NotNil(t, cmd, "a dropped socket must schedule a reconnect")
 	return upd.(Model)
 }
@@ -110,6 +113,28 @@ func (h *recordedLog) Handle(_ context.Context, r slog.Record) error {
 }
 func (h *recordedLog) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *recordedLog) WithGroup(string) slog.Handler      { return h }
+
+// find returns the first record whose message contains substr.
+func (h *recordedLog) find(substr string) (slog.Record, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.recs {
+		if strings.Contains(r.Message, substr) {
+			return r, true
+		}
+	}
+	return slog.Record{}, false
+}
+
+// attrsOf flattens a record's attributes to their string values.
+func attrsOf(r slog.Record) map[string]string {
+	attrs := map[string]string{}
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.String()
+		return true
+	})
+	return attrs
+}
 
 // levelOf reports the level of the first record whose message contains substr.
 func (h *recordedLog) levelOf(substr string) (slog.Level, bool) {
@@ -312,4 +337,48 @@ func TestAutoReconnect_UnreachableProxyKeepsRetrying(t *testing.T) {
 	assert.NotNil(t, cmd, "another attempt must be scheduled")
 	assert.Equal(t, 1, m.reconnectAttempt)
 	assert.True(t, containsLine(m, "connection lost"))
+}
+
+// A reconnect abandons the client it replaced, and Resume closes that client's
+// socket on purpose — so its Events channel closes and the listener still
+// parked on it wakes with a nil. That nil says nothing about the socket the
+// model is now using, but it used to read as "the transport just died": the
+// model dropped a healthy connection and reconnected on top of it, which is
+// how a single real drop turned into a string of them.
+func TestAutoReconnect_ClosedSocketFromAReplacedClientIsIgnored(t *testing.T) {
+	m := newDedupModel(t)
+	m = authOK(t, m, "token-A")
+	m = dropSocket(t, m)
+	m = authOK(t, m, "token-A")
+	require.False(t, m.authInProgress, "the resume has finished")
+
+	// The client the reconnect replaced finally closes its channel.
+	upd, cmd := m.Update(serverEventMsg{
+		gen:         m.client.Gen() - 1,
+		closeReason: "context canceled",
+	})
+	m = upd.(Model)
+
+	assert.Nil(t, cmd, "a replaced client's socket closing must not start a reconnect")
+	assert.False(t, m.authInProgress, "the current socket is healthy")
+}
+
+// Why the socket went away is the whole question a recurring-drop report has
+// to answer, and the read error is the only place it is written down. It has
+// to survive as far as the log the snapshot carries.
+func TestAutoReconnect_DropRecordsWhyTheSocketWentAway(t *testing.T) {
+	logs := recordSlog(t)
+	m := newDedupModel(t)
+	m = authOK(t, m, "token-A")
+
+	upd, _ := m.Update(serverEventMsg{
+		gen:         m.client.Gen(),
+		closeReason: "close code 1006: unexpected EOF",
+	})
+	m = upd.(Model)
+
+	rec, ok := logs.find("proxy connection dropped")
+	require.True(t, ok, "a drop must be logged")
+	assert.Contains(t, attrsOf(rec)["reason"], "close code 1006",
+		"the log line must carry the close reason")
 }

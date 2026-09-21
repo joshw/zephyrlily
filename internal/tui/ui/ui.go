@@ -356,6 +356,11 @@ type Model struct {
 	reconnectNotified bool
 	quietResume       bool
 
+	// lastCloseReason is why the socket the model was using last went away,
+	// carried over from the client that owned it so the reconnect — and the
+	// snapshot a report is filed with — can say more than "it dropped".
+	lastCloseReason string
+
 	// Authentication dialog
 	authMode       bool
 	authError      string
@@ -580,7 +585,18 @@ type initialStateMsg struct {
 	err    error
 }
 
-type serverEventMsg struct{ msg *api.WSServerMsg }
+// serverEventMsg is one message off a client's Events channel, or — with a nil
+// msg — that channel closing under the read loop.
+//
+// gen and closeReason name the client the listener was reading from, which is
+// not always the current one: a reconnect abandons a client whose channel
+// closes moments later, and the nil that produces used to read as "the socket
+// just dropped" no matter which socket it came off.
+type serverEventMsg struct {
+	msg         *api.WSServerMsg
+	gen         int64  // client generation; 0 in tests that synthesise a message
+	closeReason string // why the read loop stopped, for a nil msg
+}
 
 type seenTickMsg struct{}
 
@@ -676,9 +692,9 @@ func listenCmd(c *client.Client) tea.Cmd {
 	return func() tea.Msg {
 		msg, ok := <-c.Events
 		if !ok {
-			return serverEventMsg{nil}
+			return serverEventMsg{gen: c.Gen(), closeReason: c.CloseReason()}
 		}
-		return serverEventMsg{msg}
+		return serverEventMsg{msg: msg, gen: c.Gen()}
 	}
 }
 
@@ -779,9 +795,33 @@ func (m Model) beginAutoReconnect() (tea.Model, tea.Cmd) {
 	m.authInProgress = true
 	// Debug rather than output: this is deliberately invisible to the user,
 	// but a drop that keeps recurring should still be readable in %debug and
-	// in a snapshot attached to a bug report.
-	slog.Debug("proxy connection dropped, reconnecting")
+	// in a snapshot attached to a bug report — and readable enough to act on,
+	// which means saying which socket went away, how long it had been up, and
+	// what it said on the way out. Client.CloseReason is the only record of
+	// that last one: nothing else keeps the read error.
+	slog.Debug("proxy connection dropped, reconnecting",
+		"reason", m.lastCloseReason, "gen", m.client.Gen(),
+		"uptime", socketUptime(m.client))
 	return m, autoReconnectCmd(m.client, 0)
+}
+
+// connectedAtOrNever is when the client's socket was opened, for a snapshot.
+func connectedAtOrNever(c *client.Client) string {
+	at := c.ConnectedAt()
+	if at.IsZero() {
+		return "never"
+	}
+	return at.Format("15:04:05")
+}
+
+// socketUptime is how long the client's socket had been open, rounded for a
+// log line, or "never connected" for a client that never opened one.
+func socketUptime(c *client.Client) string {
+	at := c.ConnectedAt()
+	if at.IsZero() {
+		return "never connected"
+	}
+	return time.Since(at).Round(time.Second).String()
 }
 
 // retryAutoReconnect schedules the next silent attempt, or gives up and asks.
@@ -1142,6 +1182,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (see handleProxy) and does still ask, because a /detach is a
 			// deliberate act and logging back in over it would fight the user.
 			// A transport drop is nobody's decision, so fix it silently.
+			//
+			// Unless it is not this client's transport. A reconnect leaves the
+			// client it replaced holding a listener and a socket that Resume
+			// closed on purpose, and the channel close that follows says
+			// nothing about the connection the model is now using: acting on it
+			// would drop a healthy socket and reconnect on top of it.
+			if msg.gen != 0 && msg.gen != m.client.Gen() {
+				slog.Debug("ignoring a closed socket from a replaced client",
+					"gen", msg.gen, "current", m.client.Gen(), "reason", msg.closeReason)
+				return m, nil
+			}
+			m.lastCloseReason = msg.closeReason
 			return m.beginAutoReconnect()
 		}
 

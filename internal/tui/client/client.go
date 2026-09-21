@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -31,6 +32,13 @@ var ErrAuthFailed = errors.New("invalid username or password")
 // that simply ended reads as an accusation about a password the user never
 // typed.
 var ErrSessionGone = errors.New("session ended")
+
+// clientGen numbers Clients in creation order. A reconnect abandons one Client
+// for another, and the abandoned one's read loop and Events channel outlive it
+// for a while; the generation is what lets a message be traced back to the
+// socket it came off, rather than to whichever Client happens to be current
+// when it is read.
+var clientGen atomic.Int64
 
 // Client is a connection from the TUI to the proxy.
 type Client struct {
@@ -55,6 +63,17 @@ type Client struct {
 
 	// closed tracks whether this client has been closed to prevent operations on old clients.
 	closed atomic.Bool
+
+	// gen identifies this Client among the ones a session has been through.
+	gen int64
+
+	// connectedAt is when Connect last opened this client's WebSocket, and
+	// closeReason is why the read loop then stopped ("" while it is running).
+	// Neither changes what the client does: they are here so that a dropped
+	// socket leaves behind something to read afterwards, which is exactly what
+	// the first round of "it keeps reconnecting" reports had none of.
+	connectedAt atomic.Int64 // UnixNano; 0 before the first Connect
+	closeReason atomic.Value // string
 }
 
 // New creates a Client pointing at the given proxy address over plain HTTP.
@@ -73,6 +92,7 @@ func newClient(proxyAddr string, secure bool) *Client {
 		ctx:       ctx,
 		cancel:    cancel,
 		Events:    make(chan *api.WSServerMsg, 256),
+		gen:       clientGen.Add(1),
 	}
 }
 
@@ -358,8 +378,47 @@ func (c *Client) Connect() error {
 	}
 	ws.SetReadLimit(-1) // no limit — command results can be arbitrarily large
 	c.ws = ws
+	c.connectedAt.Store(time.Now().UnixNano())
+	c.closeReason.Store("")
 	go c.readLoop()
 	return nil
+}
+
+// Gen identifies this Client among the ones a session has been through; see
+// clientGen. It is stable for the client's whole life.
+func (c *Client) Gen() int64 { return c.gen }
+
+// ConnectedAt is when Connect last opened this client's WebSocket, or the zero
+// time if it never did.
+func (c *Client) ConnectedAt() time.Time {
+	ns := c.connectedAt.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+// CloseReason is why this client's read loop stopped — a WebSocket close code
+// and reason where the peer sent one — or "" while it is still running. It is
+// the only record of why a socket went away: nothing else in the client keeps
+// the read error, and in the browser build there is no other place to look.
+func (c *Client) CloseReason() string {
+	s, _ := c.closeReason.Load().(string)
+	return s
+}
+
+// describeCloseErr renders a read error the way a bug report needs it: the
+// WebSocket status code where the peer sent a close frame, since that is what
+// separates a proxy that dropped us (an abrupt 1006 from its keepalive) from a
+// browser or a network that closed the connection itself.
+func describeCloseErr(err error) string {
+	if err == nil {
+		return "read loop ended"
+	}
+	if code := websocket.CloseStatus(err); code != -1 {
+		return fmt.Sprintf("close code %d: %v", int(code), err)
+	}
+	return err.Error()
 }
 
 // Send sends a command to the proxy (which forwards it to Lily).
@@ -395,6 +454,9 @@ func (c *Client) readLoop() {
 	for {
 		var msg api.WSServerMsg
 		if err := wsjson.Read(c.ctx, c.ws, &msg); err != nil {
+			// Record before closing the channel: the listener the close wakes
+			// reads this to say why, and it must not race the write.
+			c.closeReason.Store(describeCloseErr(err))
 			return
 		}
 		// A plain send could block forever after Close: a Reconnect abandons this

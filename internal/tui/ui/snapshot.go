@@ -345,6 +345,18 @@ func buildSnapshot(m Model, rendererTail []byte) string {
 		fmt.Fprintf(&b, "%s %s\n", e.when.Format("15:04:05.000"), e.desc)
 	}
 
+	// Which socket the model is on, and what became of the last one. A report
+	// of repeated reconnections is unanswerable without this: the traffic log
+	// below shows a resume happening, but not whether it left the model on a
+	// new connection, how long that connection has been up, or what the old
+	// one said on the way out.
+	section("connection")
+	fmt.Fprintf(&b, "client gen=%d connected=%s uptime=%s\n",
+		m.client.Gen(), connectedAtOrNever(m.client), socketUptime(m.client))
+	fmt.Fprintf(&b, "last close reason=%q\n", m.lastCloseReason)
+	fmt.Fprintf(&b, "reconnect attempt=%d notified=%v inprogress=%v prompt=%v\n",
+		m.reconnectAttempt, m.reconnectNotified, m.authInProgress, m.reconnectPrompt)
+
 	section("recent proxy traffic (metadata only, oldest first)")
 	for _, e := range m.msgMeta.entries() {
 		fmt.Fprintf(&b, "%s %s\n", e.when.Format("15:04:05.000"), e.desc)
