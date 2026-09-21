@@ -273,6 +273,40 @@ func (c *Client) FetchEvents(afterID int64, limit int) ([]api.WSServerMsg, bool,
 	return er.Events, er.More, nil
 }
 
+// PushSeen reports lastSeenID to the proxy over the WebSocket that is already
+// open, and does nothing at all when the value has not moved.
+//
+// This is the reporting path that works everywhere. ReportSeen's HTTP round
+// trip is expensive enough that the TUI could only afford it on a five-second
+// timer, and in the browser build that timer is the problem: a backgrounded
+// tab's setTimeout is throttled to the point of not firing for an hour at a
+// time, so the proxy's mark went stale and stayed stale. A frame on a socket
+// that is already up costs little enough to send from the update loop itself,
+// the way a typed line already is — no timer, no goroutine, no round trip.
+//
+// It reports failure rather than falling back to HTTP: callers run on the
+// update loop, where a blocking request has no business, and a socket that
+// cannot be written to is about to be replaced anyway.
+func (c *Client) PushSeen(lastSeenID int64) error {
+	if c.lastReportedSeenID.Load() == lastSeenID {
+		return nil
+	}
+	if c.closed.Load() {
+		return errors.New("client is closed")
+	}
+	if c.ws == nil {
+		return errors.New("not connected to the proxy")
+	}
+	if err := wsjson.Write(c.ctx, c.ws, api.WSClientMsg{
+		Type:       "seen",
+		LastSeenID: lastSeenID,
+	}); err != nil {
+		return fmt.Errorf("push seen: %w", err)
+	}
+	c.lastReportedSeenID.Store(lastSeenID)
+	return nil
+}
+
 // ReportSeen tells the proxy the last message ID the user has seen.
 // It skips the HTTP call when the value hasn't changed since the last report.
 func (c *Client) ReportSeen(lastSeenID int64) error {

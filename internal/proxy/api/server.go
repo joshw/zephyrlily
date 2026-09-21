@@ -972,18 +972,29 @@ func (s *Server) handleSeen(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = r.Body.Close() }()
 
-	// CAS loop: only update if new value is higher
-	for {
-		old := sess.lastSeenID.Load()
-		if req.LastSeenID <= old {
-			break
-		}
-		if sess.lastSeenID.CompareAndSwap(old, req.LastSeenID) {
-			break
-		}
-	}
+	sess.advanceLastSeen(req.LastSeenID)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// advanceLastSeen raises the session's last-seen mark to id, and ignores a
+// report that is not ahead of what the session already holds.
+//
+// Only moving forward is what makes the mark safe to report from anywhere: a
+// client reconnecting has to be told the stored mark (it restores the scroll
+// position from it), and a client that echoed a stale copy of it back would
+// otherwise pin the mark where it was and make every later reconnect replay
+// the same stretch of history.
+func (sess *Session) advanceLastSeen(id int64) {
+	for {
+		old := sess.lastSeenID.Load()
+		if id <= old {
+			return
+		}
+		if sess.lastSeenID.CompareAndSwap(old, id) {
+			return
+		}
+	}
 }
 
 // readLoop receives commands from the WebSocket client and forwards them to
@@ -994,6 +1005,10 @@ func (c *wsClient) readLoop(sess *Session) {
 		var cm WSClientMsg
 		if err := wsjson.Read(c.ctx, c.ws, &cm); err != nil {
 			return
+		}
+		if cm.Type == "seen" {
+			sess.advanceLastSeen(cm.LastSeenID)
+			continue
 		}
 		if cm.Type != "command" {
 			continue

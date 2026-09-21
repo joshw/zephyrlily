@@ -274,11 +274,6 @@ type Model struct {
 	// renderItem re-renders an item whose cacheEpoch doesn't match.
 	renderEpoch int
 
-	// seenLoopStarted records that the recurring 5-second ReportSeen loop
-	// (seenTickMsg → reportSeenCmd → seenTickMsg …) has been started. It must
-	// run at most once per process: each extra chain would live forever.
-	seenLoopStarted bool
-
 	// cursorReport is the terminal's own answer to a cursor-position query
 	// (DSR/CPR), recorded so %debug snapshot can print where the terminal
 	// thinks the cursor is rather than only where this app thinks it left it.
@@ -598,8 +593,6 @@ type serverEventMsg struct {
 	closeReason string // why the read loop stopped, for a nil msg
 }
 
-type seenTickMsg struct{}
-
 type authResultMsg struct {
 	username string
 	password string
@@ -846,23 +839,17 @@ func (m Model) retryAutoReconnect(err error) (tea.Model, tea.Cmd) {
 	return m, autoReconnectCmd(m.client, autoReconnectDelay(m.reconnectAttempt))
 }
 
-// reportSeenNow reports lastSeenID to the proxy immediately. It is a one-shot:
-// it deliberately does NOT yield a seenTickMsg, because every seenTickMsg
-// spawns a reportSeenCmd chain that lives forever — returning one here made
-// every resize/reconnect add another eternal 5-second reporting loop.
+// reportSeenNow reports lastSeenID over HTTP, off the update loop.
+//
+// It is the fallback for the times PushSeen cannot do the job — no socket yet,
+// or a write that failed — and for a resumed session, whose fresh client has
+// not reported anything to the proxy yet. Everything else reports over the
+// socket from advanceLastSeenID, and the value this sends is skipped outright
+// if the push already landed it.
 func reportSeenNow(c *client.Client, lastSeenID int64) tea.Cmd {
 	return func() tea.Msg {
 		_ = c.ReportSeen(lastSeenID)
 		return nil
-	}
-}
-
-// reportSeenCmd waits 5 seconds, reports lastSeenID, then re-schedules.
-func reportSeenCmd(c *client.Client, lastSeenID int64) tea.Cmd {
-	return func() tea.Msg {
-		time.Sleep(5 * time.Second)
-		_ = c.ReportSeen(lastSeenID)
-		return seenTickMsg{}
 	}
 }
 
@@ -1146,13 +1133,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			listenLogCmd(m.logChan),
 			fetchInitialStateCmd(m.client),
 		}
-		// Start the recurring ReportSeen loop exactly once: the chain never
-		// terminates (and always reads the current m.client), so starting
-		// another on every reconnect would accumulate loops forever.
-		if !m.seenLoopStarted {
-			m.seenLoopStarted = true
-			cmds = append(cmds, reportSeenCmd(m.client, 0))
-		}
 		if credsCmd != nil {
 			cmds = append(cmds, credsCmd)
 		}
@@ -1237,9 +1217,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.syncViewportContent()
 		}
 		return m, listenLogCmd(m.logChan)
-
-	case seenTickMsg:
-		return m, reportSeenCmd(m.client, m.lastSeenID)
 
 	case snapshotCaptureMsg:
 		return m, m.captureSnapshot(msg.path)
@@ -1897,11 +1874,22 @@ func (m Model) computeLastSeenID() int64 {
 	return maxID
 }
 
-// advanceLastSeenID updates lastSeenID from the current viewport position.
+// advanceLastSeenID updates lastSeenID from the current viewport position, and
+// tells the proxy when it moved.
+//
+// Reporting from here is what keeps the proxy's mark honest without a timer:
+// this runs on the events, keys and scrolls that change what the user has
+// seen, which is exactly when there is something new to say, and a push over
+// the open socket is cheap enough to do inline. The error is dropped on
+// purpose — a socket that will not take a seen report is one the model is
+// about to notice and replace, and reportSeenNow covers the gap.
 func (m *Model) advanceLastSeenID() {
-	if id := m.computeLastSeenID(); id > m.lastSeenID {
-		m.lastSeenID = id
+	id := m.computeLastSeenID()
+	if id <= m.lastSeenID {
+		return
 	}
+	m.lastSeenID = id
+	_ = m.client.PushSeen(id)
 }
 
 // resetSessionIDs drops the message-ID bookkeeping that is only meaningful

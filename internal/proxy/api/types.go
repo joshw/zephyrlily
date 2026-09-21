@@ -85,8 +85,15 @@ type EntityJSON struct {
 
 // WSClientMsg is a message sent from a thin client to the proxy over WebSocket.
 type WSClientMsg struct {
-	Type string `json:"type"` // "command"
+	Type string `json:"type"` // "command" or "seen"
 	Text string `json:"text"` // raw command text to forward to Lily
+
+	// LastSeenID carries a "seen" report: the highest event ID this client has
+	// displayed. It rides the socket rather than POSTing to /seen because the
+	// endpoint's cost is what forced the TUI to report on a timer, and a timer
+	// is the one thing a browser tab in the background will not run. See
+	// Client.PushSeen. The endpoint remains for clients that do not send this.
+	LastSeenID int64 `json:"lastSeenID,omitempty"`
 }
 
 // WSServerMsg is a message pushed from the proxy to a thin client over WebSocket.
