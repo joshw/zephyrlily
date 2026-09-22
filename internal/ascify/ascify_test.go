@@ -137,6 +137,16 @@ func TestStringDropsZeroWidthSpace(t *testing.T) {
 	}
 }
 
+// Hangul fillers are letters that draw as nothing; titles pad with them to
+// look blank, so they drop rather than being named.
+func TestStringDropsHangulFillers(t *testing.T) {
+	// Hangul filler, halfwidth Hangul filler, choseong and jungseong fillers
+	in := "\u3164\u3164 a\uffa0b\u115f\u1160c"
+	if got, want := String(in), " abc"; got != want {
+		t.Errorf("String(%q) = %q, want %q", in, got, want)
+	}
+}
+
 // Skin-tone modifiers say nothing an emoticon can carry, so they drop and
 // leave the emoji's own conversion behind.
 func TestStringDropsEmojiModifiers(t *testing.T) {

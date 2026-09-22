@@ -515,6 +515,14 @@ func ascify(r rune, depth int) (string, bool) {
 		return "", true
 	}
 
+	// Hangul fillers (and the few other letters Unicode marks as ignorable)
+	// draw as nothing. They are letters rather than format characters, so the
+	// Cf drop in String misses them, and a YouTube title padded with them
+	// would otherwise read "[HANGUL FILLER]" over and over.
+	if unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) {
+		return "", true
+	}
+
 	// Regional indicators only ever appear in pairs spelling a country code,
 	// so a flag reads as "US" rather than two paragraphs of Unicode names.
 	if r >= 0x1F1E6 && r <= 0x1F1FF {
