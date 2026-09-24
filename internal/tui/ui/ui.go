@@ -1394,17 +1394,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case editorSaveResultMsg:
 		m.editMode = false
+		// Only failures are reported here. Lily announces a successful store
+		// itself — (Memo "x" has been updated) — so echoing our own
+		// confirmation printed the save twice. A nil error means the lines went
+		// out, not that the server took them; the server's own line is the real
+		// acknowledgement, and a rejection comes back through the store request
+		// as an error above.
 		if msg.err != nil {
 			m.output = append(m.output, OutputItem{Type: "error", Data: msg.err.Error()})
-		} else {
-			var saved string
-			switch msg.meta.contentType {
-			case "info":
-				saved = "(info saved)"
-			case "memo":
-				saved = "(memo \"" + msg.meta.name + "\" saved)"
-			}
-			m.output = append(m.output, OutputItem{Type: "text", Data: saved})
 		}
 		m = m.syncViewportContent()
 		return m, nil
