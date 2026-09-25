@@ -63,6 +63,23 @@ func TestWrapText_InitialSep(t *testing.T) {
 	assert.Equal(t, "you say: hello there", got[0])
 }
 
+func TestWrapText_PreservesInteriorSpacing(t *testing.T) {
+	// Runs of spaces between words are displayed as typed, not collapsed.
+	got := wrapText("", "", "one.  Two   three", 40, "")
+	assert.Equal(t, []string{"one.  Two   three"}, got)
+
+	url := "https://example.com/x"
+	linked := wrapTextLinkify("", "", "see  "+url+"  now", 80, "")
+	require.Len(t, linked, 1)
+	assert.Equal(t, "see  "+url+"  now", stripOSC8(linked[0]))
+}
+
+func TestWrapText_DropsGapAtLineBreak(t *testing.T) {
+	// A gap that falls on a wrap is dropped rather than indenting the next line.
+	got := wrapText("", "", "aaaa  bbbb", 5, "")
+	assert.Equal(t, []string{"aaaa", "bbbb"}, got)
+}
+
 func TestWrapTextLinkify_NoURLMatchesPlain(t *testing.T) {
 	// With no URLs, linkify output must be identical to plain wrapping.
 	text := "the quick brown fox jumps over the lazy dog"

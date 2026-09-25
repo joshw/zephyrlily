@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
@@ -33,7 +34,7 @@ func wrapTextCore(curLine, wordPrefix, text string, maxWidth int, initialSep str
 	if maxWidth < 1 {
 		maxWidth = 1
 	}
-	words := strings.Fields(text)
+	words, gaps := splitWords(text)
 	if len(words) == 0 {
 		return []string{curLine}
 	}
@@ -44,7 +45,12 @@ func wrapTextCore(curLine, wordPrefix, text string, maxWidth int, initialSep str
 	continuingWord := false
 	curVis := len(curLine) // visible length of curLine (may differ when linkify adds escapes)
 
-	for _, word := range words {
+	for i, word := range words {
+		// Keep the sender's spacing between words ("a  b" stays two spaces); a
+		// gap that falls on a line break is dropped along with the break.
+		if i > 0 && sep != "" {
+			sep = gaps[i]
+		}
 		// Resolve the URL span (if any) once against the original word so it
 		// stays valid as the word is consumed across hard-broken lines.
 		urlStart, urlEnd, clean := -1, -1, ""
@@ -116,6 +122,39 @@ func wrapTextCore(curLine, wordPrefix, text string, maxWidth int, initialSep str
 
 	lines = append(lines, curLine)
 	return lines
+}
+
+// splitWords splits text into its words and, for each word, the run of
+// whitespace preceding it rendered as that many spaces (gaps[0] is always
+// empty; leading whitespace is the caller's concern via initialSep). Unlike
+// strings.Fields, this preserves the width of interior gaps, so a message typed
+// with double spaces is displayed with double spaces.
+func splitWords(text string) (words, gaps []string) {
+	gap := 0
+	start := -1
+	for i, r := range text {
+		if unicode.IsSpace(r) {
+			if start >= 0 {
+				words = append(words, text[start:i])
+				start = -1
+			}
+			gap++
+			continue
+		}
+		if start < 0 {
+			start = i
+			if len(words) == 0 {
+				gaps = append(gaps, "")
+			} else {
+				gaps = append(gaps, strings.Repeat(" ", gap))
+			}
+			gap = 0
+		}
+	}
+	if start >= 0 {
+		words = append(words, text[start:])
+	}
+	return words, gaps
 }
 
 // wrapKeepURLs word-wraps s to width like wordwrap.String but drops '-' from the
