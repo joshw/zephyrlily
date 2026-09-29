@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from zlilybot.client import normalize_base_url
+from zlilybot.client import ZlilyClient, default_bot_ident, normalize_base_url
 from zlilybot.entities import Entities, same_name, to_lily_name
 from zlilybot.errors import ConfigError
 from zlilybot.events import Entity, Event, ServerMessage, unwrap_emote
@@ -44,6 +44,19 @@ def test_empty_url_is_refused():
 
 
 # ── locating zlily ───────────────────────────────────────────────────────────
+
+
+async def test_ws_url_names_the_bot():
+    # The proxy reports this to Lily as part of its version string.
+    c = ZlilyClient("https://proxy:7888", bot="echobot-1.0")
+    c.token = "tok"
+    assert c._ws_url() == "wss://proxy:7888/ws?token=tok&bot=echobot-1.0"
+    await c.aclose()
+
+    c = ZlilyClient("proxy:7888")
+    assert c.bot == default_bot_ident()
+    assert c.bot.startswith("zlilybot-")
+    await c.aclose()
 
 
 def test_explicit_path_is_used(tmp_path):

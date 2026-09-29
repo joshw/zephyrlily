@@ -23,6 +23,7 @@ async def main():
         "myuser", "mypassword",
         name="EchoBot",                 # optional: claim this name on Lily
         join=["-test"],
+        bot="echobot-1.0",              # optional: how the proxy names this bot to Lily
     )
     await EchoBot(session).run()
 

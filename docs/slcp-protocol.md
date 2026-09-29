@@ -107,7 +107,7 @@ the long-lived `readLoop`. Phases are tracked by `ConnPhase`
      │  ◄──────────  %connected                 (handshake fully complete)
      │  ◄──────────  %prompt lily>              (server ready for input)
      │                                        │
-     │  ──────────►  #$# client zlily VERSION   (announce client)
+     │  ──────────►  #$# client zlily "VERSION" (announce proxy + clients)
      │  ──────────►  /where me                  (seed disc membership; response intercepted)
 ```
 
@@ -170,7 +170,7 @@ wrapper that issues exactly this OOB line (handled proxy-side in
 
 ### `/where me` interception
 
-Immediately after `%connected`, the proxy sends `#$# client zlily <version>`
+Immediately after `%connected`, the proxy sends `#$# client zlily "<version>"`
 and `/where me`, and **silently intercepts** the command response (matched by
 its `%begin`/`%end` command id) to populate the set of discussions the user is
 a member of (`ApplyWhereResponse`). These lines are suppressed from the client
@@ -334,7 +334,7 @@ sends. ZephyrLily uses:
 | Message | Purpose |
 |---------|---------|
 | `#$# options +version +prompt +prompt2 +leaf-notify +leaf-cmd +connected` | Negotiate SLCP options at login. |
-| `#$# client zlily <version>` | Announce the client name/version after `%connected`. |
+| `#$# client zlily "<version>"` | Announce the proxy version and every connected client (`proxy:0.19.1  ui:tui-0.19.1  bot:zlilybot-0.1.0`) after `%connected`, and again whenever the set of clients changes. See `internal/proxy/api/clientversion.go`. |
 | `#$# slcp-sync` | Request a fresh entity sync. The server re-sends a full `%SLCP-SYNC START … %SLCP-SYNC END` block. Exposed to users as the `%sync` command. |
 | `#$# ping` | Keepalive. The server replies `%pong`; the proxy records the time to detect a dead link. |
 | `#$# export_file info <len> [target]` | Upload new discussion **info** text (`<len>` lines follow). |

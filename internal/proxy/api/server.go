@@ -114,6 +114,9 @@ type Session struct {
 	subsMu      sync.Mutex
 	subscribers map[*wsClient]struct{}
 
+	// verMu serializes version reports to Lily; see reportClientVersion.
+	verMu sync.Mutex
+
 	// Per-session command aliases (see %alias / commands.AliasTable).
 	aliases *commands.AliasTable
 
@@ -212,6 +215,10 @@ const maxClientBacklog = maxEventBuf
 type wsClient struct {
 	ws  *websocket.Conn
 	ctx context.Context
+
+	// ident is how this client named itself, as reported to Lily in the
+	// session's version string; see clientIdent.
+	ident string
 
 	// Outbound queue. Unbounded (up to maxClientBacklog) so a slow reader
 	// never causes silent message loss — the queue holds the same pointers as
@@ -625,6 +632,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	client := &wsClient{
 		ws:           ws,
 		ctx:          ctx,
+		ident:        clientIdent(r.URL.Query()),
 		wake:         make(chan struct{}, 1),
 		pingInterval: s.wsPingInterval(),
 	}
@@ -632,6 +640,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	sess.subsMu.Lock()
 	sess.subscribers[client] = struct{}{}
 	sess.subsMu.Unlock()
+	sess.reportClientVersion()
 
 	// For fresh sessions (no prior history), replay the buffered event ring
 	// immediately so the subscriber receives messages — including interactive
@@ -657,6 +666,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	delete(sess.subscribers, client)
 	sess.subsMu.Unlock()
 	client.shutdown()
+	time.AfterFunc(clientGoneGrace, sess.reportClientVersion)
 
 	_ = ws.Close(websocket.StatusNormalClosure, "")
 }

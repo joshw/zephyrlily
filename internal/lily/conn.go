@@ -86,6 +86,16 @@ type Conn struct {
 	// wire, when non-nil, receives a transcript of socket I/O (see wireLogEnv).
 	wire   *os.File
 	wireMu sync.Mutex
+
+	// The version string announced to Lily with "#$# client zlily". It is
+	// sent once login completes and again whenever SetClientVersion changes
+	// it; verSent is what Lily was last told, so an unchanged value is not
+	// resent. verAnnounced gates sending until the first announcement, since
+	// the server only takes OOB commands once the login sequence is over.
+	verMu        sync.Mutex
+	verString    string
+	verSent      string
+	verAnnounced bool
 }
 
 // NewConn creates a Conn but does not connect yet.
@@ -103,7 +113,42 @@ func NewConn(addr, username, password string, tlsEnabled, tlsInsecure bool) *Con
 		cancel:       cancel,
 		syncComplete: make(chan struct{}),
 		loginResult:  make(chan error, 1),
+		verString:    "proxy:" + version.String(),
 	}
+}
+
+// SetClientVersion sets the version string reported to Lily. Before login
+// completes it only replaces what will be announced; afterwards a change is
+// sent straight away. Callers need not dedupe: an unchanged value is not resent.
+func (c *Conn) SetClientVersion(v string) {
+	c.verMu.Lock()
+	defer c.verMu.Unlock()
+	c.verString = v
+	if c.verAnnounced {
+		c.sendVersionLocked()
+	}
+}
+
+// announceVersion sends the version for the first time; see SetClientVersion.
+func (c *Conn) announceVersion() {
+	c.verMu.Lock()
+	defer c.verMu.Unlock()
+	c.verAnnounced = true
+	c.sendVersionLocked()
+}
+
+// sendVersionLocked tells Lily the current version string if it has not
+// already been told it. c.verMu must be held, which also keeps successive
+// announcements in the order they were made.
+func (c *Conn) sendVersionLocked() {
+	if c.verString == c.verSent {
+		return
+	}
+	if err := c.Send(fmt.Sprintf(`#$# client zlily "%s"`, c.verString)); err != nil {
+		slog.Debug("lily: version send error", "err", err)
+		return
+	}
+	c.verSent = c.verString
 }
 
 // SyncComplete returns a channel that is closed when the initial SLCP sync
@@ -445,7 +490,7 @@ func (c *Conn) readLoop() {
 	var whereCmdID int
 	waitingForWhere := false
 
-	// startWhere sends the client name and "/where me" to seed disc membership,
+	// startWhere sends the client version and "/where me" to seed disc membership,
 	// then arranges for syncComplete to close once the response arrives. It runs
 	// at most once, triggered by %connected (which marks the end of the login
 	// sequence and entity sync).
@@ -455,9 +500,7 @@ func (c *Conn) readLoop() {
 			return
 		}
 		whereStarted = true
-		if err := c.Send(fmt.Sprintf("#$# client zlily %s", version.String())); err != nil {
-			slog.Debug("lily: client name send error", "err", err)
-		}
+		c.announceVersion()
 		if err := c.Send("/where me"); err != nil {
 			slog.Debug("lily: where me send error", "err", err)
 			// If the send fails, unblock callers waiting on full state anyway.

@@ -95,7 +95,7 @@ type Server struct {
 	// asynchronous lines a test Pushes. See Push.
 	wire sync.Mutex
 
-	// Commands receives each client line read after the handshake completes.
+	// Commands receives each client line read after %connected is sent.
 	Commands chan string
 
 	wg        sync.WaitGroup
@@ -269,7 +269,7 @@ func (s *Server) handshake(r *bufio.Reader) error {
 	s.write("%connected " + s.opt.Whoami)
 	s.wire.Unlock()
 
-	// On %connected the client sends "#$# client zlily <ver>" then "/where me".
+	// On %connected the client sends "#$# client zlily \"<ver>\"" then "/where me".
 	// Read until we see /where, answering it as a leafed command so the client's
 	// interceptor seeds membership and closes SyncComplete.
 	for {
@@ -278,6 +278,11 @@ func (s *Server) handshake(r *bufio.Reader) error {
 			return err
 		}
 		line = strings.TrimRight(line, "\r\n")
+		// Past the credentials now, so tests may see these lines too.
+		select {
+		case s.Commands <- line:
+		default:
+		}
 		if strings.Contains(line, "/where") {
 			s.wire.Lock()
 			s.write("%begin [1] /where me")

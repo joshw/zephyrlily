@@ -9,8 +9,9 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any, AsyncIterator, Sequence
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 from websockets.asyncio.client import ClientConnection, connect
@@ -31,6 +32,19 @@ STATE_TIMEOUT = 90.0
 # /fetch, /store and /shorten each wait on a round trip to Lily or to an
 # outside service; the proxy gives up at 10s, so clear that before failing.
 FETCH_TIMEOUT = 20.0
+
+
+def default_bot_ident() -> str:
+    """How a bot names itself to the proxy unless it says otherwise.
+
+    The proxy reports every connected client to Lily as part of its version
+    string ("proxy:0.19.1  bot:zlilybot-0.1.0"), so this is what shows there.
+    """
+    try:
+        v = _pkg_version("zlilybot")
+    except PackageNotFoundError:
+        v = "dev"
+    return f"zlilybot-{v}"
 
 
 def normalize_base_url(addr: str) -> str:
@@ -101,8 +115,12 @@ class ZlilyClient:
         *,
         timeout: float = 15.0,
         state_timeout: float = STATE_TIMEOUT,
+        bot: str | None = None,
     ) -> None:
         self.base_url = normalize_base_url(base_url)
+        # Reported to Lily by the proxy; a bot may give its own name and
+        # version here ("weatherbot-1.2"). Only [A-Za-z0-9._+-] survives.
+        self.bot = bot or default_bot_ident()
         self.token: str | None = None
         self.state_timeout = state_timeout
         self._http = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
@@ -304,7 +322,8 @@ class ZlilyClient:
     def _ws_url(self) -> str:
         parts = urlsplit(self.base_url)
         scheme = "wss" if parts.scheme == "https" else "ws"
-        return urlunsplit((scheme, parts.netloc, "/ws", f"token={self.token}", ""))
+        query = urlencode({"token": self.token, "bot": self.bot})
+        return urlunsplit((scheme, parts.netloc, "/ws", query, ""))
 
     async def connect_ws(self) -> None:
         if not self.token:

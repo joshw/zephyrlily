@@ -46,6 +46,7 @@ class Session:
         join: Sequence[str] = (),
         on_ready: Callable[["Session"], Awaitable[None]] | None = None,
         max_backoff: float = 60.0,
+        bot: str | None = None,
     ) -> None:
         self.runner = runner
         self.username = username
@@ -54,6 +55,7 @@ class Session:
         self.join = tuple(join)
         self.on_ready = on_ready
         self.max_backoff = max_backoff
+        self.bot = bot
 
         self.entities = Entities()
         self.whoami: str = ""
@@ -217,7 +219,7 @@ class Session:
 
         if self.client is None or self.client.base_url != handle.base_url:
             await self._close_client()
-            self.client = ZlilyClient(handle.base_url)
+            self.client = ZlilyClient(handle.base_url, bot=self.bot)
 
         token = await self.client.auth(self.username, self.password)
         # A live session hands back the same token and keeps counting message

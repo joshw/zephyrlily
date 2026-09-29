@@ -187,6 +187,18 @@ ws://localhost:7888/ws?token=<token>
 
 Multiple clients may connect simultaneously for the same session (all receive the same stream).
 
+A client should also say what it is, with one of these parameters:
+
+| Parameter | Example | For |
+|-----------|---------|-----|
+| `ui=<name>-<version>` | `ui=tui-0.19.1` | an interactive client |
+| `bot=<name>-<version>` | `bot=zlilybot-0.1.0` | a bot |
+
+The proxy reports every connected client to Lily in its version string, e.g.
+`proxy:0.19.1  ui:tui-0.19.1  bot:zlilybot-0.1.0`, and re-sends it whenever a
+client connects or disconnects. Only `[A-Za-z0-9._+-]` is kept; a client that
+gives neither parameter is reported as `ui:unknown`.
+
 #### Messages from the proxy → client (`WSServerMsg`)
 
 Every message has the shape:
@@ -485,7 +497,7 @@ A complete client must:
 - [ ] Call `POST /auth` and store the returned token securely
 - [ ] Call `GET /state` to obtain `whoami`, the entity list, `last_seen_id`, and `event_buf_size`
 - [ ] Page through `GET /events?after={last_seen_id}` until `more` is false to replay history
-- [ ] Open a WebSocket to `/ws?token=<token>` and handle all incoming message types
+- [ ] Open a WebSocket to `/ws?token=<token>&ui=<name>-<version>` and handle all incoming message types
 - [ ] Handle `clientcommand` events — execute the ones your client supports, ignore the rest (they also arrive via `/events` catch-up)
 - [ ] Send commands over the WebSocket as `{"type":"command","text":"…"}`
 - [ ] Periodically call `POST /seen` with the highest displayed message ID

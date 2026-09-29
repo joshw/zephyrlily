@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/joshw/zephyrlily/internal/proxy/api"
+	"github.com/joshw/zephyrlily/internal/version"
 )
 
 // ErrAuthFailed indicates the proxy/Lily server rejected the supplied
@@ -406,7 +408,8 @@ func (c *Client) StoreContent(contentType, target, name string, lines []string) 
 
 // Connect upgrades to a WebSocket and starts delivering events on c.Events.
 func (c *Client) Connect() error {
-	ws, _, err := websocket.Dial(c.ctx, c.wsURL("/ws?token="+c.token), nil)
+	q := url.Values{"token": {c.token}, "ui": {uiIdent()}}
+	ws, _, err := websocket.Dial(c.ctx, c.wsURL("/ws?"+q.Encode()), nil)
 	if err != nil {
 		return fmt.Errorf("ws connect: %w", err)
 	}
@@ -416,6 +419,16 @@ func (c *Client) Connect() error {
 	c.closeReason.Store("")
 	go c.readLoop()
 	return nil
+}
+
+// uiIdent is how this client names itself to the proxy, which passes it on to
+// Lily in its version report: "tui-<version>" for the terminal build and
+// "tui-web-<version>" for the browser one.
+func uiIdent() string {
+	if runtime.GOOS == "js" {
+		return "tui-web-" + version.String()
+	}
+	return "tui-" + version.String()
 }
 
 // Gen identifies this Client among the ones a session has been through; see
