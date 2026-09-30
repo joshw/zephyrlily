@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
 )
 
@@ -303,6 +304,24 @@ func wrapCommandLines(lines []string, width int) []string {
 	return out
 }
 
+// fitWidth word-wraps, keeping their styling, any lines wider than width. The
+// output pane counts one row per line, so a line left wider than the terminal
+// would be clipped there rather than shown. Message bodies are wrapped as they
+// are built; this catches what is assembled whole, like a message header whose
+// blurb and recipient list outgrow the line.
+func fitWidth(lines []string, width int) []string {
+	width = max(width, 1)
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if ansi.StringWidth(line) <= width {
+			out = append(out, line)
+			continue
+		}
+		out = append(out, strings.Split(ansi.Wrap(line, width, ""), "\n")...)
+	}
+	return out
+}
+
 // renderOutputItem formats an OutputItem into display lines based on current width.
 func (m Model) renderOutputItem(item OutputItem) []string {
 	width := m.width
@@ -335,12 +354,12 @@ func (m Model) renderOutputItem(item OutputItem) []string {
 				whoami = m.state.Whoami
 			}
 			formatted := formatEvent(d, width, whoami)
-			return strings.Split(formatted, "\n")
+			return fitWidth(strings.Split(formatted, "\n"), width)
 		}
 
 	case "error":
 		if e, ok := item.Data.(string); ok {
-			return []string{errorStyle.Render("*** " + e + " ***")}
+			return fitWidth([]string{errorStyle.Render("*** " + e + " ***")}, width)
 		}
 
 	case "input":
@@ -378,7 +397,7 @@ func (m Model) renderOutputItem(item OutputItem) []string {
 				labelStyle = logPrefixStyle
 			}
 			label := labelStyle.Render("[" + entry.level + "]")
-			return []string{label + " " + entry.text}
+			return fitWidth([]string{label + " " + entry.text}, width)
 		}
 	}
 

@@ -280,3 +280,37 @@ func TestRenderInput_LongTokenHardWraps(t *testing.T) {
 	}
 	assert.Equal(t, token, rejoined, "no characters lost when hard-breaking")
 }
+
+// A message header is assembled from styled pieces and was never wrapped, so
+// a long recipient list or blurb left it wider than the terminal. The output
+// pane then showed it on two rows while counting one, and the frame outgrew
+// the screen. Regression for the 2026-09-30 snapshot: this header is 81
+// columns.
+func TestRenderEvent_LongHeaderWrapsToWidth(t *testing.T) {
+	logChan, _ := NewLogger()
+	m := New(client.New(""), logChan)
+	m.width = 80
+	d := map[string]interface{}{
+		"event":  "public",
+		"text":   "fallback",
+		"source": "#1",
+		"value":  "Not to mention https://www.vice.com/en/article/dr-oz-pee-drinking/ (Dr. Oz Apparently Considers Himself Something of a Pee Sommelier)",
+		"recips": []interface{}{"#2", "#3", "#4"},
+		"stamp":  true,
+		"time":   float64(time.Date(2026, 9, 30, 16, 47, 0, 0, time.Local).Unix()),
+		"entities": map[string]interface{}{
+			"#1": map[string]interface{}{"name": "Sue D. Nymme", "blurb": "what fresh hell...?"},
+			"#2": map[string]interface{}{"name": "ai"},
+			"#3": map[string]interface{}{"name": "shittyfood"},
+			"#4": map[string]interface{}{"name": "leftwing"},
+		},
+	}
+	lines := m.renderOutputItem(OutputItem{Type: "event", Data: d})
+	var visible []string
+	for _, line := range lines {
+		plain := stripStyle(line)
+		assert.LessOrEqualf(t, len(plain), 80, "line overflows: %q", plain)
+		visible = append(visible, plain)
+	}
+	assert.Contains(t, strings.Join(visible, "\n"), "shittyfood,\nleftwing:")
+}

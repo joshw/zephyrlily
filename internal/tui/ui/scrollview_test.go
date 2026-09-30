@@ -200,3 +200,20 @@ func TestScrollViewZeroSizeRendersNothing(t *testing.T) {
 	sv.SetLines(numbered(10))
 	assert.Equal(t, "", sv.View())
 }
+
+// A line wider than the view must be clipped, never wrapped: the frame is
+// laid out assuming the output pane is exactly height rows, so one extra row
+// pushes the status bar down onto the input line and scrolls the terminal.
+// bubbles/viewport cut overlong lines to the width; the lipgloss Width
+// padding alone word-wraps them instead. Regression for the 2026-09-30
+// snapshot, where an 81-column message header did this on 80-column screens.
+func TestScrollViewClipsOverlongLines(t *testing.T) {
+	sv := newScrollView(10, 3)
+	sv.SetLines([]string{"short", "much too long for ten", "\x1b[36mstyled and far too long\x1b[m"})
+	rows := strings.Split(sv.View(), "\n")
+	require.Len(t, rows, 3)
+	for _, row := range rows {
+		assert.Equal(t, 10, lipgloss.Width(row), "row %q", row)
+	}
+	assert.Equal(t, "much too l", rows[1])
+}

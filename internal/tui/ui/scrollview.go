@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // scrollView holds pre-wrapped lines and the offset of the topmost visible
@@ -159,8 +160,21 @@ func (s scrollView) View() string {
 	if len(s.lines) > 0 {
 		visible = s.lines[s.yOffset:min(s.yOffset+s.height, len(s.lines))]
 	}
+	// Cut any line wider than the view, as bubbles/viewport did. Left to the
+	// Width padding below, it would word-wrap instead, rendering one line as
+	// two rows: the pane outgrows its height and the frame outgrows the
+	// terminal, pushing the status bar onto the input line. Lines are
+	// pre-wrapped, so this only fires for one that escaped wrapping; the copy
+	// keeps the cut out of the stored scrollback.
+	rows := make([]string, len(visible))
+	for i, line := range visible {
+		if ansi.StringWidth(line) > s.width {
+			line = ansi.Truncate(line, s.width, "")
+		}
+		rows[i] = line
+	}
 	return lipgloss.NewStyle().
 		Width(s.width).
 		Height(s.height).
-		Render(strings.Join(visible, "\n"))
+		Render(strings.Join(rows, "\n"))
 }
