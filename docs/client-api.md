@@ -195,9 +195,10 @@ A client should also say what it is, with one of these parameters:
 | `bot=<name>-<version>` | `bot=zlilybot-0.1.0` | a bot |
 
 The proxy reports every connected client to Lily in its version string, e.g.
-`proxy:0.19.1  ui:tui-0.19.1  bot:zlilybot-0.1.0`, and re-sends it whenever a
-client connects or disconnects. Only `[A-Za-z0-9._+-]` is kept; a client that
-gives neither parameter is reported as `ui:unknown`.
+`0.19.1 tui zlilybot-0.2.0`: its own version, then UIs, then bots. A client at
+the proxy's own version is listed by name alone. The string is re-sent whenever
+a client connects or disconnects. Only `[A-Za-z0-9._+-]` is kept; a client that
+gives neither parameter is reported as `unknown`.
 
 #### Messages from the proxy → client (`WSServerMsg`)
 

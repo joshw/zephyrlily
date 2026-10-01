@@ -38,7 +38,7 @@ def default_bot_ident() -> str:
     """How a bot names itself to the proxy unless it says otherwise.
 
     The proxy reports every connected client to Lily as part of its version
-    string ("proxy:0.19.1  bot:zlilybot-0.1.0"), so this is what shows there.
+    string ("0.19.1 tui zlilybot-0.2.0"), so this is what shows there.
     """
     try:
         v = _pkg_version("zlilybot")

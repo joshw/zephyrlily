@@ -334,7 +334,7 @@ sends. ZephyrLily uses:
 | Message | Purpose |
 |---------|---------|
 | `#$# options +version +prompt +prompt2 +leaf-notify +leaf-cmd +connected` | Negotiate SLCP options at login. |
-| `#$# client zlily "<version>"` | Announce the proxy version and every connected client (`proxy:0.19.1  ui:tui-0.19.1  bot:zlilybot-0.1.0`) after `%connected`, and again whenever the set of clients changes. See `internal/proxy/api/clientversion.go`. |
+| `#$# client zlily "<version>"` | Announce the proxy version and every connected client (`0.19.1 tui tui-web zlilybot-0.2.0`; a client at the proxy's version is listed by name alone) after `%connected`, and again whenever the set of clients changes. See `internal/proxy/api/clientversion.go`. |
 | `#$# slcp-sync` | Request a fresh entity sync. The server re-sends a full `%SLCP-SYNC START … %SLCP-SYNC END` block. Exposed to users as the `%sync` command. |
 | `#$# ping` | Keepalive. The server replies `%pong`; the proxy records the time to detect a dead link. |
 | `#$# export_file info <len> [target]` | Upload new discussion **info** text (`<len>` lines follow). |

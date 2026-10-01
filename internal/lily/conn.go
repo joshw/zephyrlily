@@ -113,7 +113,7 @@ func NewConn(addr, username, password string, tlsEnabled, tlsInsecure bool) *Con
 		cancel:       cancel,
 		syncComplete: make(chan struct{}),
 		loginResult:  make(chan error, 1),
-		verString:    "proxy:" + version.String(),
+		verString:    version.String(),
 	}
 }
 

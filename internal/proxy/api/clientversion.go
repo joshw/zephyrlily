@@ -12,11 +12,17 @@ import (
 // What the proxy reports to Lily as its version ("#$# client zlily ...") is
 // not just its own build but everything driving the session through it:
 //
-//	proxy:0.19.1  ui:tui-0.19.1  ui:tui-web-0.19.1  bot:zlilybot-0.1.0
+//	0.19.1 tui tui-web-0.19.0 mechajosh-0.1.0
+//
+// The first word is the proxy's version, then the UIs, then the bots. A client
+// built at the proxy's own version — the usual case, since the TUI and proxy
+// ship as one binary — is listed by name alone, so only a mismatch spends
+// characters on a version. The server truncates the string, which is why it is
+// kept this terse.
 //
 // A WebSocket client names itself on the /ws URL with ui=<name>-<version> or
 // bot=<name>-<version>. One that says nothing (an older build) is still
-// counted, as ui:unknown, so the report covers every connected client.
+// counted, as "unknown", so the report covers every connected client.
 
 // clientGoneGrace is how long a departed client stays in the report. A client
 // reconnecting after a network blip drops its socket and opens another a
@@ -27,7 +33,7 @@ var clientGoneGrace = 2 * time.Second
 const maxClientIdent = 64
 
 // clientIdent returns how the client behind a /ws request identifies itself,
-// as the tag it takes in the version report (e.g. "ui:tui-0.19.1").
+// tagged with its kind (e.g. "ui:tui-0.19.1"); see formatClientVersion.
 func clientIdent(q url.Values) string {
 	if v := sanitizeIdent(q.Get("bot")); v != "" {
 		return "bot:" + v
@@ -56,28 +62,31 @@ func sanitizeIdent(s string) string {
 	return s
 }
 
-// formatClientVersion builds the version report from the connected clients'
-// idents: the proxy first, then UIs, then bots, each sorted, duplicates
-// collapsed.
-func formatClientVersion(idents []string) string {
+// formatClientVersion builds the version report for a proxy at proxyVer from
+// the connected clients' idents: the proxy's version first, then UIs, then
+// bots, each sorted, duplicates collapsed. The ui:/bot: tags only order the
+// list; they are not printed, as tui and tui-web are the only UIs.
+func formatClientVersion(proxyVer string, idents []string) string {
 	seen := make(map[string]bool, len(idents))
 	var uis, bots []string
 	for _, id := range idents {
-		if seen[id] {
+		kind, name, _ := strings.Cut(id, ":")
+		name = strings.TrimSuffix(name, "-"+proxyVer)
+		if seen[name] {
 			continue
 		}
-		seen[id] = true
-		if strings.HasPrefix(id, "bot:") {
-			bots = append(bots, id)
+		seen[name] = true
+		if kind == "bot" {
+			bots = append(bots, name)
 		} else {
-			uis = append(uis, id)
+			uis = append(uis, name)
 		}
 	}
 	sort.Strings(uis)
 	sort.Strings(bots)
-	parts := append([]string{"proxy:" + version.String()}, uis...)
+	parts := append([]string{proxyVer}, uis...)
 	parts = append(parts, bots...)
-	return strings.Join(parts, "  ")
+	return strings.Join(parts, " ")
 }
 
 // reportClientVersion recomputes the version report from the current
@@ -95,5 +104,5 @@ func (sess *Session) reportClientVersion() {
 	}
 	sess.subsMu.Unlock()
 
-	sess.conn.SetClientVersion(formatClientVersion(idents))
+	sess.conn.SetClientVersion(formatClientVersion(version.String(), idents))
 }

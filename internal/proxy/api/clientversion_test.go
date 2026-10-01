@@ -37,11 +37,27 @@ func TestClientIdent(t *testing.T) {
 }
 
 func TestFormatClientVersion(t *testing.T) {
-	p := "proxy:" + version.String()
-	require.Equal(t, p, formatClientVersion(nil))
-	require.Equal(t,
-		p+"  ui:tui-0.19.1  ui:tui-web-0.19.1  bot:a-1  bot:b-2",
-		formatClientVersion([]string{"bot:b-2", "ui:tui-web-0.19.1", "ui:tui-0.19.1", "bot:a-1", "ui:tui-0.19.1"}))
+	cases := []struct {
+		name   string
+		idents []string
+		want   string
+	}{
+		{"no clients", nil, "0.19.1"},
+		{"same version is left off",
+			[]string{"ui:tui-0.19.1", "ui:tui-web-0.19.1"}, "0.19.1 tui tui-web"},
+		{"a mismatch keeps its version",
+			[]string{"ui:tui-web-0.19.0", "ui:tui-0.19.1"}, "0.19.1 tui tui-web-0.19.0"},
+		{"UIs before bots, each sorted, duplicates collapsed",
+			[]string{"bot:zbot-2", "ui:tui-web-0.19.1", "ui:tui-0.19.1", "bot:abot-1", "ui:tui-0.19.1"},
+			"0.19.1 tui tui-web abot-1 zbot-2"},
+		{"an unidentified client", []string{"ui:unknown"}, "0.19.1 unknown"},
+		// Only a whole "-<version>" suffix is the proxy's version.
+		{"a version that merely ends the same way is kept",
+			[]string{"ui:tui-10.19.1"}, "0.19.1 tui-10.19.1"},
+	}
+	for _, tc := range cases {
+		require.Equal(t, tc.want, formatClientVersion("0.19.1", tc.idents), tc.name)
+	}
 }
 
 // Lily is told about every client on the session, and told again as they come
@@ -55,17 +71,17 @@ func TestVersionReportFollowsConnectedClients(t *testing.T) {
 	addr := startTestProxy(t, fake)
 	token := authTestSession(t, addr)
 
-	p := "proxy:" + version.String()
+	p := version.String()
 	want := func(v string) string { return `#$# client zlily "` + v + `"` }
 
-	ui := dialTestWS(t, addr, url.Values{"token": {token}, "ui": {"tui-1.0"}})
-	fake.WaitCommand(t, want(p+"  ui:tui-1.0"))
+	ui := dialTestWS(t, addr, url.Values{"token": {token}, "ui": {"tui-" + p}})
+	fake.WaitCommand(t, want(p+" tui"))
 
 	bot := dialTestWS(t, addr, url.Values{"token": {token}, "bot": {"echobot-2.0"}})
-	fake.WaitCommand(t, want(p+"  ui:tui-1.0  bot:echobot-2.0"))
+	fake.WaitCommand(t, want(p+" tui echobot-2.0"))
 
 	_ = bot.Close(websocket.StatusNormalClosure, "")
-	fake.WaitCommand(t, want(p+"  ui:tui-1.0"))
+	fake.WaitCommand(t, want(p+" tui"))
 
 	_ = ui.Close(websocket.StatusNormalClosure, "")
 	fake.WaitCommand(t, want(p))
