@@ -29,40 +29,27 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// parityModel draws a fixed frame, nudged exactly as Model.View does, so the
-// test can watch what the real renderer makes of a ClearScreen on its own.
-type parityModel struct {
-	nudge  bool // apply the workaround at all
-	parity bool
-}
+// staticModel draws a frame that never changes, so a ClearScreen is the only
+// thing that could make the renderer write anything.
+type staticModel struct{}
 
-func (p parityModel) Init() tea.Cmd { return nil }
+func (staticModel) Init() tea.Cmd                         { return nil }
+func (m staticModel) Update(tea.Msg) (tea.Model, tea.Cmd) { return m, nil }
 
-func (p parityModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if p.nudge && erasesScreen(msg) {
-		p.parity = !p.parity
-	}
-	return p, nil
-}
-
-func (p parityModel) View() tea.View {
-	content := "hello\nworld"
-	if p.parity {
-		content += repaintNudge
-	}
-	v := tea.NewView(content)
+func (staticModel) View() tea.View {
+	v := tea.NewView("hello\nworld")
 	v.AltScreen = true
 	return v
 }
 
 // bytesAfterClear runs a program, lets its first frame settle, sends
 // ClearScreen with nothing else changing, and returns what was written after.
-func bytesAfterClear(t *testing.T, m parityModel) string {
+func bytesAfterClear(t *testing.T) string {
 	t.Helper()
 	pr, pw := io.Pipe()
 	defer func() { _ = pw.Close() }()
 	out := &syncBuffer{}
-	p := tea.NewProgram(m,
+	p := tea.NewProgram(staticModel{},
 		tea.WithContext(t.Context()),
 		tea.WithInput(pr),
 		tea.WithOutput(out),
@@ -84,42 +71,14 @@ func bytesAfterClear(t *testing.T, m parityModel) string {
 	return out.String()[before:]
 }
 
-// bubbletea skips a flush whose view is unchanged, and an erase only leaves a
-// repaint pending, so a bare ClearScreen writes nothing. That is why C-l could
-// not recover a display wiped downstream of zlily (2026-10-02 snapshot: two
-// C-l presses, zero bytes). The control case pins the upstream behavior, so
-// this test notices if bubbletea ever fixes it and the nudge can go.
+// C-l, the resume repaint and %debug snapshot all rely on ClearScreen
+// repainting an unchanged view. bubbletea 2.0.8 skipped that flush as "no
+// changes", so the clear wrote nothing (2026-10-02 snapshot: two C-l presses,
+// zero bytes); 2.0.10 tracks the pending erase and draws it. This guards
+// against losing that again in a future upgrade or re-vendoring.
 func TestClearScreenRepaintsUnchangedView(t *testing.T) {
-	if got := bytesAfterClear(t, parityModel{nudge: false}); strings.Contains(got, "hello") {
-		t.Logf("bubbletea now repaints a bare ClearScreen (%q); repaintParity may be unnecessary", got)
-	}
-
-	got := bytesAfterClear(t, parityModel{nudge: true})
+	got := bytesAfterClear(t)
 	if !strings.Contains(got, "\x1b[2J") || !strings.Contains(got, "hello") || !strings.Contains(got, "world") {
-		t.Fatalf("ClearScreen with the nudge did not repaint; wrote %q", got)
-	}
-}
-
-func TestModelNudgesViewOnScreenErase(t *testing.T) {
-	m := newSnapshotModel(t)
-	base := m.View().Content
-
-	upd, _ := m.Update(tea.ClearScreen())
-	m = upd.(Model)
-	if got := m.View().Content; got != base+repaintNudge {
-		t.Fatalf("ClearScreen should change the frame by exactly the nudge:\nbefore %q\nafter  %q", base, got)
-	}
-
-	// A resize also erases; its frame changes for other reasons as well, so
-	// only the flip itself is checked.
-	upd, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if upd.(Model).repaintParity == m.repaintParity {
-		t.Error("WindowSizeMsg did not flip repaintParity")
-	}
-	m = upd.(Model)
-
-	upd, _ = m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
-	if upd.(Model).repaintParity != m.repaintParity {
-		t.Error("an ordinary key flipped repaintParity")
+		t.Fatalf("ClearScreen on an unchanged view did not repaint; wrote %q", got)
 	}
 }

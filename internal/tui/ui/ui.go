@@ -327,14 +327,6 @@ type Model struct {
 	// with tea.ClearScreen when this is set.
 	forceRedraw bool
 
-	// repaintParity flips whenever the renderer has just erased the screen
-	// (tea.ClearScreen, a resize), and View appends an invisible SGR reset
-	// while it is set. bubbletea skips a flush when the view is unchanged,
-	// which swallowed the erase: C-l, the snapshot repaint and resume all
-	// wrote nothing until some unrelated change came along. Making the frame
-	// string differ, without changing a single cell, gets the erase drawn.
-	repaintParity bool
-
 	// scrollAnchor is the output-item index to keep at the top of the viewport
 	// across a width-changing resize (which rewraps and invalidates raw line
 	// offsets). -1 means no anchor / use the raw offset. Set by the resize/debug
@@ -903,26 +895,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		nm.forceRedraw = false
 		cmd = tea.Batch(cmd, tea.ClearScreen)
 	}
-	if erasesScreen(msg) {
-		nm.repaintParity = !nm.repaintParity
-	}
 	return nm, cmd
-}
-
-// repaintNudge is what View appends while repaintParity is set: an SGR reset
-// at the end of the frame draws no cell, but makes the string differ.
-const repaintNudge = "\x1b[m"
-
-// erasesScreen reports whether bubbletea erased its screen before handing msg
-// to Update, leaving a full repaint pending for the next frame that differs.
-// The clear message's type is unexported, so it is matched by value; the
-// comparison cannot panic, since a message of any other type is unequal.
-func erasesScreen(msg tea.Msg) bool {
-	if msg == tea.ClearScreen() {
-		return true
-	}
-	_, ok := msg.(tea.WindowSizeMsg)
-	return ok
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1988,9 +1961,6 @@ func (m *Model) restorePosition() {
 func (m Model) View() tea.View {
 	start := time.Now()
 	content := m.viewContent()
-	if m.repaintParity {
-		content += repaintNudge
-	}
 	m.perf.record(perfRender, time.Since(start))
 	v := tea.NewView(content)
 	v.AltScreen = true
