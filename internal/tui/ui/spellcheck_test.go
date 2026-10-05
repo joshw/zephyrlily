@@ -110,3 +110,33 @@ func TestSpellCommandHandler(t *testing.T) {
 		t.Errorf("allow with no words should return usage, got %v", out)
 	}
 }
+
+func TestSpellCheckerEdgePunctuation(t *testing.T) {
+	s := NewSpellChecker()
+	if !s.Available() {
+		t.Skip("dictionary not available")
+	}
+	for _, w := range []string{"'Hello", "fine'", "'quoted'", "-hello", "hello-", "don't", "well-known"} {
+		if !s.CheckWord(w) {
+			t.Errorf("CheckWord(%q) = false, want true", w)
+		}
+	}
+	for _, w := range []string{"'asdfqwer", "asdfqwer'", "-asdfqwer-"} {
+		if s.CheckWord(w) {
+			t.Errorf("CheckWord(%q) = true, want false", w)
+		}
+	}
+
+	// End to end: a single-quoted sentence has no flagged words.
+	for _, w := range s.ParseWords("'Hello there, it's fine.' ok") {
+		if w.Misspelled {
+			t.Errorf("ParseWords flagged %q", w.Text)
+		}
+	}
+
+	// Forbidding a word also catches it inside quotes.
+	s.Forbid("hello")
+	if s.CheckWord("'hello'") {
+		t.Error("forbid overlay should apply to a quoted word")
+	}
+}

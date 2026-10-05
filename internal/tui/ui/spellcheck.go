@@ -91,6 +91,21 @@ func (s *SpellChecker) CheckWord(word string) bool {
 	if !hasLetter(word) {
 		return true
 	}
+	if s.checkToken(word) {
+		return true
+	}
+	// ParseWords keeps apostrophes and hyphens inside words (for "don't" and
+	// "well-known"), so a quote or dash at either end ends up in the token:
+	// 'Hello or fine'. Retry without them. The as-typed check above still lets
+	// the dictionary accept words like 'tis.
+	if trimmed := strings.Trim(word, "'-"); trimmed != word && hasLetter(trimmed) {
+		return s.checkToken(trimmed)
+	}
+	return false
+}
+
+// checkToken checks word exactly as given against the overlays and dictionary.
+func (s *SpellChecker) checkToken(word string) bool {
 	lw := strings.ToLower(word)
 	if _, ok := s.forbidden[lw]; ok {
 		return false
