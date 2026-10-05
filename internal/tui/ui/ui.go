@@ -136,6 +136,12 @@ type Model struct {
 	pasteMode    bool
 	pasteEatFlag bool // eating whitespace after a newline
 	pasteEatBuf  bool // have seen one non-post-newline space (next space triggers eating)
+	// Quote padding: if the first rune of a paste-mode section is a double
+	// quote, the whitespace after it is eaten, and on leaving paste mode the
+	// whitespace before the section's last quote is trimmed too.
+	pasteStart     int  // inputCursor when paste mode was entered
+	pasteStarted   bool // a rune has been fed since paste mode was entered
+	pasteLeadQuote bool // that first rune was a double quote
 
 	// Spell checking
 	spellChecker *SpellChecker

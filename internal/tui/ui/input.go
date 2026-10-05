@@ -296,9 +296,11 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Check for paste mode toggle (allow escaping paste mode)
 	if key.Matches(msg, m.keys.PasteMode) {
-		m.pasteMode = !m.pasteMode
-		m.pasteEatFlag = false
-		m.pasteEatBuf = false
+		if m.pasteMode {
+			m = m.exitPasteMode()
+		} else {
+			m = m.enterPasteMode()
+		}
 		// Toggling changes the prompt ("Paste:" vs none), which changes the
 		// first-line width and therefore the input height; resize the viewport
 		// so the layout doesn't exceed the screen and corrupt the display.
@@ -1300,15 +1302,59 @@ func (m Model) downcaseWord() Model {
 	return m
 }
 
+// enterPasteMode turns paste mode on and starts a new paste section at the
+// cursor.
+func (m Model) enterPasteMode() Model {
+	m.pasteMode = true
+	m.pasteEatFlag = false
+	m.pasteEatBuf = false
+	m.pasteStart = m.inputCursor
+	m.pasteStarted = false
+	m.pasteLeadQuote = false
+	return m
+}
+
+// exitPasteMode turns paste mode off. If the section began with a double
+// quote, the spaces in front of its last quote are dropped, so typing or
+// pasting `"  text  "` yields "text". Only the last quote is trimmed, because
+// one in the middle may be opening a nested quote whose leading space belongs.
+func (m Model) exitPasteMode() Model {
+	if m.pasteLeadQuote && m.pasteStart < m.inputCursor && m.inputCursor <= len(m.inputValue) {
+		seg := m.inputValue[m.pasteStart:m.inputCursor]
+		// Index 0 is the lead quote itself, which has nothing before it to trim.
+		if q := strings.LastIndex(seg, `"`); q > 0 {
+			sp := q
+			for sp > 1 && seg[sp-1] == ' ' {
+				sp--
+			}
+			if n := q - sp; n > 0 {
+				at := m.pasteStart + sp
+				m.inputValue = m.inputValue[:at] + m.inputValue[at+n:]
+				m.inputCursor -= n
+			}
+		}
+	}
+	m.pasteMode = false
+	m.pasteEatFlag = false
+	m.pasteEatBuf = false
+	m.pasteStarted = false
+	m.pasteLeadQuote = false
+	return m
+}
+
 // pasteRune applies one pasted rune to the input using paste-mode whitespace
 // rules: a run of whitespace (space, tab, CR, or LF) collapses to a single
 // space, and any other rune is inserted verbatim. pasteEatBuf/pasteEatFlag
 // carry the run state across calls, so callers must feed runes in order.
 //
-// Whitespace directly inside a double-quoted region is dropped rather than
-// collapsed, so typing an opening quote, pasting text padded with spaces, and
-// typing the closing quote yields "text" and not " text ".
+// If the section's first rune is a double quote, the whitespace right after
+// it is dropped rather than collapsed; exitPasteMode trims the matching
+// whitespace before the section's last quote.
 func (m Model) pasteRune(r rune) Model {
+	if !m.pasteStarted {
+		m.pasteStarted = true
+		m.pasteLeadQuote = isDoubleQuote(r)
+	}
 	if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
 		// Whitespace: emit one space for the run, then eat the rest.
 		if m.pasteEatFlag {
@@ -1318,8 +1364,8 @@ func (m Model) pasteRune(r rune) Model {
 			m.pasteEatFlag = true
 			return m
 		}
-		if before := m.inputValue[:m.inputCursor]; strings.HasSuffix(before, `"`) && insideQuote(before) {
-			// Run starts right after an opening quote: eat all of it.
+		if m.pasteLeadQuote && m.inputCursor == m.pasteStart+1 {
+			// Run starts right after the section's lead quote: eat all of it.
 			m.pasteEatBuf = true
 			m.pasteEatFlag = true
 			return m
@@ -1327,24 +1373,10 @@ func (m Model) pasteRune(r rune) Model {
 		m.pasteEatBuf = true
 		return m.insertString(" ")
 	}
-	// A closing quote right after a collapsed run: take the space back. The
-	// run's space is the last byte inserted, so dropping it is safe here.
-	if isDoubleQuote(r) && m.pasteEatBuf {
-		if before := m.inputValue[:m.inputCursor]; strings.HasSuffix(before, " ") && insideQuote(before) {
-			m.inputValue = before[:len(before)-1] + m.inputValue[m.inputCursor:]
-			m.inputCursor--
-		}
-	}
 	// Non-whitespace: end any whitespace run and insert.
 	m.pasteEatFlag = false
 	m.pasteEatBuf = false
 	return m.insertString(string(r))
-}
-
-// insideQuote reports whether s ends inside a double-quoted region, i.e. it
-// holds an odd number of quotes so the next `"` closes rather than opens one.
-func insideQuote(s string) bool {
-	return strings.Count(s, `"`)%2 == 1
 }
 
 // isDoubleQuote reports whether r is a double quote, including the curly forms

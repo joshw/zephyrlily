@@ -326,8 +326,8 @@ func buildSnapshot(m Model, rendererTail []byte) string {
 	section("input state")
 	fmt.Fprintf(&b, "inputvalue=%q\n", m.inputValue)
 	fmt.Fprintf(&b, "inputcursor=%d len=%d\n", m.inputCursor, len(m.inputValue))
-	fmt.Fprintf(&b, "pastemode=%v pasteeatflag=%v pasteeatbuf=%v metaprefix=%v quitpending=%v\n",
-		m.pasteMode, m.pasteEatFlag, m.pasteEatBuf, m.metaPrefix, m.quitPending)
+	fmt.Fprintf(&b, "pastemode=%v pasteeatflag=%v pasteeatbuf=%v pastestart=%d pastestarted=%v pasteleadquote=%v metaprefix=%v quitpending=%v\n",
+		m.pasteMode, m.pasteEatFlag, m.pasteEatBuf, m.pasteStart, m.pasteStarted, m.pasteLeadQuote, m.metaPrefix, m.quitPending)
 	fmt.Fprintf(&b, "search mode=%v back=%v buf=%q save=%q idx=%d pos=%d\n",
 		m.searchMode, m.searchBack, m.searchBuf, m.searchSave, m.searchIdx, m.searchPos)
 	fmt.Fprintf(&b, "history pos=%d save=%q entries=%d\n", m.historyPos, m.historySave, len(m.history))

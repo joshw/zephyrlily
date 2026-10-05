@@ -104,70 +104,90 @@ func TestPasteMode(t *testing.T) {
 			description:   "Tab should collapse to a single space like other whitespace",
 		},
 		{
-			name:          "quote_swallows_leading_space",
-			pasteText:     "  foo",
-			initialValue:  `"`,
+			name:          "lead_quote_swallows_leading_space",
+			pasteText:     `"  foo`,
+			initialValue:  "",
 			expectedValue: `"foo`,
-			description:   "Whitespace right after an opening quote should vanish",
+			description:   "Whitespace right after a section's lead quote should vanish",
 		},
 		{
-			name:          "quote_swallows_trailing_space",
-			pasteText:     `foo  "`,
-			initialValue:  `"`,
+			name:          "lead_quote_swallows_trailing_space",
+			pasteText:     `"foo  "`,
+			initialValue:  "",
 			expectedValue: `"foo"`,
-			description:   "The space before a closing quote should be taken back",
+			description:   "The space before the section's last quote is trimmed on exit",
 		},
 		{
-			name:          "quote_swallows_both_ends",
+			name:          "lead_quote_swallows_both_ends",
 			pasteText:     "\" \r\n bar baz \t\"",
 			initialValue:  "",
 			expectedValue: `"bar baz"`,
 			description:   "Padding inside quotes goes, interior whitespace still collapses",
 		},
 		{
-			name:          "quote_swallows_curly",
+			name:          "lead_quote_curly",
 			pasteText:     "\u201c foo \u201d",
 			initialValue:  "",
 			expectedValue: `"foo"`,
 			description:   "Curly quotes ascify to `\"` and swallow their padding too",
 		},
 		{
-			name:          "space_before_opening_quote_kept",
-			pasteText:     ` "quoted`,
-			initialValue:  "say",
-			expectedValue: `say "quoted`,
-			description:   "An opening quote must not eat the space in front of it",
+			name:          "lead_quote_after_existing_text",
+			pasteText:     `" foo "`,
+			initialValue:  "say ",
+			expectedValue: `say "foo"`,
+			description:   "The section starts at the cursor, not the start of the input",
 		},
 		{
-			name:          "space_after_closing_quote_kept",
+			name:          "lead_quote_only_last_quote_trimmed",
+			pasteText:     `" he said "hi" ok "`,
+			initialValue:  "",
+			expectedValue: `"he said "hi" ok"`,
+			description:   "Inner quotes keep their surrounding spaces",
+		},
+		{
+			name:          "lead_quote_keeps_space_after_last_quote",
 			pasteText:     `"a"  b`,
 			initialValue:  "",
 			expectedValue: `"a" b`,
-			description:   "A closing quote must not eat the space behind it",
+			description:   "The space after the last quote is not padding",
 		},
 		{
-			name:          "quote_parity_decides",
-			pasteText:     `a" b`,
-			initialValue:  `"x"`,
-			expectedValue: `"x"a"b`,
-			description:   "Parity, not position, marks a quote as opening: the 3rd one opens",
+			name:          "quote_typed_before_paste_mode",
+			pasteText:     "  foo",
+			initialValue:  `"`,
+			expectedValue: `" foo`,
+			description:   "A quote outside the paste section doesn't count as its lead",
+		},
+		{
+			name:          "no_lead_quote_keeps_padding",
+			pasteText:     `say " foo "`,
+			initialValue:  "",
+			expectedValue: `say " foo "`,
+			description:   "Without a lead quote, spaces next to quotes are left alone",
+		},
+		{
+			name:          "lead_space_then_quote",
+			pasteText:     ` " foo "`,
+			initialValue:  "",
+			expectedValue: ` " foo "`,
+			description:   "The quote must be the very first rune of the section",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := Model{
-				pasteMode:    true,
-				inputValue:   tt.initialValue,
-				inputCursor:  len(tt.initialValue),
-				pasteEatFlag: false,
-				pasteEatBuf:  false,
-			}
+				inputValue:  tt.initialValue,
+				inputCursor: len(tt.initialValue),
+			}.enterPasteMode()
 
-			// Feed the pasted text through the real paste-normalization path.
+			// Feed the pasted text through the real paste-normalization path,
+			// then leave paste mode, which trims before a lead quote's partner.
 			for _, r := range tt.pasteText {
 				m = m.pasteRune(r)
 			}
+			m = m.exitPasteMode()
 
 			if m.inputValue != tt.expectedValue {
 				t.Errorf("%s: %s\n  got:      %q\n  expected: %q", tt.name, tt.description, m.inputValue, tt.expectedValue)
@@ -299,6 +319,34 @@ func TestPagerArmsOnCatchUp(t *testing.T) {
 		require.False(t, m.viewport.AtBottom())
 		assert.Equal(t, -1, m.autoPageAnchor, "scrolled back must stay disarmed")
 	})
+}
+
+// TestPasteModeQuoteTrimViaKeys drives the real key handler: M-p on, type a
+// quoted string padded with spaces, M-p off. The padding on both ends goes.
+func TestPasteModeQuoteTrimViaKeys(t *testing.T) {
+	m := Model{
+		keys:   NewKeyMap(),
+		input:  textarea.New(),
+		width:  80,
+		height: 24,
+	}
+	press := func(msg tea.KeyPressMsg) {
+		t.Helper()
+		upd, _ := m.handleNormalKey(msg)
+		m = upd.(Model)
+	}
+	togglePaste := tea.KeyPressMsg{Code: 'p', Mod: tea.ModAlt}
+
+	press(togglePaste)
+	require.True(t, m.pasteMode)
+	for _, r := range `"  hello there  "` {
+		press(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	assert.Equal(t, `"hello there "`, m.inputValue, "trailing space stays until paste mode ends")
+	press(togglePaste)
+	require.False(t, m.pasteMode)
+	assert.Equal(t, `"hello there"`, m.inputValue)
+	assert.Equal(t, len(m.inputValue), m.inputCursor)
 }
 
 func TestPasteModeWithEnterKey(t *testing.T) {
