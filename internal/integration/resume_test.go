@@ -207,7 +207,8 @@ func startStoppableProxy(t *testing.T, fake *lilytest.Server) (string, func()) {
 		once.Do(func() {
 			cancel()
 			select {
-			case <-errCh:
+			case err := <-errCh:
+				require.NoError(t, err, "proxy shutdown")
 			case <-time.After(5 * time.Second):
 				t.Error("proxy did not shut down in time")
 			}

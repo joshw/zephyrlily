@@ -227,7 +227,11 @@ func cmdCombined(args []string) {
 	}
 	runTUI(client.New(proxyAddr), startupMsgs...)
 	cancel()
-	<-proxyDone
+	// The TUI has restored the terminal by now, so a shutdown error can go to
+	// stderr rather than being lost.
+	if err := <-proxyDone; err != nil {
+		fmt.Fprintf(os.Stderr, "proxy: %v\n", err)
+	}
 }
 
 // ── shared helpers ────────────────────────────────────────────────────────────

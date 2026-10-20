@@ -106,7 +106,7 @@ func startReviewProxy(t *testing.T, lilyAddr string) string {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.RunWithListener(ctx, l) }()
-	t.Cleanup(func() { cancel(); <-errCh })
+	t.Cleanup(func() { cancel(); require.NoError(t, <-errCh, "proxy shutdown") })
 	return addr
 }
 

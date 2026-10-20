@@ -51,7 +51,8 @@ func startProxy(t *testing.T, fake *lilytest.Server) string {
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case <-srvErr:
+		case err := <-srvErr:
+			require.NoError(t, err, "proxy shutdown")
 		case <-time.After(5 * time.Second):
 			t.Error("proxy did not shut down in time")
 		}
