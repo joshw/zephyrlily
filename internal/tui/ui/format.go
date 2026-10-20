@@ -323,7 +323,9 @@ func fitWidth(lines []string, width int) []string {
 }
 
 // renderOutputItem formats an OutputItem into display lines based on current width.
-func (m Model) renderOutputItem(item OutputItem) []string {
+// Pointer receiver for the same reason as renderItem: a full rebuild (resize,
+// whoami change) calls it once per scrollback item.
+func (m *Model) renderOutputItem(item OutputItem) []string {
 	width := m.width
 	if m.debugMode {
 		width = m.width / 2

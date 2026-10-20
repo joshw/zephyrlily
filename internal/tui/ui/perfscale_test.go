@@ -42,7 +42,13 @@ func benchModel(tb testing.TB, n int) Model {
 			Data: fmt.Sprintf("preload %d lorem ipsum dolor sit amet consectetur", i),
 		})
 	}
-	return m.syncViewportContent()
+	m = m.syncViewportContent()
+	// Follow the bottom, as a session does between bursts of reading. The
+	// one-shot sync above leaves the view paged near the top, and there every
+	// walk that stops at the visible end (computeLastSeenID) gives up after a
+	// screenful — which hid a per-item cost that a real session pays in full.
+	m.viewport.GotoBottom()
+	return m
 }
 
 // BenchmarkIncomingMessageByScrollback measures handling one incoming message

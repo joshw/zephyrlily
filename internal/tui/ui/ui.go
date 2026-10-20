@@ -638,7 +638,13 @@ func (m *Model) appendDebug(lines ...string) {
 // when the cache is stale (renderEpoch changed, i.e. width/debug-split/whoami
 // changed). All scrollback walks must use this rather than renderOutputItem so
 // a long session doesn't re-render the entire buffer on every message.
-func (m Model) renderItem(i int) []string {
+//
+// The pointer receiver matters as much as the cache: Model is tens of
+// kilobytes and this is not inlined, so a value receiver copied the whole
+// model on every call — once per scrollback item on each walk, which at the
+// bottom of a long session made every incoming message cost hundreds of
+// megabytes of copying.
+func (m *Model) renderItem(i int) []string {
 	it := &m.output[i]
 	if it.cacheEpoch != m.renderEpoch || it.cache == nil {
 		it.cache = m.renderOutputItem(*it)
